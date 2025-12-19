@@ -3,3 +3,7 @@ langchain
 langchain-groq
 pydantic
 matplotlib
+gradio 
+pypdf 
+beautifulsoup4
+langchain-community

@@ -11,5 +11,4 @@ venv/
 # Ignore IDE settings
 .vscode/
 .qodo/
-*.png
 .DS_Store

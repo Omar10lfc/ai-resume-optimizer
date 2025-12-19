@@ -27,7 +27,8 @@ This project implements a sophisticated **Agentic Workflow** that mimics a profe
 
 The system is modeled as a State Graph with a specific 2-step execution flow:
 
-| Node | Role | Behavior ||------|------|----------|
+| Node | Role | Behavior |
+|------|------|----------|
 | **Loader** | Ingestor | Extracts raw text from PDF files or Job URLs. |
 | **Scanner** | Analyst | Compares Job vs. Resume and outputs a list of "Missing Skills". |
 | **Human Loop** | Manager | **Stops execution** to let the user add context/experience for the missing skills. |
