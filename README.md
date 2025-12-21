@@ -1,7 +1,5 @@
 # Self-Refining Resume Optimizer Agent
 
-![Architecture Diagram](agent_diagram.png)
-
 ## Project Overview
 
 This project implements a sophisticated **Agentic Workflow** that mimics a professional writer/editor relationship. It goes beyond simple text generation by introducing state management and user feedback loops.
@@ -22,6 +20,8 @@ This project implements a sophisticated **Agentic Workflow** that mimics a profe
 * **Validation:** Pydantic (Structured Output).
 
 ## How It Works (The Graph)
+
+![Architecture Diagram](agent_diagram.png)
 
 The system is modeled as a State Graph with a specific 2-step execution flow:
 
