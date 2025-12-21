@@ -1,7 +1,5 @@
 # Self-Refining Resume Optimizer Agent
 
-An intelligent, multi-agent system built with **LangGraph**, **Llama 3**, and **Gradio** that autonomously refines resumes. Unlike standard tools, this agent scans for gaps, asks for human input, and iteratively critiques its own work until it hits a quality threshold.
-
 ![Architecture Diagram](agent_diagram.png)
 
 ## Project Overview
