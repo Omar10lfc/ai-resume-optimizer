@@ -8,15 +8,11 @@ from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from dotenv import load_dotenv
 
 # 1. CONFIGURATION
-# Load environment variables from .env file
 load_dotenv()
 
-# Get the key safely
 if not os.environ.get("GROQ_API_KEY"):
-    # Fallback only for testing if .env fails
     os.environ["GROQ_API_KEY"] = "ENTER_KEY_HERE"
 
-# Initialize LLM
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
 # ==========================================
@@ -43,7 +39,6 @@ def loader_node(state: AgentState):
     NODE 0: Loads PDF or Web data.
     """
     print(f"\n--- NODE 0: LOADING DATA ---")
-    
     # 1. Load Job Description
     job_content = state['job_description']
     if state['job_description'].startswith("http"):
@@ -172,7 +167,6 @@ workflow.add_node("reviewer", reviewer_node)
 
 workflow.set_entry_point("loader")
 workflow.add_edge("loader", "scanner")
-# NOTE: Removed 'human_feedback_node'. 'human_notes' are now passed as Input to Step 2.
 workflow.add_edge("scanner", "improver") 
 workflow.add_edge("improver", "reviewer")
 
@@ -200,7 +194,7 @@ scan_workflow.add_edge("scanner", END)
 scanner_app = scan_workflow.compile()
 
 # ==========================================
-# 5. CLI EXECUTION (If run directly)
+# 5. CLI EXECUTION
 # ==========================================
 if __name__ == "__main__":
     sample_job = """
@@ -222,13 +216,10 @@ if __name__ == "__main__":
     print("Starting Advanced Resume Agent (CLI Test Mode)...")
     
     try:
-        # We invoke 'full_app' which runs the complete chain
         final_state = full_app.invoke({
             "job_description": sample_job, 
             "original_resume": sample_resume,
             "human_notes": sample_human_notes,
-            
-            # Initialize empty fields
             "resume_text": "",
             "job_text": "",
             "optimized_resume": "",
