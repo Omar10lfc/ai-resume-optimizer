@@ -7,3 +7,6 @@ gradio
 pypdf 
 beautifulsoup4
 langchain-community
+python-dotenv
+markdown
+xhtml2pdf

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This project implements a sophisticated **Agentic Workflow** that mimics a professional writer/editor relationship. It goes beyond simple text generation by introducing state management and user feedback loops.
+This project implements a sophisticated **Agentic Workflow** that mimics a professional writer/editor relationship. It goes beyond simple text generation by introducing state management, user feedback loops, and automated document formatting.
 
 ### Key Features
 
@@ -10,6 +10,7 @@ This project implements a sophisticated **Agentic Workflow** that mimics a profe
 * **Gap Analysis:** Identifies exactly which skills (e.g., "SQL", "CI/CD") are missing from your profile.
 * **Human-in-the-Loop:** Pauses the workflow to ask you for context (e.g., *"You are missing SQL. Do you have this experience?"*) before writing.
 * **Self-Refinement:** A "Critic" node scores every draft (0-100). If the score is low, the "Writer" node must rewrite it.
+* **Professional Outputs:** Automatically generates a **tailored Cover Letter** and exports both documents as CSS-styled **PDFs**.
 
 ## Tech Stack
 
@@ -18,12 +19,13 @@ This project implements a sophisticated **Agentic Workflow** that mimics a profe
 * **Interface:** **Gradio** (Web UI for PDF uploads and interactive feedback).
 * **Data Processing:** `PyPDF` (Document Parsing) & `WebBaseLoader` (Scraping).
 * **Validation:** Pydantic (Structured Output).
+* **Output Engine:** `markdown`& `xhtml2pdf`  (Rendering CSS-styled documents).
 
 ## How It Works (The Graph)
 
 ![Architecture Diagram](agent_diagram.png)
 
-The system is modeled as a State Graph with a specific 2-step execution flow:
+The system is modeled as a State Graph with a specific multi-stage execution flow::
 
 | Node | Role | Behavior |
 |------|------|----------|
@@ -32,6 +34,8 @@ The system is modeled as a State Graph with a specific 2-step execution flow:
 | **Human Loop** | Manager | **Stops execution** to let the user add context/experience for the missing skills. |
 | **Improver** | Writer | Rephrases the resume using the user's notes. **Constraint:** Never hallucinates experience. |
 | **Reviewer** | Judge | Acts as a Hiring Manager. Returns a `Score` (0-100) and specific `Feedback`. |
+| **Cover Letter**| Author | Uses the finalized resume and job text to write a cohesive cover letter. |
+| **PDF Exporter**| Publisher| Renders the final Markdown text into professional PDFs with custom styling. |
 
 ### The "Loop" Logic
 
