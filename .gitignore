@@ -12,3 +12,37 @@ venv/
 .vscode/
 .qodo/
 .DS_Store
+
+# Ignore LangSmith trace exports (contain resume PII and job descriptions)
+traces/
+
+# Ignore tool caches
+.mypy_cache/
+.pytest_cache/
+
+# Ignore agent config and skill files
+.agents/
+.claude/
+skills-lock.json
+
+# Test output directory
+tests_out/
+
+# Internal scratch plans & diagram utility
+IMPLEMENTATION_PLAN.md
+make_diagram.py
+session-*.md
+
+# LaTeX temporary / build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# OS artifacts
+Thumbs.db
+desktop.ini
+.idea/
