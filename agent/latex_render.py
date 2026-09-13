@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .helpers import _force_ascii
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,12 +45,9 @@ def _find_on_path(*names: str) -> Optional[str]:
 
 PANDOC_PATH = _find_on_path("pandoc")
 PDFLATEX_PATH = _find_on_path("pdflatex")
-XELATEX_PATH = _find_on_path("xelatex")
 
 HAVE_PANDOC = PANDOC_PATH is not None
 HAVE_PDFLATEX = PDFLATEX_PATH is not None
-# pdflatex provides unicode-sensitive glyphs; xelatex isn't required.
-HAVE_TOOLS = HAVE_PDFLATEX and HAVE_PANDOC
 
 if not HAVE_PDFLATEX:
     logger.warning("LaTeX renderer: pdflatex not found on PATH — PDF export via "
@@ -656,67 +655,12 @@ _LATEX_SPECIAL = str.maketrans({
     '^': r'\textasciicircum{}',
 })
 
-# Unicode → ASCII replacements. pdflatex (unlike xelatex) fails hard on most
-# non-ASCII glyphs (e.g. U+202F narrow no-break space, •, en-dash), so we map
-# them to ASCII before escaping.
-_UNICODE_REPLACEMENTS = {
-    '\u2010': '-', '\u2011': '-', '\u2012': '-',
-    '\u2013': '-', '\u2014': '--',
-    '\u2015': '--', '\u2212': '-',
-    '\u2043': '-', '\uFE58': '-', '\uFE63': '-',
-    '\uFF0D': '-',
-    '\u2192': '->', '\u2190': '<-', '\u2022': '-',
-    '\u2023': '>', '\u25B6': '>',
-    '\u2794': '->', '\u279C': '->', '\u21D2': '=>', '\u2194': '<->',
-    '\u2502': '|', '\u2500': '-',
-    '\u25CF': '*', '\u25CB': 'o', '\u25AA': '*',
-    '\u2026': '...',
-    '\u2018': "'", '\u2019': "'",
-    '\u201c': '"', '\u201d': '"',
-    '\u00AB': '"', '\u00BB': '"',
-    '\u00bf': '->',   # '¿' — mojibake artifact of a mangled '→' arrow
-    '\u00a1': '!',    # '¡' inverted bang (mojibake-ish)
-    '\u00b1': '+/-',  # '±' plus-minus
-    '\u00d7': 'x',    # '×' multiplication sign
-    '\u00f7': '/',    # '÷' division sign
-    '\u00f9': 'u', '\u00fa': 'u', '\u00fb': 'u', '\u00fc': 'u',
-    '\u202f': ' ', '\xa0': ' ', '\u2009': ' ', '\u200a': ' ', '\u2003': ' ',
-    '\u200b': '', '\u200c': '', '\u200d': '',
-    '\ufeff': '',
-    '\ufe0f': '', '\ufe0e': '',
-}
-
-
-def _force_ascii(text: str) -> str:
-    """Replace known Unicode glyphs with ASCII, then strip any residual
-    non-ASCII so pdflatex never sees a character it can't typeset."""
-    import unicodedata
-    if not text:
-        return ""
-    for uni, rep in _UNICODE_REPLACEMENTS.items():
-        text = text.replace(uni, rep)
-    cleaned = []
-    for ch in text:
-        if ord(ch) < 128:
-            cleaned.append(ch)
-        else:
-            decomposed = unicodedata.normalize('NFD', ch)
-            ascii_parts = [c for c in decomposed if ord(c) < 128]
-            if ascii_parts:
-                cleaned.extend(ascii_parts)
-    return ''.join(cleaned)
-
 
 def _latex_escape(text: str) -> str:
-    """Strip non-ASCII and escape LaTeX special characters (except in URLs,
-    which are handled by hyperref)."""
+    """Escape LaTeX special characters after mapping Unicode characters to ASCII."""
     if not text:
         return ""
     text = _force_ascii(text)
-    # Defensive: drop any residual markdown emphasis markers that survived
-    # parsing so they never appear raw in the LaTeX (and never break pdflatex).
-    text = re.sub(r'\*', '', text)
-    text = re.sub(r'__', '', text)
     return text.translate(_LATEX_SPECIAL)
 
 
@@ -735,16 +679,6 @@ def _clean_latex_url(url: str) -> str:
     url = url.replace('%', r'\%')
     url = url.replace('&', r'\&')
     return url
-
-
-def _latex_link(text: str) -> str:
-    """Escape a URL-ish string for inclusion in href (keep http:// ... intact)."""
-    if not text:
-        return ""
-    if re.match(r'^(https?://|mailto:|www\.)', text):
-        url = text if not text.startswith('www.') else 'http://' + text
-        return r'\href{' + _clean_latex_url(url) + r'}{\underline{' + _latex_escape(text) + r'}}'
-    return _latex_escape(text)
 
 
 def _render_text_with_links(text: str) -> str:

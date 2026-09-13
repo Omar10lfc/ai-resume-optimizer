@@ -1,8 +1,11 @@
 """LLM factory functions and pre-configured instances."""
+import logging
 # pyrefly: ignore [missing-import]
 from langchain_groq import ChatGroq
 
 from .config import _PRIMARY_MODEL, _FALLBACK_MODEL, _EMERGENCY_MODEL
+
+logger = logging.getLogger(__name__)
 
 try:
     from groq import APITimeoutError, APIConnectionError, InternalServerError, RateLimitError
@@ -42,4 +45,4 @@ llm_strict = _create_llm(temperature=0, reasoning_effort="low")
 llm_creative = _create_llm(temperature=0.3)
 llm_fast = _create_llm_fast(temperature=0.3)
 
-print(f"[Models] Primary: {_PRIMARY_MODEL} | Fast: {_FALLBACK_MODEL} | Emergency: {_EMERGENCY_MODEL}")
+logger.info(f"[Models] Primary: {_PRIMARY_MODEL} | Fast: {_FALLBACK_MODEL} | Emergency: {_EMERGENCY_MODEL}")

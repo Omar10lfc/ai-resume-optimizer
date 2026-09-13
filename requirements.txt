@@ -1,8 +1,7 @@
 langgraph==1.0.5
-langchain==1.2.0
+langchain-core==1.2.3
 langsmith==0.10.9
 langchain-groq==1.1.1
-langchain-community==0.4.1
 pydantic==2.12.4
 gradio>=6.16.0
 pypdf==6.4.2

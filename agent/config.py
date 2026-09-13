@@ -15,8 +15,6 @@ _EMERGENCY_MODEL = os.environ.get("EMERGENCY_MODEL", "llama-3.1-8b-instant")
 
 # --- Output Directories ---
 OUTPUT_ROOT = Path(tempfile.gettempdir()) / "resume_optimizer_output"
-OUTPUT_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
-
 OUTPUT_RETENTION_HOURS = 24
 
 # --- Input Limits (env-overridable) ---

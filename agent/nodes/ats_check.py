@@ -2,7 +2,7 @@
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted, SemanticReview
 from .. import llms as _llms
 from ..config import ATS_SCORE_WEIGHT, LLM_SCORE_WEIGHT
-from ..ats import compute_ats_match
+from ..ats import compute_ats_match, apply_semantic_matches
 from ..helpers import _safe_print, _safe_truncate
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -49,8 +49,7 @@ def ats_check_node(state: AgentState):
     missing_kws = [r["keyword"] for r in result["keywords"] if not r["found"]]
     semantic = _semantic_verify_missing(state['optimized_resume'], missing_kws)
     if semantic:
-        result = compute_ats_match(state['job_text'], state['optimized_resume'],
-                                   semantic_matches=semantic)
+        result = apply_semantic_matches(result, semantic)
 
     llm_quality = state.get('llm_quality_score', 0)
     composite = round(

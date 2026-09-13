@@ -2,7 +2,7 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from .config import SCORE_THRESHOLD, MAX_ITERATIONS, init_output_dirs
+from .config import SCORE_THRESHOLD, MAX_ITERATIONS
 from .state import AgentState
 from .tracing import TRACE_CALLBACKS
 from .nodes import (
@@ -80,29 +80,3 @@ agent_app = interactive_workflow.compile(
     checkpointer=MemorySaver(),
     interrupt_before=["improver"],
 )
-
-
-# --- CLI entry point ---
-if __name__ == "__main__":
-    init_output_dirs()
-
-    sample_job = "Looking for a Python Developer with Data Science skills."
-    sample_resume = "I am a Python developer."
-    sample_notes = "I have 2 years of experience."
-
-    print("Starting Advanced Resume Agent (CLI Mode)...")
-    try:
-        final_state = full_app.invoke({
-            "job_description": sample_job,
-            "original_resume": sample_resume,
-            "human_notes": sample_notes,
-            "resume_text": "", "job_text": "", "optimized_resume": "",
-            "feedback": "", "missing_skills": "", "score": 0, "iteration": 0,
-            "llm_quality_score": 0, "ats_percentage": 0.0, "review_failed": False,
-            "cover_letter": "", "interview_questions": "", "ats_result": "",
-            "resume_pdf_path": "", "cover_letter_pdf_path": "",
-            "resume_docx_path": "", "resume_tex_path": ""
-        }, config={"callbacks": TRACE_CALLBACKS})
-        print("Done! Files saved.")
-    except Exception as e:
-        print(f"Error: {e}")

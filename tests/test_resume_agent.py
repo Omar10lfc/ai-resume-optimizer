@@ -412,6 +412,13 @@ def test_semantic_verification_reclassifies_expressed_keywords(fake_llms, monkey
                for r in boosted["keywords"])
     assert "matched semantically" in boosted["formatted"]
 
+    # In-place semantic re-scoring
+    in_place = agent.apply_semantic_matches(plain, {"kubernetes"})
+    assert in_place["percentage"] == boosted["percentage"]
+    assert in_place["match_count"] == boosted["match_count"]
+    assert any(r["keyword"] == "kubernetes" and r["method"] == "semantic"
+               for r in in_place["keywords"])
+
 
 # ==========================================
 # _strip_emoji_from_html

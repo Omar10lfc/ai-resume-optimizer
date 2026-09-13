@@ -391,6 +391,11 @@ def compute_ats_match(job_text: str, resume_text: str,
             "status": "+" if found else "-"
         })
 
+    return _format_ats_result(results)
+
+
+def _format_ats_result(results: list[dict]) -> dict:
+    """Calculates weighted scores, breakdown, and markdown summary from keyword match results."""
     total_weight = sum(r["weight"] for r in results)
     earned_weight = sum(r["weight"] for r in results if r["found"])
     percentage = round((earned_weight / total_weight * 100), 1) if total_weight > 0 else 0
@@ -450,3 +455,19 @@ def compute_ats_match(job_text: str, resume_text: str,
         "weighted_total": total_weight,
         "formatted": "\n".join(lines)
     }
+
+
+def apply_semantic_matches(result: dict, semantic_matches: set[str]) -> dict:
+    """Updates ATS match results in-place with newly verified semantic matches,
+    re-scoring immediately without re-extracting keywords or re-scanning the resume."""
+    if not semantic_matches:
+        return result
+    updated_results = []
+    for r in result.get("keywords", []):
+        item = dict(r)
+        if not item["found"] and item["keyword"].lower() in semantic_matches:
+            item["found"] = True
+            item["method"] = "semantic"
+            item["status"] = "+"
+        updated_results.append(item)
+    return _format_ats_result(updated_results)

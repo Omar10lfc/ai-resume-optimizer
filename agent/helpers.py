@@ -30,36 +30,51 @@ def _safe_truncate(text: str, max_chars: int, label: str = "text") -> str:
 
 def _strip_code_fences(text: str) -> str:
     """Strip wrapping markdown code fences that LLMs often add."""
-    stripped = text.strip()
-    for _ in range(3):
-        pattern = r'^`{3,}(?:\w*)\s*\n(.*?)\n\s*`{3,}\s*$'
-        match = re.match(pattern, stripped, re.DOTALL)
-        if match:
-            stripped = match.group(1).strip()
-        else:
-            break
-    return stripped
+    s = (text or "").strip()
+    while s.startswith("```"):
+        first_newline = s.find("\n")
+        if first_newline == -1:
+            return ""
+        s = s[first_newline + 1:]
+        if s.endswith("```"):
+            last_fence = s.rfind("```")
+            s = s[:last_fence].rstrip()
+        s = s.strip()
+    return s
 
 
-# Explicit Unicode-to-ASCII mapping for PDF output
+# Explicit Unicode-to-ASCII mapping for clean PDF and LaTeX output
 _UNICODE_REPLACEMENTS = {
+    # Status / indicator emojis
     '\u2705': '[Y]', '\u274c': '[N]', '\U0001f7e2': '[+]', '\U0001f7e1': '[~]', '\U0001f534': '[-]',
     '\U0001f4c4': '', '\U0001f4ca': '', '\U0001f4cb': '', '\U0001f4ce': '', '\U0001f4dd': '',
     '\U0001f4e5': '', '\U0001f3a4': '', '\u2709\ufe0f': '', '\U0001f50d': '', '\U0001f4a1': '',
     '\u23f3': '', '\u2764\ufe0f': '', '\u2764': '',
+    # Hyphens, dashes, and minus signs
     '\u2010': '-', '\u2011': '-', '\u2012': '-',
     '\u2013': '-', '\u2014': '--',
     '\u2015': '--', '\u2212': '-',
     '\u2043': '-', '\uFE58': '-', '\uFE63': '-',
     '\uFF0D': '-',
+    # Arrows and bullets
     '\u2192': '->', '\u2190': '<-', '\u2022': '-',
     '\u2023': '>', '\u25B6': '>',
+    '\u2794': '->', '\u279C': '->', '\u21D2': '=>', '\u2194': '<->',
     '\u2502': '|', '\u2500': '-',
     '\u25CF': '*', '\u25CB': 'o', '\u25AA': '*',
     '\u2026': '...',
+    # Quotes
     '\u2018': "'", '\u2019': "'",
     '\u201c': '"', '\u201d': '"',
     '\u00AB': '"', '\u00BB': '"',
+    # Math & symbols
+    '\u00bf': '->',   # '¿' — mojibake artifact of a mangled '→' arrow
+    '\u00a1': '!',    # '¡' inverted bang (mojibake-ish)
+    '\u00b1': '+/-',  # '±' plus-minus
+    '\u00d7': 'x',    # '×' multiplication sign
+    '\u00f7': '/',    # '÷' division sign
+    '\u00f9': 'u', '\u00fa': 'u', '\u00fb': 'u', '\u00fc': 'u',
+    # Spaces and zero-width characters
     '\u202f': ' ', '\xa0': ' ', '\u2009': ' ', '\u200a': ' ', '\u2003': ' ',
     '\u200b': '', '\u200c': '', '\u200d': '',
     '\ufeff': '',
@@ -68,7 +83,9 @@ _UNICODE_REPLACEMENTS = {
 
 
 def _force_ascii(text: str) -> str:
-    """Force text to pure ASCII."""
+    """Force text to pure ASCII by applying replacements and NFD decomposition."""
+    if not text:
+        return ""
     for unicode_char, replacement in _UNICODE_REPLACEMENTS.items():
         text = text.replace(unicode_char, replacement)
     cleaned = []
@@ -84,7 +101,7 @@ def _force_ascii(text: str) -> str:
 
 
 def _strip_emoji_for_pdf(text: str) -> str:
-    """Replace emoji/Unicode with ASCII before markdown->HTML conversion."""
+    """Alias for _force_ascii for backward compatibility."""
     return _force_ascii(text)
 
 
