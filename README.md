@@ -1,10 +1,10 @@
-# 🎯 AI Resume Optimizer Agent
+# AI Resume Optimizer Agent
 
 A sophisticated **Agentic AI Workflow** that optimizes resumes for specific job descriptions using a multi-stage pipeline with self-correction capabilities. Built with LangGraph for orchestration and GPT-OSS 120B via Groq for high-quality, low-cost inference — with automatic model fallback for reliability.
 
 ![Architecture Diagram](agent_diagram.png)
 
-## ✨ Key Features
+## Key Features
 
 | Feature | Description |
 |---------|-------------|
@@ -34,7 +34,7 @@ A sophisticated **Agentic AI Workflow** that optimizes resumes for specific job 
 | **PDF/DOCX Engine** | Resume rendered via **LaTeX** (`pdflatex` → PDF, `pandoc` → DOCX) from a bundled Jake Gutierrez template; cover letter uses `xhtml2pdf` — graceful fallback to HTML→PDF when pdflatex is absent |
 | **Observability** | [LangSmith](https://smith.langchain.com/) — Full trace logging of every agent step |
 
-## 🏗️ Architecture
+## Architecture
 
 The system is modeled as a **State Graph** with a multi-stage execution flow:
 
@@ -95,7 +95,7 @@ The ATS checker goes beyond naive exact matching:
 
 ---
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Prerequisites
 
@@ -169,7 +169,7 @@ The app will open at `http://127.0.0.1:7860`. If LangSmith is configured, you'll
 
 ---
 
-## 🔍 LangSmith Tracing
+## LangSmith Tracing
 
 When enabled, every pipeline run is traced with full visibility into:
 
@@ -200,7 +200,7 @@ To export your LangSmith traces for analysis:
 
 ---
 
-## 🧪 Experiment: Self-Correction in Action
+## Experiment: Self-Correction in Action
 
 In a test run, the agent handled a "Junior" resume applying for a Data Scientist role **without hallucinating** fake experience:
 
@@ -213,7 +213,7 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 
 ---
 
-## ⚡ Performance Optimizations
+## Performance Optimizations
 
 | Optimization | Impact |
 |-------------|--------|
@@ -236,7 +236,7 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 ├── app.py                    # Gradio web interface (premium dark UI with glassmorphism & streaming progress)
@@ -276,7 +276,7 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 
 ---
 
-## 📋 Changelog & Design Decisions
+## Changelog & Design Decisions
 
 This hardening pass was driven by a full code review plus analysis of exported LangSmith traces. Every change below lists **what** changed and **why**, with the trace evidence where applicable. Full details in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
@@ -406,6 +406,6 @@ inside words like "google"/"programming", systematically inflating ATS scores.
 
 ---
 
-## 📄 License
+## License
 
 This project is open source and available under the [MIT License](LICENSE).
