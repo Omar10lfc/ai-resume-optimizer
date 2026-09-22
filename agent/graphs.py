@@ -2,7 +2,7 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from .config import SCORE_THRESHOLD, MAX_ITERATIONS
+from .config import SCORE_THRESHOLD, MAX_ITERATIONS, CHECKPOINTER_DB_PATH
 from .state import AgentState
 from .tracing import TRACE_CALLBACKS
 from .nodes import (
@@ -68,7 +68,25 @@ full_app = workflow.compile()
 # user's edited notes via update_state and resumes from the checkpoint.
 # The loader therefore runs exactly once per session (no double PDF parsing),
 # and the whole session survives in the in-memory checkpointer.
-# Upgrade path: swap MemorySaver for SqliteSaver to persist across restarts.
+def _create_checkpointer():
+    """Returns a checkpointer instance.
+
+    If CHECKPOINTER_DB_PATH is configured, attempts to initialize a persistent
+    SQLite checkpointer for multi-worker / crash-resilient deployments.
+    Otherwise, defaults to MemorySaver() for zero-configuration local use.
+    """
+    if CHECKPOINTER_DB_PATH:
+        try:
+            import sqlite3
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            conn = sqlite3.connect(CHECKPOINTER_DB_PATH, check_same_thread=False)
+            _safe_print(f"[Checkpointer] Using persistent SQLite storage at: {CHECKPOINTER_DB_PATH}")
+            return SqliteSaver(conn)
+        except Exception as e:
+            _safe_print(f"[Checkpointer] Warning: Could not initialize SQLite checkpointer ({e}). Falling back to MemorySaver.")
+    return MemorySaver()
+
+
 interactive_workflow = StateGraph(AgentState)
 interactive_workflow.add_node("loader", loader_node)
 interactive_workflow.add_node("scanner", scanner_node)
@@ -77,6 +95,6 @@ interactive_workflow.set_entry_point("loader")
 interactive_workflow.add_edge("loader", "scanner")
 interactive_workflow.add_edge("scanner", "improver")
 agent_app = interactive_workflow.compile(
-    checkpointer=MemorySaver(),
+    checkpointer=_create_checkpointer(),
     interrupt_before=["improver"],
 )

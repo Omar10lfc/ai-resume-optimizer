@@ -2,7 +2,7 @@ import os
 import gradio as gr
 from uuid import uuid4
 from agent import agent_app, TRACE_CALLBACKS
-from agent.config import init_output_dirs
+from agent.config import init_output_dirs, start_background_cleanup
 
 # Redacted-tracing callbacks go with every invoke (empty list = tracing off)
 _INVOKE_CONFIG_BASE = {"callbacks": TRACE_CALLBACKS}
@@ -685,6 +685,7 @@ with gr.Blocks(title="AI Resume Optimizer Agent") as demo:
 
 if __name__ == "__main__":
     init_output_dirs()
+    start_background_cleanup()
 
     # One pipeline at a time: concurrent runs would double-spend Groq quota
     demo.queue(max_size=5, default_concurrency_limit=1)

@@ -662,3 +662,21 @@ def test_config_env_overrides(monkeypatch):
     assert cfg.ATS_SCORE_WEIGHT == 0.6  # loaded at import, not re-read
     # But the env var IS set
     assert os.environ.get("SCORE_THRESHOLD") == "90"
+
+
+# ==========================================
+# Background disk cleanup & Checkpointer factory
+# ==========================================
+
+def test_start_background_cleanup_thread():
+    thread = agent.start_background_cleanup(interval_seconds=3600)
+    assert thread.is_alive()
+    assert thread.daemon is True
+    assert thread.name == "DiskCleanupDaemon"
+
+
+def test_create_checkpointer_default():
+    from agent.graphs import _create_checkpointer
+    from langgraph.checkpoint.memory import MemorySaver
+    cp = _create_checkpointer()
+    assert isinstance(cp, MemorySaver)

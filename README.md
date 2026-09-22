@@ -397,6 +397,31 @@ generic words are now filtered; the remaining keywords are actual requirements
 filenames caused cross-user PDF collisions under concurrency, and `"go"`/`"r"` matched
 inside words like "google"/"programming", systematically inflating ATS scores.
 
+---
+
+## Production Architecture & Reliability
+
+To ensure robust 24/7 cloud deployments (Hugging Face Spaces, Docker containers, multi-worker clusters), the pipeline includes key production hardening measures:
+
+### 1. Automated CI/CD Testing (`.github/workflows/ci.yml`)
+* **Why it's needed:** Multi-agent workflows with PDF compiling and ATS regex parsers are vulnerable to silent regressions during model swaps or dependency updates.
+* **Impact:** Every `push` and `pull_request` to `main` automatically runs the full 110-test suite on `ubuntu-latest` with LaTeX compilers pre-installed, ensuring 100% test passing and compilation safety before code merges.
+
+### 2. Continuous Background Disk Cleaner (`start_background_cleanup`)
+* **Why it's needed:** In continuous production environments, per-request output directories (`tempfile/resume_optimizer_output/<uuid>`) quietly accumulate PDFs, `.tex` source files, and temporary artifacts. Startup-only cleanups leave disks vulnerable to running out of space during weeks of continuous uptime.
+* **Impact:** A lightweight background daemon thread runs every 6 hours (configurable via `CLEANUP_INTERVAL_SECONDS`) to purge request directories older than the retention window (`OUTPUT_RETENTION_HOURS = 24`), completely eliminating storage leaks without blocking request handlers or needing external cron services.
+
+### 3. Pluggable Checkpoint Persistence (`_create_checkpointer`)
+* **Why it's needed:** The Human-in-the-Loop breakpoint parks between Step 1 (scan) and Step 2 (resume). In horizontal, multi-worker setups (e.g. Gunicorn/Uvicorn with multiple processes), Worker 1 might execute the scan, but Worker 2 receives the resume call. In-memory checkpoints fail across processes or during container restarts.
+* **Impact:** Supports pluggable SQLite persistence (`CHECKPOINTER_DB_PATH="checkpoints.sqlite"`) so session state survives server restarts and worker handoffs, while cleanly falling back to zero-config `MemorySaver()` for development and tests.
+
+### 4. Concurrency Guardrails & Isolation
+* **Why it's needed:** Multiple users optimizing resumes concurrently can exhaust API quotas or collide on file system writes.
+* **Impact:** 
+  - `demo.queue(max_size=5, default_concurrency_limit=1)` serializes LLM pipelines to protect against Groq rate limits.
+  - Per-request UUID isolation guarantees that LaTeX compiles in temporary directories never collide or leak between users.
+  - 3-tier model fallback (`PRIMARY_MODEL` $\rightarrow$ `FALLBACK_MODEL` $\rightarrow$ `EMERGENCY_MODEL`) protects against transient Groq provider outages.
+
 ### Next Steps (Roadmap)
  
 1. **Interactive Resume Diff & Comparison View**: Side-by-side viewer in Gradio highlighting added technical skills and rewritten bullet points, alongside before/after ATS score comparison.

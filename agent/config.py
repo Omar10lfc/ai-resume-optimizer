@@ -13,9 +13,10 @@ _PRIMARY_MODEL = os.environ.get("PRIMARY_MODEL", "openai/gpt-oss-120b")
 _FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "openai/gpt-oss-20b")
 _EMERGENCY_MODEL = os.environ.get("EMERGENCY_MODEL", "llama-3.1-8b-instant")
 
-# --- Output Directories ---
+# --- Output Directories & Persistence ---
 OUTPUT_ROOT = Path(tempfile.gettempdir()) / "resume_optimizer_output"
 OUTPUT_RETENTION_HOURS = 24
+CHECKPOINTER_DB_PATH = os.environ.get("CHECKPOINTER_DB_PATH", "").strip()
 
 # --- Input Limits (env-overridable) ---
 MAX_PDF_BYTES = int(os.environ.get("MAX_PDF_BYTES", 5 * 1024 * 1024))
@@ -66,6 +67,36 @@ def init_output_dirs():
     """
     OUTPUT_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     _cleanup_stale_request_dirs()
+
+
+def start_background_cleanup(
+    interval_seconds: int = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", 21600)),
+    max_age_hours: int = OUTPUT_RETENTION_HOURS,
+):
+    """Starts a daemon thread that periodically purges stale output directories.
+
+    Runs in the background every `interval_seconds` (default: 6 hours) to prevent
+    unbounded disk growth in continuous 24/7 production deployments.
+    """
+    import threading
+    import time
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    def _cleanup_worker():
+        while True:
+            time.sleep(interval_seconds)
+            try:
+                removed = _cleanup_stale_request_dirs(max_age_hours=max_age_hours)
+                if removed > 0:
+                    log.info(f"[Cleanup] Removed {removed} stale request directory/ies.")
+            except Exception as e:
+                log.warning(f"[Cleanup] Background cleanup failed: {e}")
+
+    thread = threading.Thread(target=_cleanup_worker, name="DiskCleanupDaemon", daemon=True)
+    thread.start()
+    return thread
 
 
 if not os.environ.get("GROQ_API_KEY"):

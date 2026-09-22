@@ -12,6 +12,7 @@ from .config import (
     MAX_JOB_CHARS, MAX_PDF_BYTES, ATS_SCORE_WEIGHT, LLM_SCORE_WEIGHT,
     OUTPUT_ROOT, FETCH_TIMEOUT_SECONDS, ALLOWED_JOB_URL_DOMAINS, MAX_FETCH_BYTES,
     _EMERGENCY_MODEL, _cleanup_stale_request_dirs, init_output_dirs,
+    start_background_cleanup, CHECKPOINTER_DB_PATH,
 )
 from .tracing import TRACE_CALLBACKS
 from .llms import llm_strict, llm_creative, llm_fast, _RETRYABLE_EXCEPTIONS
@@ -35,7 +36,7 @@ __all__ = [
     "SCORE_THRESHOLD", "MAX_ITERATIONS", "MAX_PDF_PAGES", "MAX_RESUME_CHARS",
     "MAX_JOB_CHARS", "MAX_PDF_BYTES", "ATS_SCORE_WEIGHT", "LLM_SCORE_WEIGHT",
     "OUTPUT_ROOT", "FETCH_TIMEOUT_SECONDS", "ALLOWED_JOB_URL_DOMAINS", "MAX_FETCH_BYTES",
-    "_EMERGENCY_MODEL", "init_output_dirs",
+    "_EMERGENCY_MODEL", "init_output_dirs", "start_background_cleanup", "CHECKPOINTER_DB_PATH",
     # Tracing
     "TRACE_CALLBACKS",
     # LLMs
