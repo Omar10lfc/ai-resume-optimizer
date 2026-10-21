@@ -43,6 +43,37 @@ def _strip_code_fences(text: str) -> str:
     return s
 
 
+# Bullet openers the resume-bullet-writer standard flags as passive/duty-only.
+_WEAK_BULLET_PHRASES = (
+    "responsible for", "helped with", "helped to", "assisted with", "assisted in",
+    "participated in", "worked on", "worked with", "duties included", "tasked with",
+    "in charge of", "involved in",
+)
+_WEAK_BULLET_RE = re.compile(
+    r"^[\s>]*(?:[-*\u2022\u2023\u25aa\u25cf]\s+)?(?:\*\*)?"
+    r"(?:" + "|".join(re.escape(p) for p in _WEAK_BULLET_PHRASES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _weak_bullet_samples(resume_text: str, max_samples: int = 8) -> list[str]:
+    """Returns resume lines that open with passive/duty-only phrases.
+
+    Encodes the resume-bullet-writer 'passive language' checklist so the
+    improver can target weak bullets concretely instead of guessing.
+    """
+    samples = []
+    for line in (resume_text or "").splitlines():
+        stripped = line.strip()
+        if len(stripped) < 12:
+            continue
+        if _WEAK_BULLET_RE.match(stripped):
+            samples.append(stripped[:120])
+            if len(samples) >= max_samples:
+                break
+    return samples
+
+
 # Explicit Unicode-to-ASCII mapping for clean PDF and LaTeX output
 _UNICODE_REPLACEMENTS = {
     # Status / indicator emojis

@@ -701,6 +701,50 @@ def test_create_checkpointer_default():
 
 
 # ==========================================
+# Weak bullet detection (skill-pack alignment)
+# ==========================================
+
+def test_weak_bullet_samples_detects_passive_openers():
+    resume = (
+        "- Responsible for managing a team of 10 analysts\n"
+        "• Helped with customer onboarding and training\n"
+        "* Duties included weekly reporting and cleanup\n"
+    )
+    found = agent._weak_bullet_samples(resume)
+    assert len(found) == 3
+    assert any("Responsible for" in f for f in found)
+    assert any("Helped with" in f for f in found)
+    assert any("Duties included" in f for f in found)
+
+
+def test_weak_bullet_samples_ignores_strong_bullets():
+    resume = (
+        "- Led a team of 10 analysts across 3 workstreams\n"
+        "- Reduced API latency by 60% (500ms to 200ms)\n"
+        "## Experience\n**Engineer** | Acme | 2024\n"
+        "- Automated deployment pipeline saving 10 hours weekly\n"
+    )
+    assert agent._weak_bullet_samples(resume) == []
+
+
+def test_weak_bullet_samples_case_insensitive_with_bold():
+    assert agent._weak_bullet_samples(
+        "- responsible for inventory upkeep processes") == ["- responsible for inventory upkeep processes"]
+    assert agent._weak_bullet_samples(
+        "**Responsible for the full SDLC process**") == ["**Responsible for the full SDLC process**"]
+
+
+def test_weak_bullet_samples_caps_results():
+    many = "\n".join(f"- Worked on subsystem {i} with plenty of detail text" for i in range(12))
+    assert len(agent._weak_bullet_samples(many, max_samples=8)) == 8
+
+
+def test_weak_bullet_samples_empty_inputs():
+    assert agent._weak_bullet_samples("") == []
+    assert agent._weak_bullet_samples(None) == []
+
+
+# ==========================================
 # Reviewer structured-output retry
 # ==========================================
 
