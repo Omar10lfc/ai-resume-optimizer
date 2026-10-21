@@ -262,7 +262,7 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 │       ├── ats_check.py      #     NODE 4 — ATS match + semantic verification + composite score
 │       ├── cover_letter.py   #     NODE 5 — Cover letter generation (LLM)
 │       ├── interview_prep.py #     NODE 6 — Interview question generation (LLM)
-│       └── pdf_exporter.py   #     NODE 8 — LaTeX resume export (PDF/DOCX) + Cover letter HTML→PDF
+│       └── pdf_exporter.py   #     NODE 7 — LaTeX resume export (PDF/DOCX) + Cover letter HTML→PDF
 ├── tests/
 │   ├── test_resume_agent.py  # 54 unit + integration tests (fake LLMs, no network)
 │   ├── test_latex_render.py  # 47 LaTeX engine tests (escaping, hyperlinks, 1-page fit, formatting)
@@ -325,9 +325,9 @@ This hardening pass was driven by a full code review plus analysis of exported L
 
 ### Testing
 
-The test suite contains **108 tests** across three test modules:
-- `tests/test_resume_agent.py` (54 tests): unit coverage for the stemmer, boundary/synonym/stem matching, keyword extraction dedup & boilerplate filtering, Unicode stripping, the hallucination filter, SSRF URL validation (mocked DNS), composite-score math, semantic verification reclassification, HTML sanitization, PDF export edge cases, `_job_brief` formatting, URL fetching with mocked HTTP, scanner failure propagation, versioned term extraction, and config env overrides — plus end-to-end graph execution with fake chat models (no network/API cost), interrupt/checkpointer session-flow tests, streaming generator arity/button-state regression tests, and a test that reviewer failure correctly skips the retry loop.
-- `tests/test_latex_render.py` (47 tests): LaTeX template rendering, Unicode-to-ASCII escaping, active hyperlinking for contact details and projects, special URL token sanitization (`#`, `%`, `&`), 4-column education mapping, adaptive project heading wrapping, side-by-side Experience headers, and single-page fit verification.
+The test suite contains **112 tests** across three test modules:
+- `tests/test_resume_agent.py` (57 tests): unit coverage for the stemmer, boundary/synonym/stem matching, keyword extraction dedup & boilerplate filtering, Unicode stripping, the hallucination filter, SSRF URL validation (mocked DNS), composite-score math, semantic verification reclassification, HTML sanitization, PDF export edge cases, `_job_brief` formatting, URL fetching with mocked HTTP, scanner failure propagation, versioned term extraction, and config env overrides — plus end-to-end graph execution with fake chat models (no network/API cost), interrupt/checkpointer session-flow tests, streaming generator arity/button-state regression tests, and a test that reviewer failure correctly skips the retry loop.
+- `tests/test_latex_render.py` (48 tests): LaTeX template rendering, Unicode-to-ASCII escaping, active hyperlinking for contact details and projects, special URL token sanitization (`#`, `%`, `&`), 4-column education mapping, adaptive project heading wrapping, side-by-side Experience headers, and single-page fit verification.
 - `tests/test_app_ui.py` (7 tests): UI streaming generator arity, button state transitions, and Gradio input/output component regression tests.
 
 Run with:
@@ -405,7 +405,7 @@ To ensure robust 24/7 cloud deployments (Hugging Face Spaces, Docker containers,
 
 ### 1. Automated CI/CD Testing (`.github/workflows/ci.yml`)
 * **Why it's needed:** Multi-agent workflows with PDF compiling and ATS regex parsers are vulnerable to silent regressions during model swaps or dependency updates.
-* **Impact:** Every `push` and `pull_request` to `main` automatically runs the full 110-test suite on `ubuntu-latest` with LaTeX compilers pre-installed, ensuring 100% test passing and compilation safety before code merges.
+* **Impact:** Every `push` and `pull_request` to `main` automatically runs the full 112-test suite on `ubuntu-latest` with LaTeX compilers pre-installed, ensuring 100% test passing and compilation safety before code merges.
 
 ### 2. Continuous Background Disk Cleaner (`start_background_cleanup`)
 * **Why it's needed:** In continuous production environments, per-request output directories (`tempfile/resume_optimizer_output/<uuid>`) quietly accumulate PDFs, `.tex` source files, and temporary artifacts. Startup-only cleanups leave disks vulnerable to running out of space during weeks of continuous uptime.
