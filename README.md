@@ -369,6 +369,13 @@ Seven professional skill definitions — kept locally in `draft/` (gitignored by
 
 **Alignment validation:** suite **131 → 136 tests** (all passing), live traced smoke run on the aligned prompts: **composite 72/100, ATS 64%, LLM quality 85** (iteration 1, no review failure, 13.3s), trace `trace-01a15f4b-cd3e` (22 runs) — inside the established 67–76 composite band; prompt growth is modest (≈+1.0 KB improver, +0.5 KB reviewer/interview input tokens per run), accepted for the behavioral gain.
 
+#### Partial revert — resume-rewriting pipeline restored to prior behavior (`30b2e23`)
+
+| Change | Why | Impact |
+|--------|-----|--------|
+| Reverted the scanner + improver skill-pack changes (git revert of `5359422`), at the user's request | Preference: keep the established resume-**rewriting** behavior instead of the draft-skill variant | Rewriting pipeline is byte-identical to the pre-alignment, live-validated state (76/100 and 67/100 trace runs); `_weak_bullet_samples()` helper and its 5 tests removed; suite **136 → 131** |
+| Kept the output-stage alignment (`546397a`): cover-letter hook/cliché rules, interview-prep STAR story bank + pitch + questions-to-ask, anchored reviewer rubric | These nodes do not rewrite the resume — they generate the letter, the prep pack, and the judging feedback | Cover letter, interview prep, and reviewer rubric remain skill-aligned; the reviewer's X-Y-Z-anchored feedback still reaches the improver as usual |
+
 ### UI Fixes
 
 | Change | Reason |
@@ -381,8 +388,8 @@ Seven professional skill definitions — kept locally in `draft/` (gitignored by
 
 ### Testing
 
-The test suite contains **136 tests** across four test modules:
-- `tests/test_resume_agent.py` (76 tests): unit coverage for the stemmer, boundary/synonym/stem matching, keyword extraction dedup & boilerplate filtering, Unicode stripping, the hallucination filter, weak-bullet detection, SSRF URL validation (mocked DNS), composite-score math, semantic verification reclassification, HTML sanitization, PDF export edge cases, `_job_brief` formatting, URL fetching with mocked HTTP, scanner failure propagation, versioned term extraction, and config env overrides — plus end-to-end graph execution with fake chat models (no network/API cost), interrupt/checkpointer session-flow tests, streaming generator arity/button-state regression tests, reviewer-failure and reviewer-retry behavior, DOCX resume ingestion (paragraphs, tables, magic bytes, size caps, and graph-level `.docx` runs), and the startup provider health check (auth/network/rate-limit/missing-model paths).
+The test suite contains **131 tests** across four test modules:
+- `tests/test_resume_agent.py` (71 tests): unit coverage for the stemmer, boundary/synonym/stem matching, keyword extraction dedup & boilerplate filtering, Unicode stripping, the hallucination filter, SSRF URL validation (mocked DNS), composite-score math, semantic verification reclassification, HTML sanitization, PDF export edge cases, `_job_brief` formatting, URL fetching with mocked HTTP, scanner failure propagation, versioned term extraction, and config env overrides — plus end-to-end graph execution with fake chat models (no network/API cost), interrupt/checkpointer session-flow tests, streaming generator arity/button-state regression tests, reviewer-failure and reviewer-retry behavior, DOCX resume ingestion (paragraphs, tables, magic bytes, size caps, and graph-level `.docx` runs), and the startup provider health check (auth/network/rate-limit/missing-model paths).
 - `tests/test_latex_render.py` (48 tests): LaTeX template rendering, Unicode-to-ASCII escaping, active hyperlinking for contact details and projects, special URL token sanitization (`#`, `%`, `&`), 4-column education mapping, adaptive project heading wrapping, side-by-side Experience headers, and single-page fit verification.
 - `tests/test_golden_ats.py` (5 tests): golden fixtures replaying the real incident JD (literal `\n` escapes) through the extraction engine — asserts escaped vs real newline extraction are identical, required skills survive, boilerplate never leaks, and a demonstrably-covering resume clears a weighted match floor.
 - `tests/test_app_ui.py` (7 tests): UI streaming generator arity, button state transitions, and Gradio input/output component regression tests.
@@ -462,7 +469,7 @@ To ensure robust 24/7 cloud deployments (Hugging Face Spaces, Docker containers,
 
 ### 1. Automated CI/CD Testing (`.github/workflows/ci.yml`)
 * **Why it's needed:** Multi-agent workflows with PDF compiling and ATS regex parsers are vulnerable to silent regressions during model swaps or dependency updates.
-* **Impact:** Every `push` and `pull_request` to `main` automatically runs the full 136-test suite on `ubuntu-latest` (Python **3.11 and 3.12** matrix) with LaTeX compilers pre-installed, gated by `pytest-cov` at a **84% coverage floor** (measured at 87% for `agent` + `app`) — extraction or pipeline regressions fail in CI before they ever reach traces.
+* **Impact:** Every `push` and `pull_request` to `main` automatically runs the full 131-test suite on `ubuntu-latest` (Python **3.11 and 3.12** matrix) with LaTeX compilers pre-installed, gated by `pytest-cov` at a **84% coverage floor** (measured at 87% for `agent` + `app`) — extraction or pipeline regressions fail in CI before they ever reach traces.
 
 ### 2. Continuous Background Disk Cleaner (`start_background_cleanup`)
 * **Why it's needed:** In continuous production environments, per-request output directories (`tempfile/resume_optimizer_output/<uuid>`) quietly accumulate PDFs, `.tex` source files, and temporary artifacts. Startup-only cleanups leave disks vulnerable to running out of space during weeks of continuous uptime.
