@@ -37,6 +37,7 @@ new-traces/
 .coverage
 htmlcov/
 tests_out/
+scratch/
 
 # Gradio artifacts
 flagged/
