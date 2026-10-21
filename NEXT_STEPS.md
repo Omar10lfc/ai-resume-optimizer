@@ -91,6 +91,10 @@ venv\Scripts\python.exe -m pytest tests -q --cov=agent --cov=app --cov-report=te
 # Live traced smoke run (one real pipeline run; exports trace to traces/)
 # script kept in %TEMP%\opencode\smoke_run_traced.py during the session
 
+# Bulk-export ALL LangSmith runs of the project + offline analysis
+venv\Scripts\python.exe scripts\export_langsmith_traces.py
+venv\Scripts\python.exe scripts\analyze_langsmith_traces.py
+
 # SQLite checkpointer persistence (two fresh processes)
 # scripts kept in %TEMP%\opencode\ckpt_put.py / ckpt_get.py
 ```

@@ -20,7 +20,7 @@ A sophisticated **Agentic AI Workflow** that optimizes resumes for specific job 
 | **Tailored Cover Letter** | Hook-driven professional prose (250-400 words) connecting the job's top requirement to real resume achievements with metrics — cliché openers ("I am writing to apply") and passive closings are banned; tables/bullets forbidden |
 | **Interview Prep** | 7 targeted interview questions based on your real resume gaps and the role, plus a STAR story bank built from your strongest bullets, a tailored "Tell me about yourself" pitch, and questions to ask the interviewer |
 | **PDF Export** | Generates a tailored Cover Letter (PDF) and exports the resume as **PDF + DOCX (.tex source)** via a bundled LaTeX template — with automatic HTML→PDF fallback |
-| **Full Observability** | [LangSmith](https://smith.langchain.com/) tracing for every LLM call, token usage, latency, and state transition — PII redacted before leaving the machine |
+| **Full Observability** | [LangSmith](https://smith.langchain.com/) tracing for every LLM call, token usage, latency, and state transition — PII redacted before leaving the machine **+ one-command bulk export (`scripts/export_langsmith_traces.py`) and offline analysis (`scripts/analyze_langsmith_traces.py`) of the complete project history — see "Saving & Analyzing All Traces"** |
 
 ## 🛠️ Tech Stack
 
@@ -273,11 +273,39 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 │       └── golden_ats.json   # Checked-in JD/resume pair + quality-floor invariants
 ├── requirements.txt          # Pinned runtime dependencies
 ├── requirements-dev.txt      # Test-only dependencies (pytest, coverage)
+├── scripts/
+│   ├── export_langsmith_traces.py  # Bulk-exports ALL project runs from LangSmith (v2 API) to local JSON
+│   └── analyze_langsmith_traces.py # Offline analysis over the export: latency, tokens, scores, errors
 ├── agent_diagram.png         # Architecture diagram
 ├── .env.example              # Template for all environment variables
 ├── .env                      # API keys (not committed)
 └── README.md                 # This file
 ```
+
+---
+
+## Saving & Analyzing All Traces
+
+All LLM traffic is traced to the `resume-optimizer` LangSmith project (PII-redacted at trace time), but that data lives server-side. Two scripts keep a complete local copy and turn it into reports:
+
+```bash
+# 1. Bulk-export EVERY run of the project (read-only API, no LLM spend):
+venv\Scripts\python.exe scripts\export_langsmith_traces.py
+
+# 2. Fully offline analysis over the newest export:
+venv\Scripts\python.exe scripts\analyze_langsmith_traces.py
+```
+
+Outputs land in `langsmith_export/` (gitignored, stays local): `runs-all-<timestamp>.jsonl` (one line per run, flat), `traces/trace-<short-id>-<date>-<root>.json` (one nested tree per pipeline run — same format as the session trace exports), `meta.json`, and `analysis_report-<timestamp>.md`.
+
+Key implementation points (why the script looks the way it does):
+- Uses the SmithDB-backed `client.runs.query()` API — the documented replacement for `list_runs()`, which is deprecated and removed after **Jan 31 2027**.
+- Resolves the project name to a UUID first (v2 takes `project_ids`), passes an explicit `min_start_time` (v2 otherwise silently scopes to the **last 24 h**), and walks history backwards in ≤400-day windows because a single query window caps at 401 days.
+- Requests explicit uppercase `selects` fields (v2 returns only `ID` by default) with progressive fallback sets for backend-version tolerance.
+- Token/cost fields in v2 are **per-run own usage** — the analyzer reconstructs per-trace totals by summing the LLM runs of each trace.
+- Downloaded payloads are re-redacted with the same `hide_inputs` function used at trace time before anything touches disk.
+
+Measured on the real project (Oct 21 2026): **871 runs / 73 traces / 159 LLM runs / 0 server-side errors** across 2026-08-02 → 2026-10-21; **361,380 LLM tokens** total (`gpt-oss-120b` 197,863 vs `gpt-oss-20b` 163,517); reviewer-score history min/median/max **54 / 81 / 90**; median p95 run latencies 1.3/6.3 s with `LangGraph` root p95 19.2 s.
 
 ---
 
@@ -375,6 +403,7 @@ Seven professional skill definitions — kept locally in `draft/` (gitignored by
 |--------|-----|--------|
 | Reverted the scanner + improver skill-pack changes (git revert of `5359422`), at the user's request | Preference: keep the established resume-**rewriting** behavior instead of the draft-skill variant | Rewriting pipeline is byte-identical to the pre-alignment, live-validated state (76/100 and 67/100 trace runs); `_weak_bullet_samples()` helper and its 5 tests removed; suite **136 → 131** |
 | Kept the output-stage alignment (`546397a`): cover-letter hook/cliché rules, interview-prep STAR story bank + pitch + questions-to-ask, anchored reviewer rubric | These nodes do not rewrite the resume — they generate the letter, the prep pack, and the judging feedback | Cover letter, interview prep, and reviewer rubric remain skill-aligned; the reviewer's X-Y-Z-anchored feedback still reaches the improver as usual |
+| **LangSmith bulk export + offline trace-analysis tooling** (`scripts/export_langsmith_traces.py`, `scripts/analyze_langsmith_traces.py`, gitignore `langsmith_export/`) (`2f18d8c`) | Complete project history lives server-side only; single-trace manual exports don't scale, and the `list_runs` API is deprecated (removed after Jan 31 2027) | One command exports **every run** via the SmithDB-backed `client.runs.query()` v2 API (name→UUID resolution, explicit `min_start_time` vs the 24h silent default, 401-day window walking, uppercase `selects`, per-run own-usage tokens), re-redacts payloads before writing, and produces `runs-all-*.jsonl` + one nested tree per trace; the offline analyzer emits a Markdown report (latency median/p95 per run name, per-model token totals reconstructed per trace, reviewer-score extraction, error catalog). **Measured on the real project: 871 runs / 73 traces / 159 LLM runs / 0 server-side errors spanning 2026-08-02 → 2026-10-21, 361,380 LLM tokens (120b: 197,863 / 20b: 163,517), reviewer scores min/median/max 54/81/90** |
 
 ### UI Fixes
 
