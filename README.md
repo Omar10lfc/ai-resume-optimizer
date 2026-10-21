@@ -8,7 +8,7 @@ A sophisticated **Agentic AI Workflow** that optimizes resumes for specific job 
 
 | Feature | Description |
 |---------|-------------|
-| **Universal Loader** | Ingests resumes from **PDFs** or **pasted text**, and Job Descriptions from **Web URLs** or raw text |
+| **Universal Loader** | Ingests resumes from **PDFs**, **DOCX (Word) files**, or **pasted text**, and Job Descriptions from **Web URLs** or raw text |
 | **Gap Analysis** | Identifies which skills (e.g., "SQL", "CI/CD") are missing from your profile |
 | **Human-in-the-Loop** | First-class LangGraph `interrupt_before` checkpoint — Step 1 parks at the scanner; Step 2 injects your edited notes and resumes via `update_state` |
 | **Streaming Progress** | Per-node status updates streamed to the UI via `agent_app.stream()` — you see "Scanning → Improving → Reviewing → ATS 88% → Writing cover letter…" live instead of a single static message |
@@ -29,7 +29,7 @@ A sophisticated **Agentic AI Workflow** that optimizes resumes for specific job 
 | **LLM** | `openai/gpt-oss-120b` via [Groq API](https://console.groq.com/) — with automatic fallback to `gpt-oss-20b` and `llama-3.1-8b` |
 | **Fast LLM** | `openai/gpt-oss-20b` — used for cover letter & interview prep (speed-optimized, latency reduced ~30-50%) |
 | **Interface** | [Gradio](https://gradio.app/) — Premium dark-themed web UI with glassmorphism, progress tracking & queue |
-| **Data Processing** | `PyPDF` (document parsing) + hardened `urllib` fetching (domain allowlist, public-IP check, bounded redirects & size) for URL scraping |
+| **Data Processing** | `PyPDF` + `python-docx` (document parsing) + hardened `urllib` fetching (domain allowlist, public-IP check, bounded redirects & size) for URL scraping |
 | **Validation** | Pydantic — Structured LLM output for reliable scoring |
 | **PDF/DOCX Engine** | Resume rendered via **LaTeX** (`pdflatex` → PDF, `pandoc` → DOCX) from a bundled Jake Gutierrez template; cover letter uses `xhtml2pdf` — graceful fallback to HTML→PDF when pdflatex is absent |
 | **Observability** | [LangSmith](https://smith.langchain.com/) — Full trace logging of every agent step |
@@ -44,11 +44,11 @@ Loader → Scanner → [interrupt: human review] → Improver ⇄ Reviewer → A
 
 | Node | Role | Behavior |
 |------|------|----------|
-| **Loader** | Ingestor | Extracts raw text from PDF files or Job URLs |
+| **Loader** | Ingestor | Extracts raw text from PDF or DOCX resume files and Job URLs |
 | **Scanner** | Analyst | Compares Job vs. Resume and outputs a list of "Missing Skills"; parks at LangGraph `interrupt_before` checkpoint for human review |
 | **Human Loop** | Manager | First-class LangGraph `interrupt_before` — Step 1 parks at the scanner checkpoint; Step 2 injects user-edited notes via `update_state` and resumes the graph |
 | **Improver** | Writer | Rephrases the resume using the user's notes. Prompt kept lean — the deterministic post-processing filter **guarantees** no fabricated credentials |
-| **Reviewer** | Judge | Acts as a Senior Hiring Manager judging **presentation quality only** (relevance, quantified achievements, formatting) — keyword coverage is measured deterministically by the ATS engine |
+| **Reviewer** | Judge | Acts as a Senior Hiring Manager judging **presentation quality only** (relevance, quantified achievements, formatting) — keyword coverage is measured deterministically by the ATS engine. Retries **once** on transient structured-output failures before flagging `review_failed` |
 | **ATS Check (gate)** | Validator + Router | Hardened keyword engine — synonym matching, stem-based fuzzy matching, weighted tier scoring. Also computes the **composite score** that decides whether to retry |
 | **Cover Letter** | Author | Uses the finalized resume and job text to write a cohesive prose cover letter (tables/bullets explicitly forbidden) |
 | **Interview Prep** | Coach | Generates targeted interview questions based on gaps and role requirements |
@@ -146,7 +146,7 @@ The app will open at `http://127.0.0.1:7860`. If LangSmith is configured, you'll
 ### 4. Use the App
 
 1. **Paste a Job Description** (text or URL)
-2. **Upload your Resume** (PDF or paste text)
+2. **Upload your Resume** (PDF or DOCX, or paste text)
 3. **Click Step 1** → Watch the live status as the scanner loads documents and runs gap analysis — review the detected skill gaps
 4. **Edit the gaps** — delete skills you don't have, add context for ones you do
 5. **Click Step 2** → Watch streaming progress (Loader → Improver → Reviewer → ATS → Cover Letter → Interview Prep → PDF Export) and get your optimized resume, cover letter, ATS analysis, and interview prep
@@ -248,26 +248,30 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 │   ├── state.py              #   AgentState, ReviewOutput, SemanticVerdict, SYSTEM_GUARDRAIL
 │   ├── helpers.py            #   safe_print, truncate, ASCII/PDF cleaning, hallucination filter
 │   ├── ats.py                #   Full ATS engine (keyword extraction, stemming, tiers, scoring, _job_brief)
-│   ├── url_fetch.py          #   URL validation, SSRF protection, document loading
+│   ├── url_fetch.py          #   URL validation, SSRF protection, document loading (PDF & DOCX)
 │   ├── latex_render.py       #   Markdown → LaTeX template → PDF (pdflatex) / DOCX (pandoc)
 │   ├── graphs.py             #   should_continue routing, full_app & agent_app graph definitions
 │   ├── templates/            #   Bundled LaTeX resume template
 │   │   └── resume_template.tex # Jake Gutierrez single-page template
 │   └── nodes/                #   Graph node implementations
 │       ├── __init__.py       #     Re-exports all node functions
-│       ├── loader.py         #     NODE 0 — PDF/URL document ingestion
+│       ├── loader.py         #     NODE 0 — PDF/DOCX resume + job-URL ingestion
 │       ├── scanner.py        #     NODE 1 — Gap analysis (LLM)
 │       ├── improver.py       #     NODE 2 — Resume rewriting (LLM)
-│       ├── reviewer.py       #     NODE 3 — Quality judgment (LLM structured output)
+│       ├── reviewer.py       #     NODE 3 — Quality judgment (LLM structured output, 1 retry on transient failure)
 │       ├── ats_check.py      #     NODE 4 — ATS match + semantic verification + composite score
 │       ├── cover_letter.py   #     NODE 5 — Cover letter generation (LLM)
 │       ├── interview_prep.py #     NODE 6 — Interview question generation (LLM)
 │       └── pdf_exporter.py   #     NODE 7 — LaTeX resume export (PDF/DOCX) + Cover letter HTML→PDF
 ├── tests/
-│   ├── test_resume_agent.py  # 54 unit + integration tests (fake LLMs, no network)
-│   ├── test_latex_render.py  # 47 LaTeX engine tests (escaping, hyperlinks, 1-page fit, formatting)
-│   └── test_app_ui.py        # 7 UI streaming/regression tests
-├── requirements.txt          # Pinned Python dependencies
+│   ├── test_resume_agent.py  # 71 unit + integration tests (fake LLMs, no network)
+│   ├── test_latex_render.py  # 48 LaTeX engine tests (escaping, hyperlinks, 1-page fit, formatting)
+│   ├── test_golden_ats.py    # 5 golden-fixture tests replaying the real incident JD
+│   ├── test_app_ui.py        # 7 UI streaming/regression tests
+│   └── fixtures/
+│       └── golden_ats.json   # Checked-in JD/resume pair + quality-floor invariants
+├── requirements.txt          # Pinned runtime dependencies
+├── requirements-dev.txt      # Test-only dependencies (pytest, coverage)
 ├── agent_diagram.png         # Architecture diagram
 ├── .env.example              # Template for all environment variables
 ├── .env                      # API keys (not committed)
@@ -313,6 +317,41 @@ This hardening pass was driven by a full code review plus analysis of exported L
 | **24-hour temp dir retention** — startup sweep deletes request directories older than 24 h; stale dirs created during interrupted runs don't accumulate | Uploaded resumes and generated PDFs in per-request UUID dirs no longer grow unboundedly |
 | **Optional Gradio basic auth** via `GRADIO_AUTH_USERNAME`/`GRADIO_AUTH_PASSWORD` env vars | Protects public HF Spaces deploys without extra configuration |
 
+### Session — Oct 21 2026 (maintenance, stack upgrade & Phase 2 hardening)
+
+Full working session: trace-evidenced fixes landed, the LangGraph stack was upgraded past a known version-skew trap, and the pipeline gained three reliability features plus regression-catching golden fixtures and a CI coverage gate. Every change below lists **what**, **why**, and **impact**, with the commit hash.
+
+#### Session maintenance (Phase 1)
+
+| Change | Why | Impact |
+|--------|-----|--------|
+| Committed the pending escape-normalization + LaTeX heading fixes (`540bc0b`) | Literal `\n` escape sequences reaching the ATS engine from paste-based job text made keyword extraction produce garbage tokens (`nsupport`, `ndesign`), collapsing the ATS match to 0; a Sep 20 partial-run trace documents it | Restores normal scoring for paste-sourced JDs; both text entry points (loader node + ATS engine) normalize literal `\r\n\t` escapes |
+| README test-count corrections (`539e618`) | README claimed 108 tests / "110-test suite"; the suite had drifted to 112 | Documentation matches reality; node numbering fixed (NODE 8 → 7) |
+| Added `langgraph-checkpoint-sqlite==3.0.3` (`3b00a56`) | `CHECKPOINTER_DB_PATH` SQLite persistence was advertised but the package was missing — the feature silently fell back to `MemorySaver` | Verified **cross-process persistence PASS**: a checkpoint written in one process is readable in a fresh one; multi-worker deployments get real crash-resilience |
+| Trace baselines re-captured | The escape-bug fix had never run end-to-end on live Groq in a captured trace | `traces/` now holds a **healthy baseline** (composite 76/100, ATS 72%, LLM 82, 22-run tree), a runner-up (67/60%/78) and a **reviewer-failure run** (score 41, `review_failed=True`) — PII-redacted, 32 redactions per trace, proving `hide_inputs` flows on live runs |
+| Tree hygiene (`3e6f114`) | Stale root `__pycache__` held bytecode for the deleted `resume_agent.py` monolith; `scratch/` risk of reappearing | ~70 KB dead bytecode removed; `scratch/` gitignored |
+
+#### LangGraph stack upgrade (`bd713a1`)
+
+| Change | Why | Impact |
+|--------|-----|--------|
+| `langgraph` 1.0.5 → **1.2.16**, `langgraph-checkpoint` 3.0.1 → **4.3.0**, `langgraph-checkpoint-sqlite` 3.0.3 → **3.1.2**, `langchain-core` 1.2.3 → **1.6.12**, `langchain-groq` 1.1.1 → **1.1.3**, `langsmith` 0.10.9 → **0.14.11** | The newest `langgraph-checkpoint-sqlite` requires checkpoint **4.x**, which `langgraph 1.0.5` rejects (`<4.0.0`) — a structural skew trap that any future dependency touch re-creates. The stack is now natively consistent | Validated before commit: `pip check` clean, 112 tests pass (28.9s), SQLite persistence PASS on checkpoint 4.3.0, live traced smoke run PASS (composite 72/100, ATS 68%, LLM 78, 12.8s — inside the pre-upgrade 67–76 band). Reverting is one `git revert` |
+| Removed unused `langchain` 1.2.0 meta-package from the venv | Left over from an old experiment; its `langgraph<1.1.0` pin became the only `pip check` conflict once the stack moved | Conflict eliminated; the project only imports `langchain-core`, `langchain-groq`, `langgraph`, `langsmith` directly |
+| README prerequisite `Python 3.9+` → `Python 3.10+` | `langgraph` 1.1+ dropped Python 3.9 | Install expectations accurate |
+
+#### Phase 2 hardening (`09b5aa1`, `30d74f9`)
+
+| Change | Why | Impact |
+|--------|-----|--------|
+| **Reviewer structured-output retry** (`agent/nodes/reviewer.py`) | Trace evidence from the Oct 21 session: the Reviewer's structured output folds transiently (~1 in 3 runs that day), setting `llm_quality_score` to None/0 and dropping healthy composites to the ATS-only floor (41 vs the 67–76 band) — the pipeline graded an objectively fine resume as 41 | One same-payload retry recovers these at negligible token cost; after a 2nd failure the existing `review_failed` grace path still applies — never more than one retry. Two dedicated tests: recovery, and give-up-after-2 (probe asserts exactly 2 LLM calls) |
+| **DOCX resume ingestion** (`agent/url_fetch.py`, `agent/nodes/loader.py`, `app.py`) | Resumes arrive as Word files as often as PDFs; rejecting them is pure friction | `.docx` accepted end-to-end (paragraphs + table rows via `python-docx`, 5 MB cap, `PK` magic-byte check, same `MAX_RESUME_CHARS` truncation); Gradio picker takes both formats. Four new tests incl. a full-graph `.docx` run with fake LLMs |
+| **Startup provider health check** (`agent/llms.py`, `app.py`) | A bad/missing `GROQ_API_KEY` previously failed confusingly deep inside Step 2, after upload + scan | At startup, one cheap `GET /models` call (zero generation tokens) prints an actionable verdict: missing key, `HTTP 401/403` rejected key, `429` valid-but-rate-limited, unreachable API, or a primary model absent from the account. Launch continues (opt out via `SKIP_STARTUP_HEALTHCHECK=1`); the key itself is never printed. Eight new tests cover every branch |
+| **Golden ATS fixtures** (`tests/fixtures/golden_ats.json`, `tests/test_golden_ats.py`) | The escaped-newline incident reached scores and traces before tests could catch it; future extraction changes need a tripwire | The real incident JD + a synthetic resume (no PII) replay through the engine: escaped-vs-real extraction **identical**, required skills survive (`langgraph`, `mcp`, `rag`, `ci/cd`…), boilerplate/verb garbage never leaks (`nsupport`, `implement`…), and the matcher holds a **30% weighted floor** with required skills counted as found. Five tests |
+| **pytest-cov coverage gate + Python 3.12 in CI** (`.github/workflows/ci.yml`, `requirements-dev.txt`) | Nothing asserted non-regression on coverage; CI only tested 3.11 | CI matrix now **3.11 + 3.12**; suite runs with `--cov-fail-under=84` (measured **87%** over `agent` + `app`; reviewer node 100%). Dev deps split into `requirements-dev.txt` so runtime installs stay lean |
+| **xhtml2pdf retained for cover-letter PDFs (documented decision)** | Migration to WeasyPrint/fpdf2 needs either native GTK/Cairo libs (bad Windows DX) or an HTML-subset rewrite — while the current path is pure-Python, already HTML-sanitized, and the cover letter is deliberately simple prose | No code change: cover-letter rendering stays xhtml2pdf behind the existing `_sanitize_html_for_pdf` pass. Revisit triggers: any sanitizer escape finding, CSS needs beyond headings/paragraphs/links, or a constraint on native deps |
+
+**Session validation summary:** suite **112 → 131 tests** (all passing; ~2 min local), coverage gate live at 84/87%, `pip check` clean, SQLite persistence cross-process PASS, live traced smoke run at composite 72/100 (band unchanged post-upgrade), reviewer retry verified on both recover and give-up paths, DOCX verified through the full graph. LangSmith SDK note: `list_runs()` deprecates after Jan 31 2027 (migrate export tooling to `client.runs.query()`).
+
 ### UI Fixes
 
 | Change | Reason |
@@ -325,9 +364,10 @@ This hardening pass was driven by a full code review plus analysis of exported L
 
 ### Testing
 
-The test suite contains **112 tests** across three test modules:
-- `tests/test_resume_agent.py` (57 tests): unit coverage for the stemmer, boundary/synonym/stem matching, keyword extraction dedup & boilerplate filtering, Unicode stripping, the hallucination filter, SSRF URL validation (mocked DNS), composite-score math, semantic verification reclassification, HTML sanitization, PDF export edge cases, `_job_brief` formatting, URL fetching with mocked HTTP, scanner failure propagation, versioned term extraction, and config env overrides — plus end-to-end graph execution with fake chat models (no network/API cost), interrupt/checkpointer session-flow tests, streaming generator arity/button-state regression tests, and a test that reviewer failure correctly skips the retry loop.
+The test suite contains **131 tests** across four test modules:
+- `tests/test_resume_agent.py` (71 tests): unit coverage for the stemmer, boundary/synonym/stem matching, keyword extraction dedup & boilerplate filtering, Unicode stripping, the hallucination filter, SSRF URL validation (mocked DNS), composite-score math, semantic verification reclassification, HTML sanitization, PDF export edge cases, `_job_brief` formatting, URL fetching with mocked HTTP, scanner failure propagation, versioned term extraction, and config env overrides — plus end-to-end graph execution with fake chat models (no network/API cost), interrupt/checkpointer session-flow tests, streaming generator arity/button-state regression tests, reviewer-failure and reviewer-retry behavior, DOCX resume ingestion (paragraphs, tables, magic bytes, size caps, and graph-level `.docx` runs), and the startup provider health check (auth/network/rate-limit/missing-model paths).
 - `tests/test_latex_render.py` (48 tests): LaTeX template rendering, Unicode-to-ASCII escaping, active hyperlinking for contact details and projects, special URL token sanitization (`#`, `%`, `&`), 4-column education mapping, adaptive project heading wrapping, side-by-side Experience headers, and single-page fit verification.
+- `tests/test_golden_ats.py` (5 tests): golden fixtures replaying the real incident JD (literal `\n` escapes) through the extraction engine — asserts escaped vs real newline extraction are identical, required skills survive, boilerplate never leaks, and a demonstrably-covering resume clears a weighted match floor.
 - `tests/test_app_ui.py` (7 tests): UI streaming generator arity, button state transitions, and Gradio input/output component regression tests.
 
 Run with:
@@ -405,7 +445,7 @@ To ensure robust 24/7 cloud deployments (Hugging Face Spaces, Docker containers,
 
 ### 1. Automated CI/CD Testing (`.github/workflows/ci.yml`)
 * **Why it's needed:** Multi-agent workflows with PDF compiling and ATS regex parsers are vulnerable to silent regressions during model swaps or dependency updates.
-* **Impact:** Every `push` and `pull_request` to `main` automatically runs the full 112-test suite on `ubuntu-latest` with LaTeX compilers pre-installed, ensuring 100% test passing and compilation safety before code merges.
+* **Impact:** Every `push` and `pull_request` to `main` automatically runs the full 131-test suite on `ubuntu-latest` (Python **3.11 and 3.12** matrix) with LaTeX compilers pre-installed, gated by `pytest-cov` at a **84% coverage floor** (measured at 87% for `agent` + `app`) — extraction or pipeline regressions fail in CI before they ever reach traces.
 
 ### 2. Continuous Background Disk Cleaner (`start_background_cleanup`)
 * **Why it's needed:** In continuous production environments, per-request output directories (`tempfile/resume_optimizer_output/<uuid>`) quietly accumulate PDFs, `.tex` source files, and temporary artifacts. Startup-only cleanups leave disks vulnerable to running out of space during weeks of continuous uptime.
