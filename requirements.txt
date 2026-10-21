@@ -1,4 +1,6 @@
 langgraph==1.0.5
+langgraph-checkpoint==3.0.1   # 4.x requires a newer langgraph than 1.0.5
+langgraph-checkpoint-sqlite==3.0.3   # SQLite persistence for CHECKPOINTER_DB_PATH
 langchain-core==1.2.3
 langsmith==0.10.9
 langchain-groq==1.1.1
