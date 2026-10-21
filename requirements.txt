@@ -1,9 +1,9 @@
-langgraph==1.0.5
-langgraph-checkpoint==3.0.1   # 4.x requires a newer langgraph than 1.0.5
-langgraph-checkpoint-sqlite==3.0.3   # SQLite persistence for CHECKPOINTER_DB_PATH
-langchain-core==1.2.3
-langsmith==0.10.9
-langchain-groq==1.1.1
+langgraph==1.2.16
+langgraph-checkpoint==4.3.0   # 4.x is the checkpoint line that pairs with langgraph 1.2.x
+langgraph-checkpoint-sqlite==3.1.2   # SQLite persistence for CHECKPOINTER_DB_PATH
+langchain-core==1.6.12
+langsmith==0.14.11
+langchain-groq==1.1.3
 pydantic==2.12.4
 gradio>=6.16.0
 pypdf==6.4.2

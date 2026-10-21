@@ -99,7 +99,7 @@ The ATS checker goes beyond naive exact matching:
 
 ### Prerequisites
 
-* Python 3.9+
+* Python 3.10+ (langgraph 1.1+ dropped Python 3.9)
 * [Groq API Key](https://console.groq.com/keys) (free tier available)
 * [LangSmith API Key](https://smith.langchain.com/) (optional, for tracing)
 
