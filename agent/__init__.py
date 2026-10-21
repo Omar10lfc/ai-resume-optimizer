@@ -20,6 +20,7 @@ from .nodes import (
     loader_node, scanner_node, improver_node, reviewer_node,
     ats_check_node, cover_letter_node, interview_prep_node, pdf_exporter_node,
 )
+from .nodes.reviewer import _salvage_review_output
 from .graphs import full_app, agent_app, should_continue
 
 __all__ = [
@@ -39,6 +40,8 @@ __all__ = [
     "_EMERGENCY_MODEL", "init_output_dirs", "start_background_cleanup", "CHECKPOINTER_DB_PATH",
     # Tracing
     "TRACE_CALLBACKS",
+    # Reviewer salvage
+    "_salvage_review_output",
     # LLMs
     "llm_strict", "llm_creative", "llm_fast", "_RETRYABLE_EXCEPTIONS",
     "check_provider_health", "_groq_models_status",

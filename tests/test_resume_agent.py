@@ -752,6 +752,129 @@ def test_reviewer_retry_gives_up_after_two_attempts(fake_llms, monkeypatch):
 
 
 # ==========================================
+# Reviewer failed_generation salvage
+# ==========================================
+
+# Verbatim prose shape recorded in the Oct 21 trace export (traces 01a15e3a /
+# 01a15f6d): unicode narrow no-break spaces and markdown emphasis around the
+# score, feedback after a bold marker. '\u2248' = ~, '\u202f' = narrow NBSP.
+_SALVAGE_GENERATION = (
+    "**Combined weighted quality score:** **\u2248\u202f80\u202f/\u202f100**\n\n"
+    "**Feedback:**\u202fHighlight any direct experience you have supporting or "
+    "integrating AI coding assistants (e.g., GitHub\u202fCopilot, Cursor, Claude Code) "
+    "and explicitly tie those projects to the tooling responsibilities."
+)
+
+
+def _tool_use_failed_exc(generation: str, *, with_body: bool = True):
+    """Mimics the Groq BadRequestError shape recorded in the trace export.
+
+    with_body=False reproduces a wrapped error whose str() keeps the repr
+    form only (unicode escaped as '\\u202f' literals), since real exceptions
+    carry body/response objects."""
+    err = {"message": "Tool choice is required, but model did not call a tool",
+           "type": "invalid_request_error", "code": "tool_use_failed",
+           "failed_generation": generation}
+    if with_body:
+        class _Exc(Exception):
+            pass
+
+        exc = _Exc(f"Error code: 400 - {{'error': {err!r}}}")
+        exc.body = {"error": err}
+        return exc
+    return Exception(f"Error code: 400 - {{'error': {err!r}}}")
+
+
+def test_salvage_parses_score_from_failed_generation(fake_llms, monkeypatch):
+    """Traces 01a15e3a/01a15f6d: on tool_use_failed the model's prose answer
+    (score + feedback) sits in body.error.failed_generation. The reviewer must
+    salvage it instead of flagging review_failed - and NOT spend a retry on
+    identical bytes (trace 01a15f6d: retry folded identically 3s apart)."""
+    probe = {"calls": 0}
+
+    class FoldedReviewer:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    probe["calls"] += 1
+                    raise _tool_use_failed_exc(_SALVAGE_GENERATION)
+
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", FoldedReviewer())
+    result = agent.full_app.invoke(_base_inputs())
+    assert result["review_failed"] is False
+    assert result["llm_quality_score"] == 80
+    assert "Copilot" in result["feedback"]
+    expected = round(agent.ATS_SCORE_WEIGHT * result["ats_percentage"]
+                     + agent.LLM_SCORE_WEIGHT * 80)
+    assert result["score"] == expected
+    assert probe["calls"] == 1  # salvage short-circuits the retry
+
+
+def test_salvage_skipped_when_generation_unparseable(fake_llms, monkeypatch):
+    """A tool_use_failed payload WITHOUT an extractable score stays on the
+    regular path: one same-payload retry, then review_failed."""
+    probe = {"calls": 0}
+
+    class FoldedReviewer:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    probe["calls"] += 1
+                    raise _tool_use_failed_exc("I could not grade this resume.")
+
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", FoldedReviewer())
+    result = agent.full_app.invoke(_base_inputs())
+    assert result["review_failed"] is True
+    assert probe["calls"] == 2
+    assert result["llm_quality_score"] == 0
+
+
+def test_salvage_handles_payload_variants():
+    salvage = agent._salvage_review_output
+
+    # Subscore lines present: the combined/weighted line must win, not line 1
+    combined = _tool_use_failed_exc(
+        "Relevance & Tailoring: 70/100\nQuantified Achievements: 90/100\n"
+        "Combined weighted quality score: 82/100\n\nFeedback: tighten bullets.")
+    assert salvage(combined).score == 82
+    assert salvage(combined).feedback == "tighten bullets."
+
+    plain = _tool_use_failed_exc("Quality score: 87/100. Feedback: measure impact.")
+    assert salvage(plain).score == 87
+    assert salvage(plain).feedback == "measure impact."
+
+    labelled = _tool_use_failed_exc("Score: 87\nFeedback: strong summary.")
+    assert salvage(labelled).score == 87
+
+    clamped = _tool_use_failed_exc("Combined weighted quality score: ~130/100")
+    assert salvage(clamped).score == 100
+
+    decimal = _tool_use_failed_exc("Quality score: 98.4/100. Feedback: ok.")
+    assert salvage(decimal).score == 98
+
+    from agent.nodes.reviewer import _SALVAGE_DEFAULT_FEEDBACK
+    silent = _tool_use_failed_exc("Combined weighted quality score: 76/100")
+    assert salvage(silent).feedback == _SALVAGE_DEFAULT_FEEDBACK
+
+    assert salvage(_tool_use_failed_exc("Sorry, I cannot grade without context.")) is None
+    assert salvage(RuntimeError("connection reset")) is None
+
+
+def test_salvage_reads_wrapped_repr_errors():
+    """When the exception has no .body/.response, the repr string in str(exc)
+    is parsed (restoring escaped unicode like the trace export format)."""
+    wrapped = _tool_use_failed_exc(_SALVAGE_GENERATION, with_body=False)
+    assert getattr(wrapped, "body", None) is None
+    salvaged = agent._salvage_review_output(wrapped)
+    assert salvaged.score == 80
+    assert "Copilot" in salvaged.feedback
+
+
+# ==========================================
 # DOCX resume ingestion
 # ==========================================
 
