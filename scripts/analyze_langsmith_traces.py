@@ -92,7 +92,7 @@ def analyze(runs: list[dict]) -> str:
 
     starts = [t for r in runs if (t := _parse_ts(r.get("start_time")))]
     span = (max(starts) - min(starts)) if starts else None
-    error_runs = [r for r in runs if r.get("status") == "ERROR"]
+    error_runs = [r for r in runs if (r.get("status") or "").lower() == "ERROR".lower()]
     llm_runs = [r for r in runs if r.get("run_type") == "LLM"]
     tokens_total = sum(r.get("total_tokens") or 0 for r in llm_runs)
     prompt_total = sum(r.get("prompt_tokens") or 0 for r in llm_runs)
@@ -160,7 +160,7 @@ def analyze(runs: list[dict]) -> str:
         group_llm = [r for r in group if r.get("run_type") == "LLM"]
         tokens = sum(r.get("total_tokens") or 0 for r in group_llm)
         scores = [s for r in group if (s := _score_from_outputs(r)) is not None]
-        group_errors = [r for r in group if r.get("status") == "ERROR"]
+        group_errors = [r for r in group if (r.get("status") or "").lower() == "error"]
         root = [r for r in group if not r.get("parent_run_ids")]
         own_name = (root[0].get("name") or "-") if root else (first.get("name") or "-")
         trace_rows.append((first.get("start_time") or "", tid, own_name, len(group),

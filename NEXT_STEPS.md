@@ -79,6 +79,24 @@ Pin the Space's `gradio` version to match, ensure 7860 binding default, `.gitatt
 2. **Top-20 frequency bias** — on the incident JD, `python`/`git`/`llm` lost the top-20 cut to generic words (`workflows`, `ai`); smoke preflight flagged it. Not a defect; a ranking-quality observation for the ATS extractor.
 3. **Ubuntu vs Windows coverage drift** — the 84% gate has headroom (measured 87% on Windows); if CI (Linux) trends near the gate, consider measuring coverage locally with the same flags before raising/flooring it.
 
+## Production-readiness checklist (from full-history trace data, Oct 22)
+
+Evidence base: 871 runs / 73 traces (2026-08-02 → 2026-10-21), 159 LLM runs, 12.4K avg tokens per full trace, 9 errored child runs (2 traces), 0 feedback records.
+
+**Proven by traces (keep as-is):** zero hard crashes in 10 weeks (retry + grace paths absorb every observed failure); no runaway refinement loops (improver count == reviewer count == 43, cycle cap holds); stable token envelope per full run (10.4–14.1K); deterministic LLM-independence of quality guards (ATS engine, hallucination filter, score math); latest-10 reviewer scores 78–85.
+
+**Gaps to close before multi-user production:**
+
+| # | Gap | Trace evidence | Action |
+|---|-----|----------------|--------|
+| 1 | Structured-output retry is unproven for its target failure | Trace `01a15f6d` (Oct 21 17:06): same-payload retry folded identically 3s apart | Treat refusal as content-shaped: on 2nd failure, retry once more with the plain-text path (parse `failed_generation`) or a different model/prompt variant instead of identical bytes |
+| 2 | No monitoring signal | 0 LangSmith feedback records in the whole project | Write composite score + `review_failed` to the trace root via `client.create_feedback()`; alert on rolling median < 78 or any review_failed |
+| 3 | Load/concurrency unproven | All 73 traces are single-user sessions; the fallback chain (429s) never engaged | Soak test: 3–5 concurrent sessions ≈ 30 min; confirm per-request UUID output dirs and SQLite checkpointer behave |
+| 4 | PII policy stops at emails/phones in inputs | Names survive redaction and appear in outputs (letters) | Extend `_redact_pii` with a name-masking pass before export, or accept local-only traces + retention policy |
+| 5 | New features have zero traced runs | DOCX path, startup health check, coverage of `failed_generation` salvage: no occurrences in export | One traced smoke run per new path when shipped (playbook item) |
+| 6 | Trace history not backed up on a schedule | Exports are manual; free-tier retention applies | Weekly `export_langsmith_traces.py` via Task Scheduler/CI; local JSONL is the durable archive |
+
+
 ## Verification playbook
 
 ```bash
