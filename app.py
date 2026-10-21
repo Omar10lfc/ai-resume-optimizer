@@ -2,6 +2,7 @@ import os
 import gradio as gr
 from uuid import uuid4
 from agent import agent_app, TRACE_CALLBACKS
+from agent.tracing import log_pipeline_feedback
 from agent.config import init_output_dirs, start_background_cleanup
 
 # Redacted-tracing callbacks go with every invoke (empty list = tracing off)
@@ -20,9 +21,17 @@ NODE_STATUS = {
 }
 
 
-def _thread_config(thread_id: str) -> dict:
+def _thread_config(thread_id: str, run_id: str | None = None) -> dict:
+    """RunnableConfig for one graph segment.
+
+    run_id (optional) pins the ROOT run id of the segment's trace: LangGraph
+    reads config['run_id'] for the root run, so pipeline feedback records can
+    target a known trace root instead of scraping the tracer's run tree.
+    """
     cfg = dict(_INVOKE_CONFIG_BASE)
     cfg["configurable"] = {"thread_id": thread_id}
+    if run_id:
+        cfg["run_id"] = run_id
     return cfg
 
 # ============================================================
@@ -439,9 +448,13 @@ def step2_optimize(job_input, resume_file, resume_text, user_notes, session):
             "missing_skills": user_notes or "",
         })
 
-        # Resume: improver ⇄ reviewer → ats_check → fan-out → pdf_exporter
+        # Resume: improver ⇄ reviewer → ats_check → fan-out → pdf_exporter.
+        # A pinned root run id lets the post-run feedback records attach to
+        # the exact LangSmith trace (threshold/root of THIS segment).
+        resume_run_id = str(uuid4())
         final_state = {}
-        for update in agent_app.stream(None, config=config, stream_mode="updates"):
+        for update in agent_app.stream(None, config=_thread_config(session, resume_run_id),
+                                       stream_mode="updates"):
             for node, delta in update.items():
                 if node and delta:
                     final_state.update(delta)
@@ -487,6 +500,12 @@ def step2_optimize(job_input, resume_file, resume_text, user_notes, session):
         resume_tex = None
 
     ats_pct = final_state.get('ats_percentage', 0)
+
+    # Score + failure feedback on the pinned trace root. Degraded runs become
+    # queryable on the LangSmith dashboard (composite_score low / review_failed
+    # = 1) even though no run inside the trace ever carried error status.
+    log_pipeline_feedback(final_state, resume_run_id)
+
     gr.Info(f"Optimization complete! Final score: {score_val}/100")
 
     status = (f"Done — composite score **{score_val}/100** "

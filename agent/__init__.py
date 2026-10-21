@@ -14,7 +14,7 @@ from .config import (
     _EMERGENCY_MODEL, _cleanup_stale_request_dirs, init_output_dirs,
     start_background_cleanup, CHECKPOINTER_DB_PATH,
 )
-from .tracing import TRACE_CALLBACKS
+from .tracing import TRACE_CALLBACKS, log_feedback, log_pipeline_feedback
 from .llms import llm_strict, llm_creative, llm_fast, _RETRYABLE_EXCEPTIONS, check_provider_health, _groq_models_status
 from .nodes import (
     loader_node, scanner_node, improver_node, reviewer_node,
@@ -39,7 +39,7 @@ __all__ = [
     "OUTPUT_ROOT", "FETCH_TIMEOUT_SECONDS", "ALLOWED_JOB_URL_DOMAINS", "MAX_FETCH_BYTES",
     "_EMERGENCY_MODEL", "init_output_dirs", "start_background_cleanup", "CHECKPOINTER_DB_PATH",
     # Tracing
-    "TRACE_CALLBACKS",
+    "TRACE_CALLBACKS", "log_feedback", "log_pipeline_feedback",
     # Reviewer salvage
     "_salvage_review_output",
     # LLMs

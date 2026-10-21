@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import agent  # noqa: E402
 import agent.config  # noqa: E402
 import agent.llms  # noqa: E402
+import agent.tracing  # noqa: E402
 import agent.url_fetch  # noqa: E402
 from langchain_core.messages import AIMessage  # noqa: E402
 
@@ -872,6 +873,75 @@ def test_salvage_reads_wrapped_repr_errors():
     salvaged = agent._salvage_review_output(wrapped)
     assert salvaged.score == 80
     assert "Copilot" in salvaged.feedback
+
+
+# ==========================================
+# LangSmith feedback logging
+# ==========================================
+
+class _FakeFeedbackClient:
+    def __init__(self):
+        self.calls = []
+
+    def create_feedback(self, run_id, **kwargs):
+        self.calls.append((run_id, kwargs))
+
+
+def test_log_feedback_noops_when_tracing_disabled(monkeypatch):
+    monkeypatch.setattr(agent.tracing, "_CLIENT", None)
+    assert agent.log_feedback("run-1", "composite_score", score=90) is False
+
+
+def test_log_feedback_forwards_to_client_and_swallows_errors(monkeypatch, capsys):
+    fake = _FakeFeedbackClient()
+    monkeypatch.setattr(agent.tracing, "_CLIENT", fake)
+    assert agent.log_feedback("run-x", "composite_score", score=67.0) is True
+    assert agent.log_feedback("run-x", "review_failed", value=1) is True
+    assert fake.calls[0] == ("run-x", {"key": "composite_score", "score": 67.0,
+                                       "value": None, "comment": None})
+    assert fake.calls[1][1] == {"key": "review_failed", "score": None,
+                                "value": 1, "comment": None}
+
+    class BrokenClient:
+        def create_feedback(self, *args, **kwargs):
+            raise RuntimeError("langsmith down")
+
+    monkeypatch.setattr(agent.tracing, "_CLIENT", BrokenClient())
+    assert agent.log_feedback("run-x", "composite_score", score=10) is False
+    assert "feedback" in capsys.readouterr().out  # graceful warning, no raise
+
+
+def test_log_pipeline_feedback_records_score_and_failure_flag(monkeypatch):
+    fake = _FakeFeedbackClient()
+    monkeypatch.setattr(agent.tracing, "_CLIENT", fake)
+    assert agent.log_pipeline_feedback(
+        {"score": 41, "ats_percentage": 12.3, "llm_quality_score": 0,
+         "review_failed": True}, "run-42") is True
+    records = [(c[1]["key"], c[1]["score"], c[1]["value"], c[1]["comment"])
+               for c in fake.calls]
+    assert ("composite_score", 41.0, None, None) in records
+    failed = [r for r in records if r[0] == "review_failed"][0]
+    assert failed[2] == 1
+    assert "ATS-only" in failed[3]
+
+    healthy_client = _FakeFeedbackClient()
+    monkeypatch.setattr(agent.tracing, "_CLIENT", healthy_client)
+    agent.log_pipeline_feedback(
+        {"score": 82, "ats_percentage": 74.0, "llm_quality_score": 88,
+         "review_failed": False}, "run-43")
+    healthy = [c for c in healthy_client.calls if c[1]["key"] == "review_failed"][0]
+    assert healthy[1]["value"] == 0
+    assert healthy[1]["comment"] is None
+
+
+def test_log_pipeline_feedback_guardrails_without_client_or_run_id(monkeypatch):
+    assert agent.log_pipeline_feedback(None, "run-9") is False
+
+    monkeypatch.setattr(agent.tracing, "_CLIENT", _FakeFeedbackClient())
+    assert agent.log_pipeline_feedback({"score": 41}, None) is False
+
+    monkeypatch.setattr(agent.tracing, "_CLIENT", None)
+    assert agent.log_pipeline_feedback({"score": 41}, "run-9") is False
 
 
 # ==========================================
