@@ -291,6 +291,8 @@ def _suggest_section(keyword: str) -> str:
 # ==========================================
 
 def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
+    # Normalize literal \r, \n, \t escapes if text is passed with raw escape sequences
+    text = text.replace('\\r', ' ').replace('\\n', ' ').replace('\\t', ' ')
     text_lower = text.lower()
     company_names = _extract_company_names(text)
 
@@ -357,7 +359,7 @@ def compute_ats_match(job_text: str, resume_text: str,
                       semantic_matches: set[str] | None = None) -> dict:
     semantic_matches = semantic_matches or set()
     job_keywords = _extract_keywords(job_text, top_n=20)
-    resume_lower = resume_text.lower()
+    resume_lower = resume_text.replace('\\r', ' ').replace('\\n', ' ').replace('\\t', ' ').lower()
 
     matched_stems = set()
     for kw in job_keywords:

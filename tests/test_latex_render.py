@@ -683,3 +683,28 @@ McKinsey Forward Program (Dec 2024)
     assert "McKinsey Forward Program" in page_text
 
 
+def test_bold_label_lines_with_nested_bold_not_parsed_as_sections():
+    """Verify that skill lines with multiple bold phrases (like '**Category**: text **Note**')
+    are never misidentified as section headings."""
+    sample = """# Jane Doe
+test@example.com | 123-456-7890
+
+## Technical Skills
+**Machine Learning & Deep Learning**: Python, PyTorch, Scikit-learn
+**LLM & Generative AI**: RAG, Multi-Agent Systems, **Conceptual Knowledge of LangGraph**
+**Cloud & MLOps**: AWS, Docker, **Hands-on CI/CD pipeline automation**
+**Languages**: Arabic (Native), English (Fluent)
+
+## Experience
+**Software Engineer** | Tech Corp | 2023 - Present
+- Built scalable data pipelines
+"""
+    data = parse_markdown_resume(sample)
+    section_titles = [s.title for s in data.sections]
+    assert section_titles == ["Technical Skills", "Experience"]
+    skills_sec = data.sections[0]
+    assert len(skills_sec.simple_lines) == 4
+    assert any("LLM & Generative AI" in ln for ln in skills_sec.simple_lines)
+    assert any("Cloud & MLOps" in ln for ln in skills_sec.simple_lines)
+
+

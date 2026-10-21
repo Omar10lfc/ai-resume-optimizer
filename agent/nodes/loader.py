@@ -8,6 +8,12 @@ from ..helpers import _safe_print, _safe_truncate
 from ..url_fetch import _fetch_job_description, _load_resume_pdf
 
 
+def _normalize_raw_text(text: str) -> str:
+    if not text:
+        return ""
+    return text.replace('\\r\\n', '\n').replace('\\n', '\n').replace('\\t', '\t')
+
+
 def loader_node(state: AgentState):
     _safe_print(f"\n--- NODE 0: LOADING DATA ---")
 
@@ -31,6 +37,9 @@ def loader_node(state: AgentState):
             raise ValueError(f"Could not load resume PDF: {e}") from e
     else:
         resume_content = _safe_truncate(resume_source, MAX_RESUME_CHARS, "Resume")
+
+    job_content = _normalize_raw_text(job_content)
+    resume_content = _normalize_raw_text(resume_content)
 
     return {
         "job_text": job_content,

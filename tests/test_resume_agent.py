@@ -125,6 +125,24 @@ def test_action_verbs_never_keywords():
         assert verb not in kws
 
 
+def test_extract_keywords_normalizes_literal_escaped_newlines():
+    jd = ("Your responsibilities\\nSupport engineering teams.\\n"
+          "Design Agentic AI workflows using LangGraph.\\n"
+          "Contribute to RAG pipelines.\\nWork on MCP integrations.\\n"
+          "Configure IDEs and engineering tools.")
+    kws = agent._extract_keywords(jd, top_n=20)
+    # Action verbs with literal \n should NOT become nsupport, ndesign, ncontribute, nwork, nconfigure
+    assert "nsupport" not in kws
+    assert "ndesign" not in kws
+    assert "ncontribute" not in kws
+    assert "nwork" not in kws
+    assert "nconfigure" not in kws
+    # Real keywords should be present
+    assert "langgraph" in kws
+    assert "rag" in kws
+    assert "mcp" in kws
+
+
 def test_hyphenated_fragments_suppressed():
     jd = "Contribute to LLM-based applications and AI-native tooling. Use front-end frameworks."
     kws = agent._extract_keywords(jd, top_n=20)

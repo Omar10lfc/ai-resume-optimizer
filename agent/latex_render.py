@@ -105,8 +105,8 @@ class ResumeData:
 # Note: a single '#' (H1) at the top of the resume is conventionally the name,
 # handled separately by _extract_contact. Section headings are H2+.
 _HEADING_RE = re.compile(r'^\s{0,3}#{2,6}\s+(.*?)\s*$')
-_BOLD_HEADING_RE = re.compile(r'^\s{0,3}\*\*(.+?)\*\*\s*$')
-_SECTION_LABEL_LINE_RE = re.compile(r'^\s{0,3}[A-Za-z][A-Za-z &/-]{2,40}:\s*(.*)$')
+_BOLD_HEADING_RE = re.compile(r'^\s{0,3}\*\*([^*\n]+?)\*\*\s*$')
+_SECTION_LABEL_LINE_RE = re.compile(r'^\s{0,3}([A-Za-z][A-Za-z &/-]{2,40}):\s*$')
 _BULLET_RE = re.compile(r'^\s*[-*+•]\s+(.*)$')
 
 # Markdown horizontal rule / decorative divider (e.g. `---`, `***`, `___`).
@@ -193,16 +193,31 @@ def _looks_like_paragraph(s: str) -> bool:
 
 def _is_section_heading(line: str) -> Optional[str]:
     """Return the normalized section title if line looks like a heading, else None."""
+    # A bold-label leaf ("**Label**: value") or plain label ("Label: value") is
+    # a list item (e.g. under Technical Skills), never a section heading.
+    if _BOLD_LABEL_RE.match(line) or _is_plain_label_line(line):
+        return None
+
     m = _HEADING_RE.match(line)
     if m:
         return m.group(1).strip()
+
     m = _BOLD_HEADING_RE.match(line)
     if m:
-        return m.group(1).strip()
-    # "Experience:", "Technical Skills:", "Education:" etc.
+        cand = m.group(1).strip()
+        # A bold heading must be a concise title (not a paragraph or label:value line)
+        if len(cand) <= 45 and ':' not in cand and len(cand.split()) <= 6:
+            return cand
+        if len(cand) <= 45 and cand.endswith(':') and len(cand.split()) <= 6:
+            return cand.rstrip(':').strip()
+
+    # "Experience:", "Technical Skills:", "Education:" on a line by itself
     m = _SECTION_LABEL_LINE_RE.match(line)
-    if m and len(m.group(1).strip()) <= 45:
-        return m.group(1).strip().rstrip(':').strip()
+    if m:
+        label = m.group(1).strip()
+        if _is_known_section_title(label):
+            return label
+
     return None
 
 
