@@ -1,6 +1,6 @@
 # Next Steps — Job Application Optimizer
 
-Last updated: **Oct 21 2026** · Snapshot: 131 tests passing (~27s) · coverage 87% (CI gate 84%) · `pip check` clean · langgraph stack 1.2.16 · working tree clean
+Last updated: **Oct 21 2026** · Snapshot: 136 tests passing (~1:06) · coverage 87% (CI gate 84%) · `pip check` clean · langgraph stack 1.2.16 · working tree clean
 
 This is the living roadmap. The public, permanent record of *what was done and why* lives in [README.md](README.md) ("Changelog & Design Decisions" → "Session — Oct 21 2026"); this file tracks **what's next** and the current state. Legend: ✅ done this cycle · 🔲 planned · 🔶 optional.
 
@@ -28,6 +28,10 @@ This is the living roadmap. The public, permanent record of *what was done and w
 | 10 | Startup provider health check | One `GET /models` call (zero generation tokens) with actionable verifications (missing/placeholder key, 401/403, 429, unreachable, primary-model-not-available); `SKIP_STARTUP_HEALTHCHECK=1` opt-out; 8 branch tests | `30d74f9` |
 
 **(Bonus):** langgraph stack upgraded **1.0.5 → 1.2.16** (checkpoint 4.x pairing, closes the version-skew trap; `pip check` clean, persistence + live smoke revalidated, band unchanged 67–76) — `bd713a1`.
+
+## Skill-pack behavior alignment ✅ (Oct 21, part 2)
+
+The seven professional skill definitions kept locally in `draft/` (gitignored) were mined for behavioral principles and encoded across the agent — details and per-node mapping live in README changelog → "Prompt-behavior alignment with the skill pack" (`5359422`, `546397a`). Summary: scanner gaps are ranked and must/nice-tagged with hard-skill priority; the improver applies the tailoring philosophy, exact-role summaries, relevant-first skill ordering, and X-Y-Z bullets with a deterministic weak-bullet detector feeding rewrite targets; the cover letter uses hook openings + call-to-action closings with banned clichés; interview prep adds a STAR story bank, pitch, and questions-to-ask; the reviewer rubric is anchored to those standards (first aligned live run: LLM quality 85 vs 82, composite 72/100 — band holds). Suite **131 → 136 tests**.
 
 ---
 

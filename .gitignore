@@ -51,6 +51,7 @@ skills-lock.json
 IMPLEMENTATION_PLAN.md
 make_diagram.py
 session-*.md
+draft/*
 
 # LaTeX temporary / build artifacts
 *.aux
