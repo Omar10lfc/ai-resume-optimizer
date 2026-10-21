@@ -89,12 +89,14 @@ Evidence base: 871 runs / 73 traces (2026-08-02 → 2026-10-21), 159 LLM runs, 1
 
 | # | Gap | Trace evidence | Action |
 |---|-----|----------------|--------|
-| 1 | Structured-output retry is unproven for its target failure | Trace `01a15f6d` (Oct 21 17:06): same-payload retry folded identically 3s apart | Treat refusal as content-shaped: on 2nd failure, retry once more with the plain-text path (parse `failed_generation`) or a different model/prompt variant instead of identical bytes |
-| 2 | No monitoring signal | 0 LangSmith feedback records in the whole project | Write composite score + `review_failed` to the trace root via `client.create_feedback()`; alert on rolling median < 78 or any review_failed |
+| 1 ✅ | Structured-output retry is unproven for its target failure | Trace `01a15f6d` (Oct 21 17:06): same-payload retry folded identically 3s apart | **DONE `27260ee`** — `_salvage_review_output()` parses the model's prose answer (`failed_generation`) instead of retrying identical bytes: markdown/unicode-space normalization, `≈ 80 / 100`-style extraction with combined-weighted line preference, 0–100 clamp, `body → response → repr` fallback chain. Salvage short-circuits the retry; unparseable failures keep the 1-retry + `review_failed` grace path (tested) |
+| 2 ✅ | No monitoring signal | 0 LangSmith feedback records in the whole project | **DONE `1025ff2`** — `log_pipeline_feedback()` emits `composite_score` (0–100) + `review_failed` (0/1, ATS-only comment) to the pinned trace root on every completed Step-2 run (LangGraph reads `config['run_id']`). Dashboard alert rule: filter `composite_score < 78` or `review_failed = 1`; salvage now reports a real LLM score instead of the ATS-only floor |
 | 3 | Load/concurrency unproven | All 73 traces are single-user sessions; the fallback chain (429s) never engaged | Soak test: 3–5 concurrent sessions ≈ 30 min; confirm per-request UUID output dirs and SQLite checkpointer behave |
 | 4 | PII policy stops at emails/phones in inputs | Names survive redaction and appear in outputs (letters) | Extend `_redact_pii` with a name-masking pass before export, or accept local-only traces + retention policy |
-| 5 | New features have zero traced runs | DOCX path, startup health check, coverage of `failed_generation` salvage: no occurrences in export | One traced smoke run per new path when shipped (playbook item) |
+| 5 | New features have zero traced runs | DOCX path, startup health check, coverage of `failed_generation` salvage: no occurrences in export | One traced smoke run per new path when shipped (playbook item) — next export should show a salvaged-review trace with real feedback records |
 | 6 | Trace history not backed up on a schedule | Exports are manual; free-tier retention applies | Weekly `export_langsmith_traces.py` via Task Scheduler/CI; local JSONL is the durable archive |
+
+**Alerting in the LangSmith dashboard:** filter feedback `key = composite_score` / `key = review_failed` on project *resume-optimizer*. `review_failed = 1` - or the absence of a `composite_score` record (pipeline crashed before completion) - marks a run for review.
 
 
 ## Verification playbook
