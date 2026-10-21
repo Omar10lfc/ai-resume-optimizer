@@ -546,10 +546,10 @@ with gr.Blocks(title="AI Resume Optimizer Agent") as demo:
 
             gr.Markdown("**Resume** — choose one method:")
             with gr.Tabs():
-                with gr.Tab("📎 Upload PDF"):
+                with gr.Tab("📎 Upload PDF/DOCX"):
                     resume_file_in = gr.File(
-                        label="Upload Resume (PDF)",
-                        file_types=[".pdf"],
+                        label="Upload Resume (PDF or DOCX)",
+                        file_types=[".pdf", ".docx"],
                         type="filepath"
                     )
                 with gr.Tab("📝 Paste Text"):
@@ -686,6 +686,16 @@ with gr.Blocks(title="AI Resume Optimizer Agent") as demo:
 if __name__ == "__main__":
     init_output_dirs()
     start_background_cleanup()
+
+    # Fail fast at startup with an actionable message instead of letting users
+    # hit a confusing provider error deep inside Step 2. One cheap /models call
+    # (zero generation tokens). Opt out with SKIP_STARTUP_HEALTHCHECK=1.
+    if os.environ.get("SKIP_STARTUP_HEALTHCHECK", "").lower() != "1":
+        from agent.llms import check_provider_health
+        ok, message = check_provider_health()
+        print(f"[Health] Groq: {'OK' if ok else 'PROBLEM'} - {message}")
+        if not ok:
+            print("[Health] Launching anyway — pipeline runs will fail until this is resolved.")
 
     # One pipeline at a time: concurrent runs would double-spend Groq quota
     demo.queue(max_size=5, default_concurrency_limit=1)

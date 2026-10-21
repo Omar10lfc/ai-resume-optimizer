@@ -4,6 +4,12 @@ from .. import llms as _llms
 from ..helpers import _safe_print, _safe_truncate
 from langchain_core.messages import HumanMessage, SystemMessage
 
+# Trace evidence (Oct 2026): the Reviewer's structured output folds transiently
+# with roughly a 1-in-3 frequency on a busy day, which sets llm_quality_score to
+# None/0 and drops otherwise-healthy composites to the ATS-only floor (composite
+# 41 vs 67-76 band). One same-payload retry recovers these at negligible cost.
+_REVIEW_ATTEMPTS = 2
+
 
 def reviewer_node(state: AgentState):
     _safe_print(f"\n--- NODE 3: REVIEWING DRAFT ---")
@@ -26,16 +32,25 @@ def reviewer_node(state: AgentState):
     Provide the combined weighted quality score and one specific sentence of feedback to improve it.
     """
 
-    try:
-        result = structured_llm.invoke([
-            SystemMessage(content=SYSTEM_GUARDRAIL),
-            HumanMessage(content=prompt),
-        ])
-        _safe_print(f"-> LLM quality score: {result.score}/100")
-        _safe_print(f"-> Feedback: {result.feedback}")
-        return {"llm_quality_score": result.score, "feedback": result.feedback,
-                "review_failed": False}
-    except Exception as e:
-        _safe_print(f"   [Warning] Structured output failed: {e}. Flagging review as failed.")
-        return {"review_failed": True,
-                "feedback": "Review could not be completed. Proceeding with current draft."}
+    messages = [
+        SystemMessage(content=SYSTEM_GUARDRAIL),
+        HumanMessage(content=prompt),
+    ]
+
+    last_error = None
+    for attempt in range(1, _REVIEW_ATTEMPTS + 1):
+        try:
+            result = structured_llm.invoke(messages)
+            _safe_print(f"-> LLM quality score: {result.score}/100")
+            _safe_print(f"-> Feedback: {result.feedback}")
+            if attempt > 1:
+                _safe_print(f"-> (recovered on attempt {attempt}/{_REVIEW_ATTEMPTS})")
+            return {"llm_quality_score": result.score, "feedback": result.feedback,
+                    "review_failed": False}
+        except Exception as e:
+            last_error = e
+            _safe_print(f"   [Warning] Structured output attempt {attempt}/{_REVIEW_ATTEMPTS} failed: {e}")
+
+    _safe_print(f"   [Warning] Review failed after {_REVIEW_ATTEMPTS} attempts. Flagging review as failed.")
+    return {"review_failed": True,
+            "feedback": "Review could not be completed. Proceeding with current draft."}

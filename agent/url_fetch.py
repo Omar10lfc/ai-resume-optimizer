@@ -86,3 +86,30 @@ def _load_resume_pdf(file_path: str) -> str:
         raise ValueError(f"Resume PDF must have {MAX_PDF_PAGES} pages or fewer.")
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     return _safe_truncate(text, MAX_RESUME_CHARS, "Resume")
+
+
+# Shared 5 MB upload cap for both resume formats (PDF & DOCX).
+MAX_RESUME_FILE_BYTES = MAX_PDF_BYTES
+
+
+def _load_resume_docx(file_path: str) -> str:
+    """Extracts plain text (paragraphs + table rows) from a Word (.docx) resume."""
+    path = Path(file_path)
+    if path.stat().st_size > MAX_RESUME_FILE_BYTES:
+        raise ValueError("Resume file must be 5 MB or smaller.")
+    with path.open("rb") as source:
+        if source.read(2) != b"PK":
+            raise ValueError("Uploaded file is not a valid Word document.")
+    # Deferred import keeps python-docx optional at import time of this module.
+    from docx import Document
+
+    doc = Document(str(path))
+    parts = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text and c.text.strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+    if not parts:
+        raise ValueError("The Word document appears to be empty.")
+    return _safe_truncate("\n".join(parts), MAX_RESUME_CHARS, "Resume")

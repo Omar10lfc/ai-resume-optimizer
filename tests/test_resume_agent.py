@@ -698,3 +698,220 @@ def test_create_checkpointer_default():
     from langgraph.checkpoint.memory import MemorySaver
     cp = _create_checkpointer()
     assert isinstance(cp, MemorySaver)
+
+
+# ==========================================
+# Reviewer structured-output retry
+# ==========================================
+
+def test_reviewer_retry_recovers_from_transient_failure(fake_llms, monkeypatch):
+    """Trace evidence (Oct 2026): the Reviewer's structured output folds
+    transiently (~1 in 3 on that day), zeroing llm_quality_score. One same-payload
+    retry must recover instead of flagging review_failed."""
+    class FlakyReviewer:
+        def __init__(self):
+            self.calls = 0
+
+        def with_structured_output(self, schema):
+            outer = self
+
+            class Structured:
+                def invoke(self, messages):
+                    outer.calls += 1
+                    if outer.calls == 1:
+                        raise RuntimeError("transient structured-output failure")
+                    return agent.ReviewOutput(score=85, feedback="Add metrics to bullets.")
+
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", FlakyReviewer())
+    result = agent.full_app.invoke(_base_inputs())
+    assert result["review_failed"] is False
+    assert result["llm_quality_score"] == 85
+    expected = round(agent.ATS_SCORE_WEIGHT * result["ats_percentage"] + agent.LLM_SCORE_WEIGHT * 85)
+    assert result["score"] == expected
+
+
+def test_reviewer_retry_gives_up_after_two_attempts(fake_llms, monkeypatch):
+    """When both attempts fail, review_failed still flags (no endless retries)."""
+    probe = {"llm_calls": 0}
+
+    class AlwaysBroken(FakeStrictLLM):
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    probe["llm_calls"] += 1
+                    raise RuntimeError("structured output unavailable")
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", AlwaysBroken())
+    result = agent.full_app.invoke(_base_inputs())
+    assert result["review_failed"] is True
+    assert probe["llm_calls"] == 2  # exactly one retry, never more
+    assert result["iteration"] == 1
+
+
+# ==========================================
+# DOCX resume ingestion
+# ==========================================
+
+def _make_docx(path, paragraphs, tables=()):
+    from docx import Document
+    doc = Document()
+    for paragraph in paragraphs:
+        doc.add_paragraph(paragraph)
+    for rows in tables:
+        table = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
+        for i, row in enumerate(rows):
+            for j, cell in enumerate(row):
+                table.rows[i].cells[j].text = cell
+    doc.save(str(path))
+
+
+def test_load_resume_docx_extracts_paragraphs_and_tables(tmp_path):
+    doc = tmp_path / "resume.docx"
+    _make_docx(doc, ["# Jane Doe", "## Skills: Python, Docker"], tables=[[["AWS", "Docker", "Git"]]])
+    text = agent._load_resume_docx(str(doc))
+    assert "# Jane Doe" in text
+    assert "Python, Docker" in text
+    assert "AWS | Docker | Git" in text
+
+
+def test_load_resume_docx_rejects_non_docx_bytes(tmp_path):
+    doc = tmp_path / "resume.docx"
+    doc.write_bytes(b"%%PDF-not-a-word-file")
+    with pytest.raises(ValueError, match="not a valid Word document"):
+        agent._load_resume_docx(str(doc))
+
+
+def test_load_resume_docx_rejects_oversize(tmp_path, monkeypatch):
+    doc = tmp_path / "resume.docx"
+    doc.write_bytes(b"PK\x03\x04small")
+    import agent.url_fetch as uf
+    monkeypatch.setattr(uf, "MAX_RESUME_FILE_BYTES", 2)
+    with pytest.raises(ValueError, match="5 MB or smaller"):
+        agent._load_resume_docx(str(doc))
+
+
+def test_full_graph_accepts_docx_resume(fake_llms, tmp_path):
+    """A .docx upload flows through loader -> improver -> ... like a PDF."""
+    doc = tmp_path / "resume.docx"
+    _make_docx(doc, ["Python developer.", "## Skills", "Docker and Kubernetes"])
+    inputs = _base_inputs()
+    inputs["original_resume"] = str(doc)
+    result = agent.full_app.invoke(inputs)
+    assert "Kubernetes" in result["resume_text"]
+    assert result["optimized_resume"]
+    assert Path(result["resume_pdf_path"]).exists()
+
+
+# ==========================================
+# Startup provider health check
+# ==========================================
+
+def test_check_provider_health_missing_key(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    ok, message = agent.llms.check_provider_health()
+    assert ok is False
+    assert "GROQ_API_KEY is not set" in message
+
+
+def test_check_provider_health_placeholder_key(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "your_groq_key_here")
+    ok, message = agent.llms.check_provider_health()
+    assert ok is False
+
+
+def test_check_provider_health_delegates_to_models_status(monkeypatch):
+    called = {}
+    monkeypatch.setattr(agent.llms, "_groq_models_status",
+                        lambda key, t: (True, f"API reachable ({key[:3]}...)"))
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_live_123")
+    ok, message = agent.llms.check_provider_health()
+    assert ok is True
+    assert "API reachable" in message
+
+
+def test_groq_models_status_auth_error(monkeypatch):
+    import urllib.error
+
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.HTTPError("https://api.groq.com/openai/v1/models", 401,
+                                     "Unauthorized", None, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    ok, message = agent.llms._groq_models_status("gsk_bad")
+    assert ok is False
+    assert "401" in message
+
+
+def test_groq_models_status_rate_limit_counts_as_ok(monkeypatch):
+    import urllib.error
+
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.HTTPError("https://api.groq.com/openai/v1/models", 429,
+                                     "Too Many Requests", None, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    ok, message = agent.llms._groq_models_status("gsk_ok")
+    assert ok is True
+    assert "429" in message
+
+
+def test_groq_models_status_unreachable_soft_fails(monkeypatch):
+    from urllib.error import URLError
+
+    def fake_urlopen(request, timeout=None):
+        raise URLError("dns failure")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    ok, message = agent.llms._groq_models_status("gsk_ok")
+    assert ok is False
+    assert "Could not reach the Groq API" in message
+
+
+def test_groq_models_status_success_reports_models(monkeypatch):
+    import json
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"data": [
+                {"id": agent.llms._PRIMARY_MODEL},
+                {"id": "llama-3.1-8b-instant"},
+            ]}).encode()
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=None: FakeResponse())
+    ok, message = agent.llms._groq_models_status("gsk_ok")
+    assert ok is True
+    assert "API reachable" in message
+
+
+def test_groq_models_status_flags_unavailable_primary_model(monkeypatch):
+    """A 200 whose model list lacks the configured primary model is actionable."""
+    import json
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"data": [{"id": "llama-3.1-8b-instant"}]}).encode()
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=None: FakeResponse())
+    ok, message = agent.llms._groq_models_status("gsk_ok")
+    assert ok is True
+    assert agent.llms._PRIMARY_MODEL in message
+    assert "not among them" in message
