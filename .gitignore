@@ -52,6 +52,7 @@ IMPLEMENTATION_PLAN.md
 make_diagram.py
 session-*.md
 draft/*
+langsmith_export/
 
 # LaTeX temporary / build artifacts
 *.aux
