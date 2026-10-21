@@ -21,9 +21,17 @@ def reviewer_node(state: AgentState):
     Do NOT judge keyword coverage - that is measured separately.
 
     Rate each dimension 0-100 and combine them:
-    - Relevance & Tailoring (40%): Is the experience presented to directly address the job requirements?
-    - Quantified Achievements (30%): Does the resume use metrics, numbers, or concrete outcomes?
-    - Formatting & Clarity (30%): Well-structured, scannable, free of filler?
+    - Relevance & Tailoring (40%): Does the summary mirror the exact target role
+      and its top requirements? Are skills ordered most-relevant-first? Does the
+      resume use the JD's terminology for experience the candidate truly has?
+    - Quantified Achievements (30%): Do bullets follow "Accomplished [X] as
+      measured by [Y] by doing [Z]" - strong action-verb openers plus at least
+      one true metric (money, %, time, scale, before -> after)? Penalize
+      duty-only bullets and passive openers ("Responsible for", "Helped with",
+      "Worked on", "Assisted with").
+    - Formatting & Clarity (30%): Standard section headers, scannable single
+      structure, bullets kept to 1-2 lines, natural keyword use (no stuffing),
+      free of filler?
 
     {_untrusted('JOB DESCRIPTION', _safe_truncate(state['job_text'], 2500, 'Job text (reviewer)'))}
 

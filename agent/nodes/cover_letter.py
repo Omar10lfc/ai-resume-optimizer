@@ -16,19 +16,34 @@ def cover_letter_node(state: AgentState):
     {_untrusted('CANDIDATE RESUME', state['optimized_resume'])}
 
     STRICT FORMAT RULES:
-    - Write in standard PROSE paragraphs only (Dear..., body paragraphs, Sincerely)
+    - Write in standard PROSE paragraphs only (Dear ..., body paragraphs, Sincerely)
     - Do NOT use tables, bullet lists, or any tabular formatting
     - Do NOT use markdown tables (no | pipes)
     - Do NOT wrap output in code fences (no ``` blocks)
-    - Keep it to 3-4 paragraphs maximum
-    - Use a warm, confident, professional tone
+    - 250-400 words in total, 3-4 paragraphs maximum
+    - Warm, confident, professional tone - never arrogant, never apologetic
 
-    STRUCTURE:
-    1. Opening: State the position and express genuine interest
-    2. Body (1-2 paragraphs): Connect your strongest relevant experiences to the key requirements. Be specific - mention projects, metrics, and tools
-    3. Closing: Express enthusiasm and call to action
+    QUALITY RULES (professional cover-letter standards):
+    1. OPENING HOOK - never a formality. Open with something specific: a real
+       achievement from the resume, a problem in the posting the candidate can
+       solve, or genuine enthusiasm for something concrete in this role.
+       NEVER open with "I am writing to apply for", "I saw your job posting",
+       or "To Whom It May Concern", and avoid opening sentences that start
+       with "I".
+    2. BODY - DIRECT MATCH: connect the candidate's strongest TRUE experience
+       to the role's top requirement: [their need] + [candidate's specific
+       experience] + [quantified result]. Reference real projects, tools, and
+       metrics from the resume - every claim must exist in the resume.
+    3. BODY - VALUE + GAPS: add one more relevant strength. If the resume has
+       an obvious gap for this role, address it briefly and positively with a
+       related strength or transferable skill - never apologize, never fabricate.
+    4. CLOSING - CALL TO ACTION: end with genuine enthusiasm for something
+       specific and a confident invitation to discuss next steps. NEVER close
+       with "I look forward to hearing from you" or "Please find my resume
+       attached".
 
-    Return ONLY the cover letter text as plain prose.
+    Return ONLY the cover letter text as plain prose, starting with the
+    greeting line ("Dear Hiring Manager," unless a real contact name is known).
     """
     response = _llms.llm_fast.invoke([
         SystemMessage(content=SYSTEM_GUARDRAIL),
