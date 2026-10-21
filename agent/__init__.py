@@ -1,6 +1,6 @@
 """Agent package: public API exports for app.py and tests."""
 from .state import AgentState, ReviewOutput, SemanticVerdict, SemanticReview, SYSTEM_GUARDRAIL, _untrusted
-from .helpers import _force_ascii, _strip_emoji_for_pdf, _strip_emoji_from_html, _strip_code_fences, _filter_hallucinated_sections, _sanitize_html_for_pdf, _html_to_pdf, _weak_bullet_samples
+from .helpers import _force_ascii, _strip_emoji_for_pdf, _strip_emoji_from_html, _strip_code_fences, _filter_hallucinated_sections, _sanitize_html_for_pdf, _html_to_pdf
 from .ats import _extract_keywords, _simple_stem, _keyword_found_in_text, compute_ats_match, apply_semantic_matches, _job_brief, _boundary_contains, freq_ok
 from .url_fetch import _validate_job_url, _is_public_host, _fetch_job_description, _load_resume_pdf, _load_resume_docx, MAX_RESUME_FILE_BYTES
 from .latex_render import (
@@ -28,7 +28,7 @@ __all__ = [
     "SYSTEM_GUARDRAIL", "_untrusted",
     # Helpers
     "_force_ascii", "_strip_emoji_for_pdf", "_strip_emoji_from_html", "_strip_code_fences",
-    "_filter_hallucinated_sections", "_sanitize_html_for_pdf", "_weak_bullet_samples",
+    "_filter_hallucinated_sections", "_sanitize_html_for_pdf",
     # ATS engine
     "_extract_keywords", "_simple_stem", "compute_ats_match", "apply_semantic_matches", "_job_brief",
     "_boundary_contains", "freq_ok",
