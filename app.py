@@ -2,7 +2,7 @@ import os
 import gradio as gr
 from uuid import uuid4
 from agent import agent_app, TRACE_CALLBACKS
-from agent.tracing import log_pipeline_feedback
+from agent.tracing import log_pipeline_feedback, register_known_name, candidate_name_hint
 from agent.config import init_output_dirs, start_background_cleanup
 
 # Redacted-tracing callbacks go with every invoke (empty list = tracing off)
@@ -355,6 +355,8 @@ def step1_analyze(job_input, resume_file, resume_text, session):
     if not resume_source:
         raise gr.Error("Please upload a resume PDF or paste your resume text.")
 
+    _premask_name_from_input(resume_source)
+
     session = session or str(uuid4())
     config = _thread_config(session)
 
@@ -407,6 +409,8 @@ def step2_optimize(job_input, resume_file, resume_text, user_notes, session):
     resume_source = _resolve_resume_input(resume_file, resume_text)
     if not resume_source:
         raise gr.Error("Please upload a resume PDF or paste your resume text.")
+
+    _premask_name_from_input(resume_source)
 
     if not user_notes or not user_notes.strip():
         gr.Warning("No missing skills / context provided. Running with auto-detected gaps only.")
@@ -529,6 +533,17 @@ def _resolve_resume_input(resume_file, resume_text):
     if resume_text and resume_text.strip():
         return resume_text.strip()
     return None
+
+
+def _premask_name_from_input(resume_source) -> None:
+    """Registers the candidate name parsed from a PASTED resume before any
+    graph run is traced, so even the loader run's own input mask is complete.
+    (PDF/DOCX uploads pass a file path here - no content, nothing to mask;
+    loader registers their names after parsing.)"""
+    try:
+        register_known_name(candidate_name_hint(resume_source))
+    except Exception as exc:  # masking must never block the pipeline
+        print(f"[PII] name pre-registration skipped: {exc}")
 
 
 # ============================================================

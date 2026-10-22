@@ -5,6 +5,7 @@ from uuid import uuid4
 from ..config import OUTPUT_ROOT, MAX_JOB_CHARS, MAX_RESUME_CHARS
 from ..state import AgentState
 from ..helpers import _safe_print, _safe_truncate
+from ..tracing import register_known_name, candidate_name_hint
 from ..url_fetch import _fetch_job_description, _load_resume_docx, _load_resume_pdf
 
 
@@ -46,6 +47,12 @@ def loader_node(state: AgentState):
 
     job_content = _normalize_raw_text(job_content)
     resume_content = _normalize_raw_text(resume_content)
+
+    # PII hygiene (production Item 4): register the candidate name parsed from
+    # the resume so name masking covers PDF/DOCX payloads. Must precede every
+    # later run's tracing; the loader's own input may already be masked by an
+    # earlier app-level pre-registration for pasted resumes.
+    register_known_name(candidate_name_hint(resume_content))
 
     return {
         "job_text": job_content,

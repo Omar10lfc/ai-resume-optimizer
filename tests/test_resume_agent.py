@@ -945,6 +945,81 @@ def test_log_pipeline_feedback_guardrails_without_client_or_run_id(monkeypatch):
 
 
 # ==========================================
+# Name-based PII masking (traced payloads)
+# ==========================================
+
+@pytest.fixture
+def clean_name_register(monkeypatch):
+    """Isolates the global name register/mask cache for masking tests."""
+    monkeypatch.setattr(agent.tracing, "_KNOWN_NAMES", [])
+    monkeypatch.setattr(agent.tracing, "_NAME_MASKS", None)
+    monkeypatch.delenv("REDACT_NAMES", raising=False)
+    yield
+
+
+def test_redact_masks_registered_candidate_name(clean_name_register):
+    agent.register_known_name("John Doe")
+    payload = {"resume": "John Doe built Python pipelines.",
+               "nested": ["Contact for John Doe at 0812 123456"],
+               "letter": "Sincerely,\nJOHN DOE"}
+    masked = agent._redact_pii(payload)
+    assert "John Doe" not in str(masked)
+    assert "[redacted-name]" in masked["resume"]
+    assert "[redacted-name]" in masked["nested"][0]
+    assert "[redacted-name]" in masked["letter"]
+    assert "[redacted-phone]" in masked["nested"][0]
+
+
+def test_name_masking_is_case_insensitive_with_word_boundaries(clean_name_register):
+    agent.register_known_name("John Doe")
+    masked = agent._redact_pii("JOHN DOE joined; john dough stayed; JohnDoe merged.")
+    assert "JOHN DOE" not in masked
+    assert "dough stayed" in masked   # 'Doe' token too short to mask; no bleed into 'Dough'
+    assert "JohnDoe" in masked        # full-name mask requires a separator (\s+)
+
+
+def test_name_token_masks_cover_longer_names(clean_name_register):
+    agent.register_known_name("Alexander Wang")
+    masked = agent._redact_pii("Alexander Wang; alexander alone; Wang alone; Wang2 stays")
+    assert "Alexander" not in masked
+    assert "alexander alone" not in masked
+    assert "[redacted-name] alone" in masked.split(";")[1]
+    assert "Wang2" in masked  # boundary: token regex must not split off 2
+
+
+def test_redact_names_env_feeds_masking(clean_name_register, monkeypatch):
+    monkeypatch.setenv("REDACT_NAMES", " Omar Ali , Mixed Case Name ")
+    masked = agent._redact_pii("hello Omar Ali and MIXED CASE NAME")
+    assert "Omar Ali" not in masked
+    assert "MIXED CASE NAME" not in masked
+
+
+def test_candidate_name_hint_accepts_and_rejects():
+    hint = agent.candidate_name_hint
+    assert hint("Name: John Doe - CEO\nExperience") == "John Doe"
+    assert hint("John A. Doe\nPython developer.") == "John A. Doe"
+    assert hint("John Doe | Data Engineer avatar line") is None
+    assert hint("SOFTWARE ENGINEER\nToledo, OH") is None
+    assert hint("Python developer with 5 years of experience.") is None
+    assert hint("John Doe2\nSkills") is None  # digits disqualify
+    assert hint("") is None
+
+
+def test_loader_registers_resume_name_for_masking(clean_name_register, fake_llms):
+    result = agent.full_app.invoke({**_base_inputs(),
+                                    "original_resume": "John Doe\nPython developer."})
+    assert result["resume_text"].startswith("John Doe")
+    assert "John Doe" in agent.tracing._KNOWN_NAMES
+    masked = agent._redact_pii(result["optimized_resume"] and "John Doe wrote Go.")
+    assert "John Doe" not in masked
+
+
+def test_loader_without_name_registers_nothing(clean_name_register, fake_llms):
+    agent.full_app.invoke(_base_inputs())
+    assert agent.tracing._KNOWN_NAMES == []
+
+
+# ==========================================
 # DOCX resume ingestion
 # ==========================================
 
