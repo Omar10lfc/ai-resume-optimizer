@@ -1,0 +1,81 @@
+# Weekly off-machine backup of ALL LangSmith traces (production checklist Item 6).
+#
+# Why: server-side traces live under free-tier retention limits; the durable
+# record is the local langsmith_export/ JSONL archive — and an off-machine
+# replica in private repo artifacts protects against local disk loss.
+#
+# What runs: scripts/export_langsmith_traces.py — the SmithDB-backed
+# client.runs.query v2 exporter (read-only LangSmith API, ZERO LangSmith/LLM
+# spend). Downloaded payloads are re-redacted at export time with the same
+# _redact_pii used at trace time (emails/phones + registered candidate names).
+# The local analyzer then writes a markdown report for the same snapshot.
+#
+# Privacy guard: artifacts live in GitHub storage and are downloadable from a
+# PUBLIC repo, so this job refuses to run on public repositories. Traces
+# contain resume/jd content even after PII redaction.
+#
+# Secrets required (Settings -> Secrets and variables -> Actions):
+#   LANGSMITH_API_KEY  - langsmith key (read-only use)
+# Optional
+#   REDACT_NAMES       - repo VARIABLE, comma-separated names; adds name
+#                        masking for runs recorded before name masking shipped
+#
+# Notes on schedule: GitHub cron is UTC (Saturdays 22:00 UTC = 18:00 US East).
+# Scheduled workflows only fire on the default branch, and GitHub
+# auto-disables them after 60 days of repo inactivity - keep the repo active
+# or re-enable Actions when needed.
+
+name: Weekly LangSmith trace backup
+
+on:
+  schedule:
+    - cron: "0 22 * * 6"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    env:
+      GROQ_API_KEY: groq-placeholder-not-used
+      LANGCHAIN_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      REDACT_NAMES: ${{ vars.REDACT_NAMES }}
+      LANGCHAIN_TRACING_V2: "false"
+    steps:
+      - name: Guard - never archive traces of a public repo
+        run: |
+          if [ "${{ github.event.repository.private }}" != "true" ]; then
+            echo "Refusing to archive traces: repository is public (traces hold resume PII)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # Full requirements on purpose: the exporter imports agent.tracing via
+      # the agent package, whose __init__ wires the whole agent (llms.py
+      # constructs ChatGroq instances at import - hence the placeholder
+      # GROQ_API_KEY env; the exporter itself only talks to LangSmith).
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Export all traces (read-only API, no LLM spend)
+        run: python scripts/export_langsmith_traces.py
+
+      - name: Offline analysis report for the same snapshot
+        run: python scripts/analyze_langsmith_traces.py
+
+      - name: Upload trace archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: langsmith-export-${{ github.run_id }}
+          path: langsmith_export/
+          retention-days: 90
+          if-no-files-found: error
