@@ -92,9 +92,9 @@ Evidence base: 871 runs / 73 traces (2026-08-02 → 2026-10-21), 159 LLM runs, 1
 | 1 ✅ | Structured-output retry is unproven for its target failure | Trace `01a15f6d` (Oct 21 17:06): same-payload retry folded identically 3s apart | **DONE `27260ee`** — `_salvage_review_output()` parses the model's prose answer (`failed_generation`) instead of retrying identical bytes: markdown/unicode-space normalization, `≈ 80 / 100`-style extraction with combined-weighted line preference, 0–100 clamp, `body → response → repr` fallback chain. Salvage short-circuits the retry; unparseable failures keep the 1-retry + `review_failed` grace path (tested) |
 | 2 ✅ | No monitoring signal | 0 LangSmith feedback records in the whole project | **DONE `1025ff2`** — `log_pipeline_feedback()` emits `composite_score` (0–100) + `review_failed` (0/1, ATS-only comment) to the pinned trace root on every completed Step-2 run (LangGraph reads `config['run_id']`). Dashboard alert rule: filter `composite_score < 78` or `review_failed = 1`; salvage now reports a real LLM score instead of the ATS-only floor |
 | 3 | Load/concurrency unproven | All 73 traces are single-user sessions; the fallback chain (429s) never engaged | Soak test: 3–5 concurrent sessions ≈ 30 min; confirm per-request UUID output dirs and SQLite checkpointer behave |
-| 4 | PII policy stops at emails/phones in inputs | Names survive redaction and appear in outputs (letters) | Extend `_redact_pii` with a name-masking pass before export, or accept local-only traces + retention policy |
+| 4 ✅ | PII policy stops at emails/phones in inputs | Names survive redaction and appear in outputs (letters) | **DONE `07f5582`** — candidate names register + mask: `candidate_name_hint()` (label-aware, name-shaped first line), registered by loader & pre-registered by `app.py` before the loader run traces its input; full-name + ≥4-char token masking (word-boundary, case-insensitive) and `_redact_pii` now also `hide_outputs`. `REDACT_NAMES` env/CI-variable masks older data during re-exports. Resume *content* itself is still traced — hence backups guard against public repos (below) |
 | 5 | New features have zero traced runs | DOCX path, startup health check, coverage of `failed_generation` salvage: no occurrences in export | One traced smoke run per new path when shipped (playbook item) — next export should show a salvaged-review trace with real feedback records |
-| 6 | Trace history not backed up on a schedule | Exports are manual; free-tier retention applies | Weekly `export_langsmith_traces.py` via Task Scheduler/CI; local JSONL is the durable archive |
+| 6 ✅ | Trace history not backed up on a schedule | Exports are manual; free-tier retention applies | **DONE `0767502`** — `.github/workflows/trace_backup.yml`: weekly (Sat 22:00 UTC, `workflow_dispatch` too) export + offline report uploaded as a 90-day artifact. Guard aborts on public repos (traces hold resume PII); requires the `LANGSMITH_API_KEY` Actions secret (optional `REDACT_NAMES` variable); local `langsmith_export/` JSONL remains the durable master. Reminder: GitHub auto-disables scheduled workflows after 60 days of repo inactivity |
 
 **Alerting in the LangSmith dashboard:** filter feedback `key = composite_score` / `key = review_failed` on project *resume-optimizer*. `review_failed = 1` - or the absence of a `composite_score` record (pipeline crashed before completion) - marks a run for review.
 
@@ -114,6 +114,12 @@ venv\Scripts\python.exe -m pytest tests -q --cov=agent --cov=app --cov-report=te
 # Bulk-export ALL LangSmith runs of the project + offline analysis
 venv\Scripts\python.exe scripts\export_langsmith_traces.py
 venv\Scripts\python.exe scripts\analyze_langsmith_traces.py
+
+# Same backup+analysis runs automatically every Saturday 22:00 UTC via
+# .github/workflows/trace_backup.yml (Actions tab -> "Weekly LangSmith trace
+# backup" -> Run workflow for a manual run). Requires the repo secret
+# LANGSMITH_API_KEY; artifacts expire after 90 days - the local
+# langsmith_export/ JSONL stays the durable master.
 
 # SQLite checkpointer persistence (two fresh processes)
 # scripts kept in %TEMP%\opencode\ckpt_put.py / ckpt_get.py
