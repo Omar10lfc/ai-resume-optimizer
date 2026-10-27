@@ -836,15 +836,18 @@ def _extract_project_links_and_title(
     raw_title: str,
     other_fields: list[str],
     bullet_links: list[str],
-    contact_details: str = "",
 ) -> tuple[str, list[tuple[str, str]]]:
-    """Universally extract project title and links for ANY candidate resume.
+    """Extract project title and links for ANY candidate resume, verbatim.
 
-    Pulls links from:
+    Pulls ONLY links that genuinely exist in the source document:
       1. Embedded markdown links in raw_title: `**Project Name** [Live Demo](url) [GitHub](url)`
       2. Pipe-separated header fields: `**Project Name** | [Live Demo](url) | Tech Stack`
-      3. Bullet links: `- [Live Demo](url)` or `- Live Demo: https://...` or `- GitHub`
-      4. Dynamic candidate GitHub lookup from contact_details (never hardcoded!).
+      3. Bullet links: `- [Live Demo](url)` or `- Live Demo: https://...` or raw URLs
+
+    ANTI-FABRICATION RULE (audit finding P0): no link is ever constructed
+    from a title slug, a candidate handle, or any other inference. A guessed
+    repo/demo URL is a dead 404 on a recruiter's screen - worse than an
+    honest absence. If the source has no link, none is rendered.
 
     Returns (clean_title, [(label, url), ...]) with deduplicated URLs.
     """
@@ -890,18 +893,7 @@ def _extract_project_links_and_title(
             lbl = "GitHub" if "github.com" in u.lower() else "Live Demo"
             add_link(lbl, u)
 
-    # 3. Candidate contact info lookup for GitHub / HuggingFace username
-    gh_match = re.search(r'github\.com/([A-Za-z0-9_.-]+)', contact_details or "", re.IGNORECASE)
-    candidate_gh = gh_match.group(1).strip('/') if gh_match else ""
-    candidate_gh = re.sub(r'[\?#].*$', '', candidate_gh)
-
-    hf_match = re.search(r'huggingface\.co/(?:spaces/)?([A-Za-z0-9_.-]+)', contact_details or "", re.IGNORECASE)
-    candidate_hf = hf_match.group(1).strip('/') if hf_match else ""
-    candidate_hf = re.sub(r'[\?#].*$', '', candidate_hf)
-
-    p_slug = re.sub(r'[^A-Za-z0-9_-]+', '-', clean_title).strip('-')
-
-    # 4. Process bullet links
+    # 3. Process bullet links
     for bl in bullet_links:
         sub_items = [s.strip() for s in re.split(r'\s*[\|—]\s*|\s+-\s+', bl) if s.strip()]
         for item in sub_items:
@@ -920,16 +912,15 @@ def _extract_project_links_and_title(
                 lbl = "GitHub" if "github.com" in u.lower() else "Live Demo"
                 add_link(lbl, u)
                 continue
-            kw = item.strip().lower()
-            if ('github' in kw or 'code' in kw or 'repo' in kw) and candidate_gh and p_slug:
-                add_link("GitHub", f"https://github.com/{candidate_gh}/{p_slug}")
-            elif 'demo' in kw and candidate_hf and p_slug:
-                add_link("Live Demo", f"https://huggingface.co/spaces/{candidate_hf}/{p_slug}")
+            # No URL present: the link label alone (e.g. bare "- GitHub") is
+            # NOT renderable. Fabricating a URL would violate the
+            # anti-hallucination contract; the label is dropped entirely so
+            # the heading only carries verifiably present links.
 
     return clean_title, links
 
 
-def _render_section(section: Section, contact_details: str = "") -> str:
+def _render_section(section: Section) -> str:
     """Render one section into LaTeX using the template macros."""
     parts = []
     parts.append(r"\section{" + _latex_escape(section.title) + "}")
@@ -964,7 +955,6 @@ def _render_section(section: Section, contact_details: str = "") -> str:
                         raw_title=headers_left,
                         other_fields=other_fields,
                         bullet_links=e.links,
-                        contact_details=contact_details,
                     )
 
                     # Remove any links from tech stack
@@ -1120,9 +1110,8 @@ def render_resume_tex(data: ResumeData) -> str:
     contact_tex = _render_contact(data.contact)
     if contact_tex:
         body_parts.append(contact_tex)
-    contact_details = data.contact.details if data.contact else ""
     for section in data.sections:
-        body_parts.append(_render_section(section, contact_details=contact_details))
+        body_parts.append(_render_section(section))
 
     body = "\n".join(body_parts) if body_parts else _latex_escape(
         "No structured content could be extracted — please provide a resume.")

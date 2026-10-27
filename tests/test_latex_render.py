@@ -750,6 +750,72 @@ alice@example.com | github.com/alicesmith | linkedin.com/in/alicesmith
     # 4. Zero references to other candidates
     assert "Omar" not in tex
 
+
+def test_no_fabricated_links_for_bare_link_labels():
+    r"""ANTI-FABRICATION (audit P0): a project whose bullets or title mention
+    link LABELS without URLs (e.g. bare '- GitHub', 'Live Demo', 'GitHub |
+    Repo') must render zero \href commands. Guessed urls.github.com/<handle>/
+    <title-slug> repos are dead 404s on a recruiter's screen - worse than an
+    honest absence - and violate the truthful-output contract."""
+    from agent.latex_render import _extract_project_links_and_title
+
+    # Bare label bullets: no URL anywhere in the source
+    title, links = _extract_project_links_and_title(
+        raw_title="**Distributed Event Streamer** | Kafka | 2025",
+        other_fields=["Kafka", "2025"],
+        bullet_links=["GitHub", "Live Demo", "Repo | Code"],
+    )
+    assert links == [], f"fabricated links: {links}"
+
+    # Even with a candidate contact handle available, the fallback must NOT
+    # synthesize github.com/<handle>/<title-slug> (a repo that usually
+    # does not exist - e.g. 'distributed-event-streamer').
+    title, links = _extract_project_links_and_title(
+        raw_title="**AI Resume Optimizer Agent**",
+        other_fields=[],
+        bullet_links=["GitHub"],
+    )
+    assert links == [], f"fabricated links: {links}"
+    assert "github.com" not in " ".join(u for _, u in links)
+
+    # Real links still extract (control)
+    title, links = _extract_project_links_and_title(
+        raw_title="**Real Project** [GitHub](https://github.com/real/real-project) | Python | 2025",
+        other_fields=["Python", "2025"],
+        bullet_links=["- Live Demo: https://real.dev/demo"],
+    )
+    assert ("GitHub", "https://github.com/real/real-project") in links
+    assert ("Live Demo", "https://real.dev/demo") in links
+
+
+def test_no_fabricated_links_in_full_render(tmp_path):
+    r"""End-to-end anti-fabrication: a resume whose projects have NO links
+    must compile with zero \href project links (contact-line links are the
+    candidate's own and unrelated)."""
+    if not HAVE_PDFLATEX:
+        pytest.skip("pdflatex not installed")
+    candidate_md = """# Bob Jones
+bob@example.com | github.com/bobjones
+
+## Projects
+**Distributed Event Streamer** | Go, Kafka, Docker | 2025
+- Architected high-throughput event processing engine handling 100K events/sec
+
+**Neural Code Search** | Python, Transformers | 2024
+- GitHub
+- Live Demo
+- Built vector search engine with bi-encoder architecture
+"""
+    data = parse_markdown_resume(candidate_md)
+    tex = render_resume_tex(data)
+
+    # Only the contact line may carry a href (github.com/bobjones);
+    # project sections must carry none.
+    body_start = tex.index("Projects")
+    project_tex = tex[body_start:]
+    assert r"\href" not in project_tex, project_tex
+    assert "github.com/bobjones/distributed-event-streamer" not in tex
+
     # 5. Must compile cleanly to PDF with pdflatex
     pdf = latex_to_pdf(tex, tmp_path, "alice_resume.pdf")
     assert pdf is not None
