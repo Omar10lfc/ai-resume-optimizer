@@ -72,6 +72,61 @@ def _fetch_job_description(raw_url: str) -> str:
     raise ValueError("Too many job URL redirects.")
 
 
+def _extract_page_text_with_links(page) -> str:
+    """Extract page text while converting hyperlinked text into markdown links [Text](URL)."""
+    links = []
+    annots = page.get('/Annots') or []
+    for a in annots:
+        try:
+            obj = a.get_object()
+            if obj.get('/Subtype') == '/Link':
+                action = obj.get('/A')
+                if action and action.get('/URI'):
+                    uri = str(action.get('/URI')).strip()
+                    rect = obj.get('/Rect')
+                    if uri and rect:
+                        links.append({
+                            'uri': uri,
+                            'rect': [float(x) for x in rect],
+                        })
+        except Exception:
+            continue
+
+    if not links:
+        return page.extract_text() or ""
+
+    linked_parts = []
+
+    def visitor(text, cm, tm, font_dict, font_size):
+        if not text:
+            return
+        x, y = tm[4], tm[5]
+        clean_text = text.strip()
+        if clean_text:
+            matched_uri = None
+            for lk in links:
+                x0, y0, x1, y1 = lk['rect']
+                if (x0 - 8 <= x <= x1 + 8) and (y0 - 5 <= y <= y1 + 5):
+                    matched_uri = lk['uri']
+                    break
+            if matched_uri and not clean_text.startswith(('http://', 'https://', 'mailto:')):
+                leading = text[:len(text) - len(text.lstrip())]
+                trailing = text[len(text.rstrip()):]
+                linked_parts.append(f"{leading}[{clean_text}]({matched_uri}){trailing}")
+                return
+        linked_parts.append(text)
+
+    try:
+        page.extract_text(visitor_text=visitor)
+        extracted = "".join(linked_parts)
+        if extracted.strip():
+            return extracted
+    except Exception:
+        pass
+
+    return page.extract_text() or ""
+
+
 def _load_resume_pdf(file_path: str) -> str:
     path = Path(file_path)
     if path.stat().st_size > MAX_PDF_BYTES:
@@ -84,7 +139,12 @@ def _load_resume_pdf(file_path: str) -> str:
         raise ValueError("Encrypted PDFs are not supported.")
     if len(reader.pages) > MAX_PDF_PAGES:
         raise ValueError(f"Resume PDF must have {MAX_PDF_PAGES} pages or fewer.")
-    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    page_texts = []
+    for page in reader.pages:
+        txt = _extract_page_text_with_links(page)
+        if txt.strip():
+            page_texts.append(txt)
+    text = "\n".join(page_texts)
     return _safe_truncate(text, MAX_RESUME_CHARS, "Resume")
 
 
@@ -92,8 +152,43 @@ def _load_resume_pdf(file_path: str) -> str:
 MAX_RESUME_FILE_BYTES = MAX_PDF_BYTES
 
 
+def _extract_docx_paragraph_text(p) -> str:
+    """Extract paragraph text while converting hyperlink runs to markdown [Text](URL)."""
+    try:
+        from docx.oxml.ns import qn
+        t_tag = qn('w:t')
+        parts = []
+        for child in p._p:
+            tag = child.tag.split('}')[-1]
+            if tag == 'hyperlink':
+                r_id = child.get(qn('r:id'))
+                url = ""
+                try:
+                    if r_id and p.part and r_id in p.part.rels:
+                        url = p.part.rels[r_id].target_ref
+                except Exception:
+                    pass
+                txt = "".join(t.text for t in child.iter(t_tag) if t.text).strip()
+                if txt and url and not txt.startswith(('http://', 'https://', 'mailto:')):
+                    parts.append(f"[{txt}]({url})")
+                elif txt:
+                    parts.append(txt)
+            elif tag == 'r':
+                txt = "".join(t.text for t in child.iter(t_tag) if t.text)
+                if txt:
+                    parts.append(txt)
+        if parts:
+            res = "".join(parts).strip()
+            if res:
+                return res
+    except Exception:
+        pass
+    return p.text.strip()
+
+
 def _load_resume_docx(file_path: str) -> str:
-    """Extracts plain text (paragraphs + table rows) from a Word (.docx) resume."""
+    """Extracts text (paragraphs + table rows) from a Word (.docx) resume,
+    converting hyperlinked text into markdown links [Text](URL)."""
     path = Path(file_path)
     if path.stat().st_size > MAX_RESUME_FILE_BYTES:
         raise ValueError("Resume file must be 5 MB or smaller.")
@@ -104,7 +199,11 @@ def _load_resume_docx(file_path: str) -> str:
     from docx import Document
 
     doc = Document(str(path))
-    parts = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
+    parts = []
+    for p in doc.paragraphs:
+        txt = _extract_docx_paragraph_text(p)
+        if txt:
+            parts.append(txt)
     for table in doc.tables:
         for row in table.rows:
             cells = [c.text.strip() for c in row.cells if c.text and c.text.strip()]
@@ -113,3 +212,4 @@ def _load_resume_docx(file_path: str) -> str:
     if not parts:
         raise ValueError("The Word document appears to be empty.")
     return _safe_truncate("\n".join(parts), MAX_RESUME_CHARS, "Resume")
+

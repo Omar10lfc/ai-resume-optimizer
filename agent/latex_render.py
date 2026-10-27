@@ -80,6 +80,7 @@ class Entry:
     sub: str = ""             # italic left text (role, degree)
     sub_right: str = ""       # italic right text (location / second date field)
     items: list[str] = field(default_factory=list)
+    links: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -237,6 +238,34 @@ def _strip_inline(s: str) -> str:
     s = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'\1', s)
     s = re.sub(r'`(.+?)`', r'\1', s)
     return s.strip()
+
+
+def _is_link_item(text: str) -> bool:
+    """Detect if an item line is purely project links (Live Demo, GitHub, etc.)
+    rather than an achievement bullet."""
+    if not text:
+        return False
+    t = text.strip()
+    # Pure markdown links and separators: [Live Demo](...) | [GitHub](...)
+    if re.match(r'^(?:\[[^\]]+\]\([^)]+\)|\s*[\|\-–—/]\s*)+$', t):
+        return True
+    # Strip markdown links to inspect residual text
+    clean = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', t)
+    clean_lower = re.sub(r'\s+', ' ', clean.strip().lower())
+    # Known standalone link labels/phrases
+    keywords = {
+        "live demo", "github", "demo", "repo", "source code", "code",
+        "live demo | github", "live demo - github", "live demo -- github", "live demo — github",
+        "github | live demo", "github - live demo", "github -- live demo", "github — live demo",
+        "demo | github", "github | demo", "view demo", "view code", "project link"
+    }
+    if clean_lower in keywords:
+        return True
+    if re.match(r'^(?:live\s+demo|github|demo|repo|code|project\s+link|link)\s*:\s*\S+', t, re.I):
+        return True
+    if re.match(r'^https?://\S+$', t):
+        return True
+    return False
 
 
 def _extract_contact(lines: list[str]) -> tuple[Contact, list[str]]:
@@ -547,7 +576,11 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
         line = lines[idx]
         m = _BULLET_RE.match(line)
         if m:
-            entry.items.append(_strip_inline(m.group(1)))
+            bullet_raw = m.group(1).strip()
+            if _is_link_item(bullet_raw):
+                entry.links.append(bullet_raw)
+            else:
+                entry.items.append(_strip_inline(bullet_raw))
             idx += 1
         elif not lines[idx].strip():
             # blank line: peek ahead — if next is not a bullet, stop
@@ -799,7 +832,104 @@ def _render_contact(contact: Contact) -> str:
     return "\n".join(lines)
 
 
-def _render_section(section: Section) -> str:
+def _extract_project_links_and_title(
+    raw_title: str,
+    other_fields: list[str],
+    bullet_links: list[str],
+    contact_details: str = "",
+) -> tuple[str, list[tuple[str, str]]]:
+    """Universally extract project title and links for ANY candidate resume.
+
+    Pulls links from:
+      1. Embedded markdown links in raw_title: `**Project Name** [Live Demo](url) [GitHub](url)`
+      2. Pipe-separated header fields: `**Project Name** | [Live Demo](url) | Tech Stack`
+      3. Bullet links: `- [Live Demo](url)` or `- Live Demo: https://...` or `- GitHub`
+      4. Dynamic candidate GitHub lookup from contact_details (never hardcoded!).
+
+    Returns (clean_title, [(label, url), ...]) with deduplicated URLs.
+    """
+    links: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+
+    def add_link(lbl: str, url: str) -> None:
+        if not url:
+            return
+        lbl = lbl.strip() or "Link"
+        url = url.strip().rstrip(").,;")
+        norm = url.lower().rstrip("/")
+        if norm in seen_urls:
+            return
+        seen_urls.add(norm)
+        links.append((lbl, url))
+
+    # 1. Extract markdown links from raw_title
+    md_re = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
+    for m in md_re.finditer(raw_title):
+        add_link(m.group(1), m.group(2))
+    clean_title = md_re.sub('', raw_title)
+
+    # Clean raw URLs if any embedded in title
+    url_re = re.compile(r'https?://\S+')
+    for m in url_re.finditer(clean_title):
+        u = m.group(0)
+        lbl = "GitHub" if "github.com" in u.lower() else "Live Demo"
+        add_link(lbl, u)
+    clean_title = url_re.sub('', clean_title)
+
+    # Strip formatting and stray pipe/dash/colon separators
+    clean_title = _strip_inline(clean_title)
+    clean_title = re.sub(r'\s*[\|—–\-:]\s*$', '', clean_title).strip()
+    clean_title = re.sub(r'^\s*[\|—–\-:]\s*', '', clean_title).strip()
+
+    # 2. Check other header fields (e.g. if link was a separate pipe segment)
+    for field in other_fields:
+        for m in md_re.finditer(field):
+            add_link(m.group(1), m.group(2))
+        for m in url_re.finditer(field):
+            u = m.group(0)
+            lbl = "GitHub" if "github.com" in u.lower() else "Live Demo"
+            add_link(lbl, u)
+
+    # 3. Candidate contact info lookup for GitHub / HuggingFace username
+    gh_match = re.search(r'github\.com/([A-Za-z0-9_.-]+)', contact_details or "", re.IGNORECASE)
+    candidate_gh = gh_match.group(1).strip('/') if gh_match else ""
+    candidate_gh = re.sub(r'[\?#].*$', '', candidate_gh)
+
+    hf_match = re.search(r'huggingface\.co/(?:spaces/)?([A-Za-z0-9_.-]+)', contact_details or "", re.IGNORECASE)
+    candidate_hf = hf_match.group(1).strip('/') if hf_match else ""
+    candidate_hf = re.sub(r'[\?#].*$', '', candidate_hf)
+
+    p_slug = re.sub(r'[^A-Za-z0-9_-]+', '-', clean_title).strip('-')
+
+    # 4. Process bullet links
+    for bl in bullet_links:
+        sub_items = [s.strip() for s in re.split(r'\s*[\|—]\s*|\s+-\s+', bl) if s.strip()]
+        for item in sub_items:
+            m_md = md_re.search(item)
+            if m_md:
+                add_link(m_md.group(1), m_md.group(2))
+                continue
+            m_pre = re.search(r'^(?:live\s+demo|github|demo|repo|code|website|docs)\s*:\s*(https?://\S+)', item, re.IGNORECASE)
+            if m_pre:
+                lbl = item.split(':')[0].strip().title()
+                add_link(lbl, m_pre.group(1))
+                continue
+            m_raw = url_re.search(item)
+            if m_raw:
+                u = m_raw.group(0)
+                lbl = "GitHub" if "github.com" in u.lower() else "Live Demo"
+                add_link(lbl, u)
+                continue
+            kw = item.strip().lower()
+            if ('github' in kw or 'code' in kw or 'repo' in kw) and candidate_gh and p_slug:
+                add_link("GitHub", f"https://github.com/{candidate_gh}/{p_slug}")
+            elif 'demo' in kw and candidate_hf and p_slug:
+                add_link("Live Demo", f"https://huggingface.co/spaces/{candidate_hf}/{p_slug}")
+
+    return clean_title, links
+
+
+def _render_section(section: Section, contact_details: str = "") -> str:
     """Render one section into LaTeX using the template macros."""
     parts = []
     parts.append(r"\section{" + _latex_escape(section.title) + "}")
@@ -821,22 +951,62 @@ def _render_section(section: Section) -> str:
 
                 if is_project_sec:
                     # Projects: title + links + tech stack + date
-                    date_field = sub_right
-                    title_text = _render_text_with_links(headers_left)
-                    tech_stack = headers_right or sub_left
-                    tech_text = _render_text_with_links(tech_stack)
-                    total_len = len(headers_left) + len(tech_stack) + len(date_field)
-                    if total_len <= 75 and tech_text:
-                        left_text = r"\textbf{" + title_text + r"} $|$ \emph{" + tech_text + r"}"
-                        parts.append(r"\resumeProjectHeading{" + left_text + r"}{" +
-                                     _latex_escape(date_field) + r"}")
-                    elif tech_text:
-                        parts.append(r"\resumeSubheading{" + title_text + "}{" +
-                                     _latex_escape(date_field) + "}{" +
-                                     tech_text + "}{}")
+                    if _DATE_RANGE_RE.search(headers_right) and not sub_right:
+                        date_field = headers_right
+                        tech_stack_raw = sub_left
                     else:
-                        parts.append(r"\resumeProjectHeading{\textbf{" + title_text + r"}}{" +
-                                     _latex_escape(date_field) + r"}")
+                        date_field = sub_right or (_clean_field(headers_right) if _DATE_RANGE_RE.search(headers_right) else "")
+                        tech_stack_raw = headers_right if not _DATE_RANGE_RE.search(headers_right) else sub_left
+
+                    # Universally extract project title and links
+                    other_fields = [f for f in (headers_right, sub_left) if f and f != date_field]
+                    clean_title, extracted_links = _extract_project_links_and_title(
+                        raw_title=headers_left,
+                        other_fields=other_fields,
+                        bullet_links=e.links,
+                        contact_details=contact_details,
+                    )
+
+                    # Remove any links from tech stack
+                    md_re = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
+                    clean_tech = md_re.sub('', tech_stack_raw)
+                    clean_tech = re.sub(r'https?://\S+', '', clean_tech)
+                    clean_tech = re.sub(r'^\s*[\|—–\-:]\s*', '', clean_tech).strip()
+                    clean_tech = re.sub(r'\s*[\|—–\-:]\s*$', '', clean_tech).strip()
+                    tech_text = _render_text_with_links(clean_tech)
+
+                    # Render clickable links with \href and \underline
+                    formatted_links = [
+                        r'\href{' + _clean_latex_url(u) + r'}{\underline{' + _latex_escape(lbl) + r'}}'
+                        for lbl, u in extracted_links
+                    ]
+
+                    date_text = _latex_escape(date_field)
+                    title_bold = r"\textbf{" + _latex_escape(clean_title) + r"}"
+
+                    # Estimate single-line width
+                    title_plain_len = len(clean_title)
+                    links_plain_len = sum(len(lbl) + 3 for lbl, _ in extracted_links)
+                    tech_plain_len = len(clean_tech)
+                    date_plain_len = len(date_field)
+                    total_len = title_plain_len + links_plain_len + tech_plain_len + date_plain_len
+
+                    if total_len <= 85 or not tech_text:
+                        # Fits on a single line via \resumeProjectHeading
+                        left_items = [title_bold]
+                        if formatted_links:
+                            left_items.extend(formatted_links)
+                        if tech_text:
+                            left_items.append(r"\emph{" + tech_text + r"}")
+                        left_line = " $|$ ".join(left_items)
+                        parts.append(r"\resumeProjectHeading{" + left_line + r"}{" + date_text + r"}")
+                    else:
+                        # Multi-line: Title + links on Row 1, tech stack on Row 2
+                        row1_items = [_latex_escape(clean_title)]
+                        if formatted_links:
+                            row1_items.append(r"\textnormal{" + " $|$ ".join(formatted_links) + r"}")
+                        row1_left = " $|$ ".join(row1_items)
+                        parts.append(r"\resumeSubheading{" + row1_left + r"}{" + date_text + r"}{" + tech_text + r"}{}")
                 elif is_exp_sec:
                     # Experience: Role and Company side-by-side on the left, dates on the right
                     # (e.g. \resumeProjectHeading{\textbf{Role} $|$ \emph{Company}}{Dates})
@@ -950,8 +1120,9 @@ def render_resume_tex(data: ResumeData) -> str:
     contact_tex = _render_contact(data.contact)
     if contact_tex:
         body_parts.append(contact_tex)
+    contact_details = data.contact.details if data.contact else ""
     for section in data.sections:
-        body_parts.append(_render_section(section))
+        body_parts.append(_render_section(section, contact_details=contact_details))
 
     body = "\n".join(body_parts) if body_parts else _latex_escape(
         "No structured content could be extracted — please provide a resume.")

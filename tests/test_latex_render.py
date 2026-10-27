@@ -708,3 +708,74 @@ test@example.com | 123-456-7890
     assert any("Cloud & MLOps" in ln for ln in skills_sec.simple_lines)
 
 
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_universal_project_links_for_arbitrary_candidates(tmp_path):
+    r"""Verify that any candidate with project links (on title line or in bullets)
+    has their links formatted as clickable LaTeX \href items beside the title,
+    never as bullets, and without any hardcoded names."""
+    candidate_md = """# Alice Smith
+alice@example.com | github.com/alicesmith | linkedin.com/in/alicesmith
+
+## Projects
+**Distributed Stream Processor** [Live Demo](https://stream.alicesmith.dev) [GitHub](https://github.com/alicesmith/stream-processor) | Go, Kafka, Docker | 2025
+- Architected high-throughput event processing engine handling 100K events/sec
+- Implemented fault tolerance with raft consensus
+
+**Neural Code Search** | Python, Transformers | 2024
+- [Demo](https://huggingface.co/spaces/alicesmith/code-search)
+- [GitHub](https://github.com/alicesmith/neural-search)
+- Built vector search engine with bi-encoder architecture
+
+**Static Site Generator** | Rust | 2023
+- Designed fast markdown parser
+"""
+    data = parse_markdown_resume(candidate_md)
+    tex = render_resume_tex(data)
+
+    # 1. Links from project 1 must be rendered on the header line
+    assert r"\href{https://stream.alicesmith.dev}{\underline{Live Demo}}" in tex
+    assert r"\href{https://github.com/alicesmith/stream-processor}{\underline{GitHub}}" in tex
+
+    # 2. Links from project 2 (which were bullets) must be moved to header line and NOT remain as bullets
+    assert r"\href{https://huggingface.co/spaces/alicesmith/code-search}{\underline{Demo}}" in tex
+    assert r"\href{https://github.com/alicesmith/neural-search}{\underline{GitHub}}" in tex
+    assert r"\resumeItem{Demo}" not in tex
+    assert r"\resumeItem{[Demo]" not in tex
+
+    # 3. Project 2 should only have 1 bullet item (the achievement bullet)
+    proj_sec = next(s for s in data.sections if "project" in s.title.lower())
+    assert len(proj_sec.entries[1].items) == 1
+    assert "Built vector search engine" in proj_sec.entries[1].items[0]
+
+    # 4. Zero references to other candidates
+    assert "Omar" not in tex
+
+    # 5. Must compile cleanly to PDF with pdflatex
+    pdf = latex_to_pdf(tex, tmp_path, "alice_resume.pdf")
+    assert pdf is not None
+    assert Path(pdf).exists()
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_latex_arrow_encoding_never_renders_inverted_question_mark(tmp_path):
+    """Arrows like '21 -> 0' or 'A --> B' must compile cleanly and never render as '¿'."""
+    from pypdf import PdfReader
+    md = """# Bob Developer
+bob@example.com
+
+## Experience
+**Systems Engineer** | Cloud Inc | 2023 - Present
+- Reduced latency from 21 -> 0 ms using in-memory cache (A -> B)
+- Migrated legacy services (v1 --> v2) with zero downtime
+"""
+    data = parse_markdown_resume(md)
+    tex = render_resume_tex(data)
+    pdf = latex_to_pdf(tex, tmp_path, "arrow_test.pdf")
+    assert pdf is not None
+    reader = PdfReader(pdf)
+    text = reader.pages[0].extract_text()
+    assert "¿" not in text
+    assert "21" in text
+
+
+

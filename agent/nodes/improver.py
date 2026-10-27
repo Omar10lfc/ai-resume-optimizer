@@ -35,11 +35,11 @@ def improver_node(state: AgentState):
     - Another bullet with metrics and technical tools
 
     ## Projects
-    **Project Name** [Link](URL) | Technologies Used | Date Range
+    **Project Name** [Live Demo](URL) [GitHub](URL) | Technologies Used | Date Range
     - Bullet describing what you built, technical implementation, and measurable impact
-    - Keep Project Name concise (2-4 words, e.g. **Alexandria Port Digital Twin**; put descriptions in bullets)
-    - Keep dates on the same line (e.g. **Project Name** [GitHub](URL) | Tech Stack | Jan 2024 - Present)
-    - NEVER wrap dates in parentheses across line breaks (do NOT write **Title** (\n*Date*))
+    - Keep Project Name concise (2-4 words, e.g. **Distributed Event Streamer**; put descriptions in bullets)
+    - Keep dates and all links on the same header line (e.g. **Real-Time Data Pipeline** [Live Demo](URL) [GitHub](URL) | Tech Stack | Jan 2026 - May 2026)
+    - NEVER put links as standalone bullet points! (Do NOT write "- Live Demo" or "- [GitHub](URL)" as a bullet item). All project links belong on the project title line.
     - CRITICAL: PRESERVE all links from the original resume (GitHub repos, live demos, project URLs, e.g. [GitHub](https://...), [Live Demo](https://...)). Never drop project links!
 
     ## Education
@@ -59,7 +59,7 @@ def improver_node(state: AgentState):
     4. Do NOT invent projects, jobs, metrics, or credentials not supported by the
        original resume or the user context.
     5. Feedback from previous review (if any): {state.get('feedback', 'None')}
-    6. PRESERVE ALL REAL LINKS: Never drop GitHub links, live demos, portfolio URLs, LinkedIn profile links, or email addresses from the original resume.
+    6. PRESERVE ALL REAL LINKS: Never drop GitHub links, live demos, portfolio URLs, LinkedIn profile links, or email addresses from the original resume. Attach project links directly to the project header line beside the project title, NEVER as a standalone bullet item.
     7. Retain legitimate existing sections from the candidate's background.
 
     {_untrusted('JOB DESCRIPTION', state['job_text'])}
