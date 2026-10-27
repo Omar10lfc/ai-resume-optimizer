@@ -1023,16 +1023,46 @@ def test_loader_without_name_registers_nothing(clean_name_register, fake_llms):
 # DOCX resume ingestion
 # ==========================================
 
+def _add_hyperlink(paragraph, text, url):
+    """Create a real w:hyperlink run with the relationship registered on the
+    document part (matches what Word writes for hyperlinked resume text)."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    r_id = paragraph.part.relate_to(
+        url,
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        is_external=True,
+    )
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+    run = OxmlElement('w:r')
+    t = OxmlElement('w:t')
+    t.text = text
+    run.append(t)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
 def _make_docx(path, paragraphs, tables=()):
+    # paragraph/cell values may be ("text", "url") -> hyperlinked text.
     from docx import Document
     doc = Document()
     for paragraph in paragraphs:
-        doc.add_paragraph(paragraph)
+        if isinstance(paragraph, tuple):
+            text, url = paragraph
+            p = doc.add_paragraph()
+            _add_hyperlink(p, text, url)
+        else:
+            doc.add_paragraph(paragraph)
     for rows in tables:
         table = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
         for i, row in enumerate(rows):
             for j, cell in enumerate(row):
-                table.rows[i].cells[j].text = cell
+                if isinstance(cell, tuple):
+                    text, url = cell
+                    _add_hyperlink(table.rows[i].cells[j].paragraphs[0], text, url)
+                else:
+                    table.rows[i].cells[j].text = cell
     doc.save(str(path))
 
 
@@ -1043,6 +1073,64 @@ def test_load_resume_docx_extracts_paragraphs_and_tables(tmp_path):
     assert "# Jane Doe" in text
     assert "Python, Docker" in text
     assert "AWS | Docker | Git" in text
+
+
+def test_load_resume_docx_paragraph_hyperlinks_preserved(tmp_path):
+    """Hyperlinked paragraph text must come through as [Text](URL), not bare text."""
+    doc = tmp_path / "resume.docx"
+    _make_docx(doc, [
+        "# Jane Doe",
+        ("jane.dev portfolio", "https://jane.dev"),
+        "## Skills: Python, Docker",
+    ])
+    text = agent._load_resume_docx(str(doc))
+    assert "[jane.dev portfolio](https://jane.dev)" in text
+
+
+def test_load_resume_docx_table_cell_hyperlinks_preserved(tmp_path):
+    """Audit P1: table-grid resumes lose every link when cells are read as raw
+    text. Cell paragraphs must run through the same hyperlink-aware reader
+    as body paragraphs, so grid links survive as markdown links."""
+    doc = tmp_path / "resume.docx"
+    _make_docx(doc, ["# Jane Doe"], tables=[[
+        ["Project", ("Live Demo", "https://jane.dev/streamer"), "Go, Kafka"],
+        ["Skills", "Docker", ("GitHub", "https://github.com/jane/streamer")],
+    ]])
+    text = agent._load_resume_docx(str(doc))
+    assert "Project | [Live Demo](https://jane.dev/streamer) | Go, Kafka" in text
+    assert "Skills | Docker | [GitHub](https://github.com/jane/streamer)" in text
+
+
+def test_join_visitor_fragments_gap_aware():
+    """Audit P1: pypdf visitor fragments joined with ''.join() glued words
+    together. Separator decisions must come from run geometry."""
+    join = agent.url_fetch._join_visitor_fragments
+    # Real inter-word gap -> space
+    assert join([("Python", 100.0, 200.0, 10.0),
+                 ("Developer", 132.5, 200.0, 10.0)]) == "Python Developer"
+    # Mid-word run split (next run starts at the estimated right edge of the
+    # previous run) -> must glue back together, no space inserted
+    assert join([("Pyth", 100.0, 200.0, 10.0),
+                 ("onistic", 119.3, 200.0, 10.0)]) == "Pythonistic"
+    # Baseline y move -> newline
+    assert join([("Machine", 100.0, 200.0, 10.0),
+                 ("Learning", 100.0, 212.0, 10.0)]) == "Machine\nLearning"
+    # Runs carrying their own whitespace are attached verbatim
+    assert join([("Hello ", 100.0, 200.0, 10.0),
+                 ("World", 135.0, 200.0, 10.0)]) == "Hello World"
+    # Whitespace-only fragment passes through without an invented separator
+    assert join([("Text", 100.0, 200.0, 10.0),
+                 ("  ", 140.0, 200.0, 10.0),
+                 ("more", 142.0, 200.0, 10.0)]) == "Text  more"
+    # Same position (overlap) -> direct concatenation
+    assert join([("line1", 100.0, 200.0, 10.0),
+                 ("line2", 100.0, 200.0, 10.0)]) == "line1line2"
+    assert join([]) == ""
+    # Markdown-wrapped link labels don't count unrendered URL glyphs toward
+    # the width estimate (label-only visibility)
+    out = join([(" [Live Demo](https://jane.dev)", 100.0, 200.0, 10.0),
+                ("2026", 158.0, 200.0, 10.0)])
+    assert out.endswith(" 2026"), out
 
 
 def test_load_resume_docx_rejects_non_docx_bytes(tmp_path):
