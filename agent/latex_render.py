@@ -1101,8 +1101,75 @@ def _render_section(section: Section) -> str:
 
 
 
-def render_resume_tex(data: ResumeData) -> str:
-    """Fill the bundled LaTeX template with the structured resume data."""
+# ============================================================
+# Enforced single-page containment
+# ============================================================
+
+_COMPACT_BLOCK_TOKEN = "<!--COMPACT_BLOCK-->"
+
+# Spacing-only overrides injected when the first render overflowed one
+# page. They must not change any content or macro shapes - only spacing
+# and margins - so the compact PDF prints the same information denser.
+# \renewcommand is safe here because the macros were defined
+# unconditionally earlier in this same preamble.
+_COMPACT_OVERRIDES = r"""
+% ---- AUTO-COMPACT PASS (activated after a >1-page first render) ----
+% Tighter bullet spacing (enumitem is loaded in this preamble)
+\setlist[itemize]{itemsep=0pt, parsep=0pt, topsep=2pt, leftmargin=*}
+% Tighter section heading + rule spacing
+\titleformat{\section}{
+  \vspace{-7pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+% Recover a little vertical room
+\addtolength{\topmargin}{-.12in}
+\addtolength{\textheight}{.24in}
+% Recover a little horizontal room (long linked project headings wrap less)
+\addtolength{\oddsidemargin}{-.05in}
+\addtolength{\evensidemargin}{-.05in}
+\addtolength{\textwidth}{.1in}
+% Trim the inter-entry breathing room
+\renewcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-3pt}}}}
+\renewcommand{\resumeSubheading}[4]{
+  \vspace{-3pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-9pt}
+}
+\renewcommand{\resumeSubSubheading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \textit{\small#1} & \textit{\small #2} \\
+    \end{tabular*}\vspace{-9pt}
+}
+\renewcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-9pt}
+}
+\renewcommand{\resumeItemListEnd}{\end{itemize}\vspace{-8pt}}
+% ---------------- end auto-compact pass ----------------
+"""
+
+
+def pdf_page_count(pdf_path) -> Optional[int]:
+    """Number of pages in a compiled PDF, or None when unreadable/missing."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(pdf_path))
+        return len(reader.pages)
+    except Exception:
+        return None
+
+
+def render_resume_tex(data: ResumeData, compact: bool = False) -> str:
+    """Fill the bundled LaTeX template with the structured resume data.
+
+    compact=True activates the auto-compact spacing block (tighter itemize
+    spacing, trimmed section/entry vspaces, slightly larger text area).
+    Content itself is never altered - compaction is a spacing-mode only.
+    """
     template_path = Path(__file__).resolve().parent / "templates" / "resume_template.tex"
     template = template_path.read_text(encoding="utf-8")
 
@@ -1118,6 +1185,8 @@ def render_resume_tex(data: ResumeData) -> str:
 
     # Replace the placeholder comment with the rendered body
     template = template.replace("<!--RESUME_BODY-->", body)
+    # Compact pass: injected only when the first render overflowed one page
+    template = template.replace(_COMPACT_BLOCK_TOKEN, _COMPACT_OVERRIDES if compact else "")
     return template
 
 

@@ -42,6 +42,12 @@ class AgentState(TypedDict):
     resume_tex_path: str
     request_id: NotRequired[str]
     output_dir: NotRequired[str]
+    # 1-page containment (pdf_exporter): actual page count of the delivered
+    # resume PDF, whether the auto-compact pass was applied, and a
+    # user-facing warning when the document still exceeds one page.
+    resume_pages: NotRequired[int]
+    resume_compacted: NotRequired[bool]
+    page_overflow_warning: NotRequired[str]
 
 
 class ReviewOutput(BaseModel):

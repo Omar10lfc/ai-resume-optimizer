@@ -23,6 +23,7 @@ from agent.latex_render import (  # noqa: E402
     render_resume_tex,
     latex_to_pdf,
     latex_to_docx,
+    pdf_page_count,
     HAVE_PDFLATEX,
     HAVE_PANDOC,
     _latex_escape,
@@ -816,10 +817,103 @@ bob@example.com | github.com/bobjones
     assert r"\href" not in project_tex, project_tex
     assert "github.com/bobjones/distributed-event-streamer" not in tex
 
-    # 5. Must compile cleanly to PDF with pdflatex
-    pdf = latex_to_pdf(tex, tmp_path, "alice_resume.pdf")
-    assert pdf is not None
-    assert Path(pdf).exists()
+
+def test_compact_mode_injects_spacing_overrides_only_when_asked():
+    """The COMPACT_BLOCK token must never leak into a compiled document:
+    plain render removes it entirely; compact render swaps it for the
+    spacing-only override block. Content-neutral by construction."""
+    base_md = """# Jane Doe
+jane@example.com | github.com/janedoe | linkedin.com/in/janedoe
+
+## Skills
+Python, Docker, Kubernetes
+"""
+    data = parse_markdown_resume(base_md)
+    plain = render_resume_tex(data)
+    compact = render_resume_tex(data, compact=True)
+
+    assert "<!--COMPACT_BLOCK-->" not in plain
+    assert "<!--COMPACT_BLOCK-->" not in compact
+    assert "AUTO-COMPACT PASS" not in plain
+    assert "AUTO-COMPACT PASS" in compact
+    # Overrides touch spacing only - both documents carry the same body
+    assert "Jane Doe" in compact and "Docker" in compact
+    assert r"\renewcommand{\resumeSubheading}" in compact
+    assert r"\renewcommand{\resumeSubheading}" not in plain
+
+
+def _overflow_resume_markdown() -> str:
+    """Dense fixture that reliably exceeds one page in plain spacing."""
+    projects = []
+    for i in range(1, 7):
+        projects.append(
+            f"**Project {i} - Data Processing Platform {i}** [GitHub](https://github.com/user/project-{i}) | Python, Kafka, Docker, AWS | Jan 2025 - Mar 2025\n"
+            f"- Architected event-driven pipeline processing {i}0K events per second with sub-second latency\n"
+            f"- Implemented fault-tolerant checkpointing reducing data loss from {i}% to 0 incidents\n"
+            f"- Deployed to production via CI/CD pipeline with canary releases and monitoring dashboards\n\n")
+    return (
+        "# Jane Doe\n"
+        "jane@example.com | github.com/janedoe | linkedin.com/in/janedoe\n\n"
+        "## Experience\n"
+        "**Senior Software Engineer** | Tech Corp | Jan 2024 - Present\n"
+        "- Led migration of monolith services to domain-driven microservices serving 5M users\n"
+        "- Cut p99 latency by 40 percent through cache redesign and connection pooling\n"
+        "- Mentored 4 engineers through quarterly promotion-focused growth plans\n"
+        "- Drove incident postmortem culture lowering repeat incidents from 8 to 1 per quarter\n\n"
+        "**Software Engineer** | Startup Co | Jun 2021 - Dec 2023\n"
+        "- Built multi-tenant billing system handling 50K daily transactions without errors\n"
+        "- Automated release process shrinking deploy window from 3 hours to 12 minutes\n"
+        "- Introduced contract testing preventing 15+ regressions across service boundaries\n"
+        "- Owned on-call rotation reliability reducing pager noise by 60 percent\n\n"
+        "## Skills\n"
+        "- Python\n- Go\n- Java\n- Kafka\n- Docker\n- Kubernetes\n- AWS\n- GCP\n- Terraform\n"
+        "- PostgreSQL\n- Redis\n- Elasticsearch\n- React\n- TypeScript\n- GraphQL\n- gRPC\n"
+        "- CI/CD\n- GitOps\n- Helm\n- ArgoCD\n\n"
+        + "".join(projects)
+        + "## Education\n"
+        "**M.S. Computer Science** | State University | 2019 - 2021\n"
+        "- GPA 3.9/4.0; thesis on distributed consensus under partial network failure\n\n"
+        "**B.S. Computer Science** | City College | 2015 - 2019\n"
+        "- Graduated summa cum laude; teaching assistant for data structures\n\n"
+        "## Certifications\n"
+        "- AWS Certified Solutions Architect - Professional (2024)\n"
+        "- HashiCorp Certified Terraform Associate (2024)\n"
+        "- CKAD Certified Kubernetes Application Developer (2023)\n"
+        "- Google Professional Cloud Architect (2023)\n"
+    )
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_pdf_page_count_reads_compiled_pdf(tmp_path):
+    base_md = ("# Jane Doe\njane@example.com | github.com/janedoe\n\n"
+               "## Skills\n- Python\n- Docker\n- Kubernetes\n")
+    tex = render_resume_tex(parse_markdown_resume(base_md))
+    pdf = latex_to_pdf(tex, tmp_path, "single.pdf")
+    assert pdf and pdf_page_count(pdf) == 1
+
+    # Deterministic 2-pager: real content after an explicit \newpage
+    two_page_tex = latex_to_pdf(
+        tex.replace(
+            r"\end{document}",
+            "\\newpage\n\\section{Overflow Section}\n- This line lives on page two\n\\end{document}"),
+        tmp_path, "double.pdf")
+    assert two_page_tex and pdf_page_count(two_page_tex) == 2
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_compact_render_pulls_overflow_back_to_one_page(tmp_path):
+    """Enforced 1-page containment (audit): the exporter must not ship an
+    overflowing resume silently - the spacing-only compact pass reclaims
+    moderate overflow. Content of both renders is identical."""
+    md = _overflow_resume_markdown()
+    data = parse_markdown_resume(md)
+
+    base_pdf = latex_to_pdf(render_resume_tex(data), tmp_path, "base.pdf")
+    base_pages = pdf_page_count(base_pdf) if base_pdf else None
+    assert base_pages and base_pages >= 2, "overflow fixture must exceed one page in plain spacing"
+
+    compact_pdf = latex_to_pdf(render_resume_tex(data, compact=True), tmp_path, "compact.pdf")
+    assert compact_pdf and pdf_page_count(compact_pdf) == 1
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
