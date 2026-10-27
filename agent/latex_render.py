@@ -232,6 +232,16 @@ def _is_prose_section(title: str) -> bool:
                                 "certificates", "awards", "honors"))
 
 
+_SKILLS_SECTION_RE = re.compile(
+    r'(?i)\b(skill|skills|competenc|technolog|tech\s?stack|stack)\w*')
+
+
+def _is_skills_section(title: str) -> bool:
+    """True for flat list-style sections (Skills, Competencies, Tech Stack).
+    Their plain lines are comma/pipe lists, never role+org subheadings."""
+    return bool(_SKILLS_SECTION_RE.search(title or ""))
+
+
 def _strip_inline(s: str) -> str:
     """Remove markdown bold/italic/code markers from a string, preserving markdown links [text](url)."""
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
@@ -322,8 +332,17 @@ def _extract_contact(lines: list[str]) -> tuple[Contact, list[str]]:
         if _BULLET_RE.match(line) or _HR_RE.match(line):
             break
         cand_title = _is_section_heading(line)
-        if cand_title and (_is_known_section_title(cand_title) or len(cand_title.split()) > 4):
-            break
+        if cand_title:
+            # Any further markdown heading ends the header block. Known
+            # sections obviously, but custom short headings too: the old
+            # check (known OR >4 words) absorbed custom brief sections
+            # like '## Tech Stack' into the contact details line, which
+            # then deleted the entire section from the document.
+            st_lower = cand_title.lower().rstrip(':')
+            if st_lower not in ("contact", "contact information", "contact details",
+                                "personal info", "personal information",
+                                "personal details"):
+                break
         # If we don't have a name yet, check if this line is a plain name
         if not name and len(line) <= 40 and not any(c in line for c in ('@', '|', '•', '://', ':')):
             name = _strip_inline(line)
@@ -668,6 +687,16 @@ def parse_markdown_resume(markdown_text: str) -> ResumeData:
         # A long prose paragraph (e.g. a Summary) must stay a simple line —
         # don't let the entry parser split it across subheading columns.
         if _looks_like_paragraph(stripped):
+            current_section.simple_lines.append(_strip_inline(stripped))
+            i += 1
+            continue
+
+        # Skills-family sections hold flat lists and label rows - plain
+        # lines are never subheading entries. A plain 'Python, Docker,
+        # Kafka' list line used to fall through to the entry parser and
+        # get comma-split into header/right columns, lopping the list
+        # into a broken two-column subheading row.
+        if _is_skills_section(current_section.title):
             current_section.simple_lines.append(_strip_inline(stripped))
             i += 1
             continue

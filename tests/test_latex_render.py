@@ -916,6 +916,59 @@ def test_compact_render_pulls_overflow_back_to_one_page(tmp_path):
     assert compact_pdf and pdf_page_count(compact_pdf) == 1
 
 
+def test_contact_block_does_not_swallow_custom_section_headings():
+    """Regression: the contact header collection loop absorbed custom short
+    markdown headings entirely ('## Tech Stack'), deleting that section and
+    turning its content into contact details. Any markdown heading other
+    than a contact-family heading now ends the header block."""
+    md = ("# Jane Doe\n"
+          "jane@example.com | github.com/janedoe\n\n"
+          "## Tech Stack\n"
+          "Go, Redis, Postgres\n")
+    data = parse_markdown_resume(md)
+    titles = [s.title.lower() for s in data.sections]
+    assert any("stack" in t for t in titles), titles
+    assert data.contact.name == "Jane Doe"
+    assert "jane@example.com" in data.contact.details
+    assert "Tech Stack" not in data.contact.details
+    # Contact-family headings still feed the details line
+    md2 = ("# Jane Doe\n"
+           "## Contact\n"
+           "jane@example.com | +1 123 456\n\n"
+           "## Skills\n"
+           "- Python\n")
+    data2 = parse_markdown_resume(md2)
+    assert data2.contact.name == "Jane Doe"
+    assert "jane@example.com" in data2.contact.details and "+1 123 456" in data2.contact.details
+    assert any("skill" in s.title.lower() for s in data2.sections)
+
+
+def test_skills_section_comma_lines_stay_simple_lines():
+    """Plain comma-list lines inside Skills-family sections must be simple
+    lines, not comma-split header/right subheading columns. Regression:
+    '## Skills\nPython, Docker, Kubernetes' parsed as an entry with
+    header 'Python' and right 'Docker', lopping the tail of the list."""
+    md = """# Jane Doe
+jane@example.com | github.com/janedoe
+
+## Skills
+Python, Docker, Kubernetes, Kafka, Terraform
+"""
+    data = parse_markdown_resume(md)
+    skills_sec = next(s for s in data.sections if "skill" in s.title.lower())
+    assert skills_sec.simple_lines == ["Python, Docker, Kubernetes, Kafka, Terraform"]
+    assert skills_sec.entries == []
+
+    tex = render_resume_tex(data)
+    assert "Kubernetes, Kafka, Terraform" in tex
+    assert r"resumeProjectHeading{\textbf{Python}}{Docker" not in tex
+
+    # Tech-stack style titles equally protected
+    data2 = parse_markdown_resume("# Jane Doe\njane@example.com | github.com/janedoe\n\n## Tech Stack\nGo, Redis, Postgres\n")
+    stack = next(s for s in data2.sections if "stack" in s.title.lower())
+    assert stack.simple_lines == ["Go, Redis, Postgres"]
+
+
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
 def test_latex_arrow_encoding_never_renders_inverted_question_mark(tmp_path):
     """Arrows like '21 -> 0' or 'A --> B' must compile cleanly and never render as '¿'."""
