@@ -43,6 +43,46 @@ def _strip_code_fences(text: str) -> str:
     return s
 
 
+_MARKDOWN_LINK_RE = re.compile(r'\[([^\]]*)\]\([^)]*\)')
+_MARKDOWN_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\([^)]*\)')
+_MARKDOWN_HEADING_RE = re.compile(r'^#{1,6}\s*')
+_MARKDOWN_BOLD_RE = re.compile(r'\*\*(.+?)\*\*')
+_MARKDOWN_ITALIC_RE = re.compile(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)')
+_MARKDOWN_BULLET_RE = re.compile(r'^[-*+]\s+')
+
+
+def _strip_markdown_for_review(text: str) -> str:
+    """Flatten markdown to the plain text the RENDERED document shows.
+
+    Reviewers grade the presentation of the document a recruiter sees; raw
+    markdown syntax ('##', '**', '- [label](url)') never appears in the
+    compiled PDF but consistently dragged the grade down (audit: implied
+    ~27/100 LLM component on a clean 1-page resume). Heading markers are
+    removed, emphasis unwrapped, list bullets dropped, and links collapse
+    to their LABEL text - the URL is dropped because external ATS parsers
+    can only see labels in the rendered PDF too (scoring alignment).
+    """
+    if not text:
+        return ""
+    lines_out: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            lines_out.append("")
+            continue
+        line = _MARKDOWN_IMAGE_RE.sub(r'\1', line)
+        line = _MARKDOWN_LINK_RE.sub(r'\1', line)
+        line = _MARKDOWN_HEADING_RE.sub('', line)
+        line = line.replace('`', '')
+        line = _MARKDOWN_BOLD_RE.sub(r'\1', line)
+        line = _MARKDOWN_ITALIC_RE.sub(r'\1', line)
+        line = _MARKDOWN_BULLET_RE.sub('', line)
+        lines_out.append(line)
+    flat = "\n".join(lines_out)
+    flat = re.sub(r'\n{3,}', '\n\n', flat)
+    return flat.strip()
+
+
 # Explicit Unicode-to-ASCII mapping for clean PDF and LaTeX output
 _UNICODE_REPLACEMENTS = {
     # Status / indicator emojis

@@ -1271,3 +1271,89 @@ def test_groq_models_status_flags_unavailable_primary_model(monkeypatch):
     assert ok is True
     assert agent.llms._PRIMARY_MODEL in message
     assert "not among them" in message
+
+
+# ==========================================
+# Scoring truth: reviewer flattening + ATS link-target alignment
+# ==========================================
+
+def test_strip_markdown_for_review_flattens_all_syntax():
+    f = agent.helpers._strip_markdown_for_review
+    md = ("# Jane Doe\n"
+          "jane@example.com | github.com/janedoe\n\n"
+          "## Projects\n"
+          "**Event Streamer** [Live Demo](https://jane.dev/stream) | Go | 2025\n"
+          "- Built pipeline processing 10K events/sec with **true** metrics\n"
+          "- Text with *italics* and `code` and - markers\n")
+    flat = f(md)
+    assert "#" not in flat
+    assert "**" not in flat and "`" not in flat
+    # Markdown link TARGETS are invisible to external parsers (the text layer
+    # holds only the visible label) - targets must be dropped.
+    assert "jane.dev/stream" not in flat
+    # Bare-text URLs are rendered text: external parsers extract them too, so
+    # they stay visible in the flattened view (only link targets disappear).
+    assert "github.com/janedoe" in flat
+    assert "Live Demo" in flat            # label text survives
+    assert "Event Streamer" in flat
+    assert "Jane Doe" in flat and "60 1c" not in flat
+
+
+def test_reviewer_grades_flattened_text_with_anchors(monkeypatch):
+    """Audit root cause of the 42/100: the reviewer graded RAW markdown.
+    It must now read the flattened rendered-text view and anchor its grade
+    to the fixed rubric reference points."""
+    captured = []
+
+    class CapturingReviewer:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    captured.append(" ".join(getattr(m, "content", "") for m in messages))
+                    return agent.ReviewOutput(score=80, feedback="Tighten bullets.")
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", CapturingReviewer())
+    from agent.nodes.reviewer import reviewer_node
+    state = {
+        "optimized_resume": (
+            "# Jane Doe\njane@example.com | github.com/janedoe\n\n"
+            "## Projects\n"
+            "**Event Streamer** [Live Demo](https://github.com/jane/stream) | Go, Kafka | 2025\n"
+            "- Processed 10K events/sec with sub-second latency\n"),
+        "job_text": "Senior platform engineer with Kafka and Go experience.",
+    }
+    out = reviewer_node(state)
+    assert out["llm_quality_score"] == 80
+    prompt = captured[0]
+    assert "## Projects" not in prompt          # markup must not reach the reviewer
+    assert "**Event Streamer**" not in prompt
+    assert "https://github.com/jane/stream" not in prompt   # link TARGET hidden
+    assert "github.com/janedoe" in prompt       # bare contact URL is rendered text
+    assert "Live Demo" in prompt and "Event Streamer" in prompt
+    assert "Calibration anchors" in prompt
+
+
+def test_ats_contact_line_links_still_visible_as_labels():
+    flatten = agent.ats._flatten_link_targets
+    assert flatten("[Live Demo](https://github.com/jane/docker-pipeline)") == "Live Demo"
+    assert flatten("Contact [Email](mailto:jane@x.com) | [GitHub](https://gh.com/)") == \
+        "Contact Email | GitHub"
+
+
+def test_ats_no_keyword_credit_to_url_targets():
+    """Audit: internal scoring credited keywords inside LINK TARGETS (URLs)
+    that external parsers (Workday/Greenhouse/Lever) can never extract from
+    the rendered PDF. Keywords must be visible in LABEL/bullet text only."""
+    from agent.ats import compute_ats_match
+    job = "We use docker for our CI/CD pipelines."
+
+    url_only = "# Jane Doe\n## Projects\n- [Live Demo](https://github.com/jane/docker-pipeline)\n"
+    r1 = compute_ats_match(job, url_only)
+    docker1 = next(k for k in r1["keywords"] if k["keyword"] == "docker")
+    assert docker1["found"] is False, r1["keywords"]
+
+    labeled = "# Jane Doe\n## Projects\n- [Docker](https://github.com/jane/stream)\n"
+    r2 = compute_ats_match(job, labeled)
+    docker2 = next(k for k in r2["keywords"] if k["keyword"] == "docker")
+    assert docker2["found"] is True

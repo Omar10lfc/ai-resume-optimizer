@@ -355,11 +355,36 @@ def _job_brief(job_text: str, max_chars: int = 400) -> str:
 # Main ATS Scoring
 # ==========================================
 
+_MD_LINK_TARGET_RE = re.compile(r'!?\[([^\]]*)\]\([^)]*\)')
+
+
+def _flatten_link_targets(text: str) -> str:
+    """Collapse markdown links to their visible label text (URL dropped).
+
+    External ATS parsers extract only label text from a rendered PDF's
+    text layer; a URL lives in the link target, not the reading flow.
+    Used so internal keyword scoring matches parser-visible semantics.
+    """
+    if not text:
+        return ""
+    return _MD_LINK_TARGET_RE.sub(r'\1', text)
+
+
 def compute_ats_match(job_text: str, resume_text: str,
                       semantic_matches: set[str] | None = None) -> dict:
     semantic_matches = semantic_matches or set()
     job_keywords = _extract_keywords(job_text, top_n=20)
-    resume_lower = resume_text.replace('\\r', ' ').replace('\\n', ' ').replace('\\t', ' ').lower()
+    # Link-target alignment with external parsers (audit): Workday /
+    # Greenhouse / Lever extract only link LABEL text from a rendered PDF -
+    # the URL target is not in the text layer. Internal scoring used the
+    # raw markdown where URLs were visible text, silently awarding keyword
+    # credit (e.g. 'github') that an external parser would not see. Flatten
+    # [label](url) to the label before matching so internal and external
+    # semantics agree.
+    resume_clean = (resume_text.replace('\r', ' ').replace('\n', ' ')
+                    .replace('\t', ' ')
+                    .replace('\\r', ' ').replace('\\n', ' ').replace('\\t', ' '))
+    resume_lower = _flatten_link_targets(resume_clean).lower()
 
     matched_stems = set()
     for kw in job_keywords:

@@ -3,7 +3,7 @@ import re
 
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted, ReviewOutput
 from .. import llms as _llms
-from ..helpers import _safe_print, _safe_truncate
+from ..helpers import _safe_print, _safe_truncate, _strip_markdown_for_review
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Trace evidence (Oct 2026, export runs-all-20261021): the Reviewer's structured
@@ -138,6 +138,11 @@ def reviewer_node(state: AgentState):
     You are a senior hiring manager judging the QUALITY of a resume's presentation.
     Do NOT judge keyword coverage - that is measured separately.
 
+    You are reading the FLATTENED TEXT of the rendered document: markdown
+    syntax has been removed so what you see matches what a human reads in
+    the generated PDF. Grade the content and structure that text conveys,
+    not any markup.
+
     Rate each dimension 0-100 and combine them:
     - Relevance & Tailoring (40%): Does the summary mirror the exact target role
       and its top requirements? Are skills ordered most-relevant-first? Does the
@@ -151,9 +156,20 @@ def reviewer_node(state: AgentState):
       structure, bullets kept to 1-2 lines, natural keyword use (no stuffing),
       free of filler?
 
+    Calibration anchors - anchor the combined score to these reference points:
+    - 85-100: Every bullet opens with a strong action verb and carries a true,
+      verifiable metric (numbers, percentages, or scale); the summary names the
+      exact target role; skills are ordered most-relevant-first; zero filler.
+    - 70-84: Most bullets are quantified but 1-2 are duty-only; summary is close
+      to the target role but not an exact mirror; occasional wording padding.
+    - 50-69: Mixed - several duty-only bullets lacking metrics, a generic
+      summary that could apply to any role, uneven structure.
+    - Below 50: Mostly duty descriptions without measurable outcomes; content
+      is generic (not tailored to this JD); weak or verbose phrasing.
+
     {_untrusted('JOB DESCRIPTION', _safe_truncate(state['job_text'], 2500, 'Job text (reviewer)'))}
 
-    {_untrusted('RESUME', state['optimized_resume'])}
+    {_untrusted('RESUME (flattened plain-text view of the rendered document)', _strip_markdown_for_review(state['optimized_resume']))}
 
     Provide the combined weighted quality score and one specific sentence of feedback to improve it.
     """
