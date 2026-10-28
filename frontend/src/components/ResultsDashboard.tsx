@@ -29,15 +29,17 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result }) =>
     setTimeout(() => setCopied(null), 2000);
   };
 
-  const getScoreBadge = (score: number) => {
-    if (score >= 80) {
+  // Score-class taxonomy comes from the server (good/warn/bad thresholds in
+  // one place). The numeric badge still shows the composite score itself.
+  const getScoreBadge = (scoreClass: "good" | "warn" | "bad") => {
+    if (scoreClass === "good") {
       return {
         bg: "bg-emerald-950/40 border-emerald-500/40 text-emerald-400",
         label: "Ready to Apply",
         statusClass: "text-emerald-400",
       };
     }
-    if (score >= 60) {
+    if (scoreClass === "warn") {
       return {
         bg: "bg-amber-950/40 border-amber-500/40 text-amber-400",
         label: "Moderate Match",
@@ -51,7 +53,7 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result }) =>
     };
   };
 
-  const badge = getScoreBadge(result.score);
+  const badge = getScoreBadge(result.score_class);
 
   const getArtifactIcon = (kind: Artifact["kind"]) => {
     switch (kind) {
