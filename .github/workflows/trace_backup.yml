@@ -37,6 +37,9 @@ permissions:
 
 jobs:
   export:
+    # Skip (not fail) on public repositories - the guard is a design decision,
+    # not an error; a red weekly run is noise on the Actions tab.
+    if: github.event.repository.private == true
     runs-on: ubuntu-latest
     env:
       GROQ_API_KEY: groq-placeholder-not-used
@@ -44,13 +47,6 @@ jobs:
       REDACT_NAMES: ${{ vars.REDACT_NAMES }}
       LANGCHAIN_TRACING_V2: "false"
     steps:
-      - name: Guard - never archive traces of a public repo
-        run: |
-          if [ "${{ github.event.repository.private }}" != "true" ]; then
-            echo "Refusing to archive traces: repository is public (traces hold resume PII)."
-            exit 1
-          fi
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
