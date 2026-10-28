@@ -29,7 +29,7 @@ A sophisticated **Agentic AI Workflow** that optimizes resumes for specific job 
 | **Orchestration** | [LangGraph](https://langchain-ai.github.io/langgraph/) — Cyclic State Graph with conditional edges |
 | **LLM** | `openai/gpt-oss-120b` via [Groq API](https://console.groq.com/) — with automatic fallback to `gpt-oss-20b` and `llama-3.1-8b` |
 | **Fast LLM** | `openai/gpt-oss-20b` — used for cover letter & interview prep (speed-optimized, latency reduced ~30-50%) |
-| **Interface** | [Gradio](https://gradio.app/) — Premium dark-themed web UI with glassmorphism, progress tracking & queue |
+| **Interface** | React 19 + Vite SPA (Tailwind v4, Phosphor icons) over a FastAPI SSE API - legacy Gradio UI still in `app.py` |
 | **Data Processing** | `PyPDF` + `python-docx` (document parsing) + hardened `urllib` fetching (domain allowlist, public-IP check, bounded redirects & size) for URL scraping |
 | **Validation** | Pydantic — Structured LLM output for reliable scoring |
 | **PDF/DOCX Engine** | Resume rendered via **LaTeX** (`pdflatex` → PDF, `pandoc` → DOCX) from a bundled Jake Gutierrez template; cover letter uses `xhtml2pdf` — graceful fallback to HTML→PDF when pdflatex is absent |
@@ -134,6 +134,20 @@ LANGCHAIN_PROJECT=resume-optimizer
 
 ### 3. Launch
 
+**Primary - FastAPI backend + web frontend** (two terminals):
+
+```bash
+# Terminal 1 - API server (SSE pipeline + artifact downloads) on :8000
+python -m uvicorn server.app:app --port 8000
+
+# Terminal 2 - frontend dev server on :3000 (proxies /api -> :8000)
+cd frontend && npm install && npm run dev
+```
+
+Open `http://localhost:3000`. Optional basic auth for the API: set `APP_AUTH_USERNAME` / `APP_AUTH_PASSWORD`.
+
+**Legacy - Gradio UI** (still fully wired, superseded by the frontend):
+
 ```bash
 python app.py
 ```
@@ -155,6 +169,8 @@ The app will open at `http://127.0.0.1:7860`. If LangSmith is configured, you'll
 ---
 
 ## ☁️ Deploy to Hugging Face Spaces
+
+> These steps deploy the **legacy Gradio `app.py`** (the Space currently serves it). The FastAPI + frontend path targets a single-container deploy (uvicorn serving the built frontend) — tracked in the roadmap.
 
 1. Create a new **Gradio** Space on [huggingface.co/new-space](https://huggingface.co/new-space)
 2. Push your code to the Space repository
@@ -242,7 +258,11 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 ## Project Structure
 
 ```
-├── app.py                    # Gradio web interface (premium dark UI with glassmorphism & streaming progress)
+├── app.py                    # Legacy Gradio web interface (superseded by the frontend below)
+├── server/                   # FastAPI layer - the app's API server (SSE pipeline for any client)
+│   ├── app.py                #   /api/v1/step1 | step2 (SSE), /api/v1/health, artifact downloads, auth, queue
+│   └── runners.py            #   Framework-agnostic two-step runners (Gradio-faithful queue/interrupt semantics)
+├── frontend/                 # React 19 + Vite SPA (Tailwind v4, Phosphor) - streaming timeline, results tabs
 ├── agent/                    # Core agent package
 │   ├── __init__.py           #   Public API exports
 │   ├── config.py             #   Environment setup, model constants, output dirs, retention cleanup
@@ -267,8 +287,9 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 │       ├── interview_prep.py #     NODE 6 — Interview question generation (LLM)
 │       └── pdf_exporter.py   #     NODE 7 — LaTeX resume export (PDF/DOCX) + Cover letter HTML→PDF
 ├── tests/
-│   ├── test_resume_agent.py  # 71 unit + integration tests (fake LLMs, no network)
+│   ├── test_resume_agent.py  # 102 unit + integration tests (fake LLMs, no network)
 │   ├── test_latex_render.py  # 48 LaTeX engine tests (escaping, hyperlinks, 1-page fit, formatting)
+│   ├── test_server.py        # 23 FastAPI tests (SSE contract, queue, auth, artifact roundtrip)
 │   ├── test_golden_ats.py    # 5 golden-fixture tests replaying the real incident JD
 │   ├── test_app_ui.py        # 7 UI streaming/regression tests
 │   └── fixtures/
@@ -426,6 +447,27 @@ Seven professional skill definitions — kept locally in `draft/` (gitignored by
 | **Candidate-name masking + output redaction in traced payloads** (Oct 22, commit `07f5582`) | Trace analysis showed names surviving redaction server-side (masking covered emails/phones only, in **inputs** only) — cover-letter/optimized-resume payloads carried the full candidate name | A candidate NAME cannot pattern-match, so it is **registered** then masked: `candidate_name_hint()` parses it from the resume (`Name:` label wins; else a name-shaped first line — 2–4 capitalized tokens, no digits/heading words), `loader` registers after parsing and `app.py` pre-registers pasted resumes **before the loader run traces its input**; `REDACT_NAMES` env adds manual values for re-exporting older data. `_redact_pii` masks full names + ≥4-char tokens (case-insensitive, word-boundary) and is now also wired as `hide_outputs` — outputs were never masked before. Junk input fails safe (no registration), masking never blocks the pipeline |
 | **Weekly off-machine trace backup moved to CI** (Oct 23, commit `0767502`) | Server-side traces sit under free-tier retention limits and bulk exports were manual; the first attempt (Windows Task Scheduler wrapper + hidden task) turned out fragile to debug headlessly (redirect quoting blocked even the log file) | Replaced with `.github/workflows/trace_backup.yml`: every **Saturday 22:00 UTC** the v2 exporter + offline analyzer run and the whole `langsmith_export/` snapshot uploads as a 90-day artifact. Read-only API (zero spend), PII re-redaction at export time, `LANGSMITH_API_KEY` secret + optional `REDACT_NAMES` variable, placeholder Groq env for import only, and a **guard that aborts on public repositories** (traces hold resume PII). Local JSONL stays the durable master; artifacts are the rolling off-machine copy; `workflow_dispatch` allows manual runs. The Task Scheduler task/ps1 were unregistered and removed, not committed |
 
+### Session - Oct 24-28 2026 (product layer: FastAPI server + React frontend)
+
+The UI outer shell left "stuck demo" territory: the pipeline is now served over a first-class API and consumed by a purpose-built frontend - the core `agent/` graph untouched. All rows below verified by the full suite plus a live end-to-end probe (see verification row).
+
+| Item (commit) | Why | What shipped & impact |
+|---|---|---|
+| **Universal project-link architecture + hyperlink-preserving ingestion + T1 fontenc** (Oct 25, `d3a9e32`) | Audit-surface fixes: project links were built from candidate-specific fallbacks, and uploaded PDFs/DOCX lost their hyperlinks before rendering | Project links are extracted dynamically (title markdown, pipe fields, labeled prefixes) and rendered as clickable `\href` beside project titles; PDF/DOCX ingestion maps `/Annots` + OpenXML rels to `[Text](url)` so uploads keep their links; `\usepackage[T1]{fontenc}` + lmodern stops ASCII `>` rendering as an inverted question mark and keeps the PDF text layer ATS-extractable; Groq health probe sends a real User-Agent (resolves Cloudflare 1010 false positives) |
+| **FastAPI backend replacing the Gradio UI** (Oct 26, `4ffb4fe`) | Any client beyond the Gradio page (new SPA, future extension) needs an API instead of a Gradio socket protocol | `server/`: SSE endpoints `/api/v1/step1`, `/api/v1/step2` (status/warning/session/error/done/result events), `/api/v1/health`, artifact downloads with traversal-validated UUID request dirs; Gradio-faithful queue semantics (1 runner, max 5 waiters, in-stream queue-full error); optional basic auth `APP_AUTH_USERNAME`/`APP_AUTH_PASSWORD`; docs routes disabled (they bypass app-level auth); artifact URLs derived from the artifact file's request dir; 23-test suite over real graphs with fake LLMs |
+| **Vite React frontend scaffold** (Oct 26, `0dd08bb`) | The Gradio UI's "premium dark glassmorphism" was a demo skin, not a product UI | SPA two-step wizard: resume upload/paste + JD input, gap-scan review/edit step, streaming pipeline timeline, results dashboard (resume/cover/ATS/interview tabs, copy buttons, download center), health indicator; Tailwind v4 + motion + Phosphor icons; typed against the server payload (`score_class`, weights, artifacts) |
+| **No fabricated project URLs** (Oct 27, `5900d95`) | Renderer fallbacks could SYNTHESIZE `github.com/<handle>/<title-slug>` from a bare "GitHub" label - a guaranteed 404 on a recruiter's screen and a violation of the anti-hallucination contract | All URL-synthesis branches deleted; links render only when verifiably present in the source (title-line markdown, pipe segments, labeled prefixes, raw URLs); anti-fabrication regression tests |
+| **DOCX cell hyperlinks + gap-aware PDF fragment joining** (Oct 27, `60e476e`) | Table-grid Word resumes lost every hyperlink (cells read as raw text); the PDF visitor path glued text runs (`Pyth`+`on`, `Machine`+`Learning`) exactly on design-heavy documents | Every DOCX cell paragraph now flows through the hyperlink-aware reader (merged cells deduped by shared element identity); visitor fragments carry (text, x, y, size) and `_join_visitor_fragments()` rebuilds whitespace from run geometry - biased toward inserting separators, since added spaces are recoverable but glued words are not |
+| **Enforced 1-page containment** (Oct 27, `ddeccfb`) | "Exactly one page" was emergent, never checked - a dense resume silently spilled onto page 2 and cut Education/Certifications where recruiters never see them | `pdf_page_count()` (pypdf) after compile; overflow triggers a compact re-render (spacing-only `<!--COMPACT_BLOCK-->` overrides, content untouched); adopted only when the compact pass lands exactly 1 page; `resume_pages`/`page_overflow_warning` state lets the UI surface "shipped N pages - trim content" instead of hiding it |
+| **Contact-block extraction fix** (Oct 27, `0b3a31c`) | Custom brief headings like `## Tech Stack` were absorbed INTO the contact details line, deleting the section and gluing its content onto the contact row; comma-separate skills lists were split into a broken two-column subheading | Contact block now ends at ANY markdown heading (only contact-family headings feed the details line); Skills-family comma lists always emit simple lines |
+| **Reviewer grades flattened rendered text + ATS link-target alignment** (Oct 28, `b7e18ef`) | Trace-driven audit: the Reviewer judged RAW markdown - `##`/`**`/`[label](url)` never appear in the compiled PDF, yet dragged the implied LLM score to ~27/100 on a clean one-pager | `_strip_markdown_for_review()` flattens headings/emphasis/bullets and collapses links to their LABEL text for the reviewer prompt; rubric gained fixed calibration anchors; ATS scoring ignores markdown link targets too (external parsers extract only label text from the PDF) - while bare-text URLs stay visible BY DESIGN (they exist in the rendered text layer for recruiters and parsers alike); two over-asserting test expectations corrected to state that ruling explicitly |
+| **Score badge driven by the server payload** (Oct 28, `b76eb72`) | Threshold logic existed twice (server `score_class` + UI re-derivation) - drift risk | Frontend badge branches on the server's `score_class`; the numeric badge still shows the composite score |
+| **CI coverage gate includes `server/`** (Oct 28, `fae01cd`) | The new API layer must keep its 23 tests as it grows | Gate now measures agent + app + server (85% measured) |
+| **Node-id stream contract + node-driven timeline** (Oct 28, `73c4cf4`, `5bf3565`) | The timeline prose-sniffed status strings and hard-coded 7 nodes - missing the `cover_letter`/`interview_prep` fan-out, mislabeled "improver running" during the fan-out and the correction loop; `warning`/`session` SSE events were silently dropped | Every per-node status now carries `node` + `node_state` (generic notices stay nodeless); the timeline is a 9-node topology driven by the node arrival log (loop re-arrivals handled, human-review interrupt as a highlighted pseudo-node); frontend parses `warning`/`session` events (amber dismissible banner; session re-sync on fresh-run rotation); Reviewer Feedback panel restored (Gradio parity); composite weights rendered from the server payload instead of hardcoded 60%/40% |
+| **Live end-to-end validation on the real stack** (Oct 28) | Tests + build pass, but the SSE wire format and artifact pipeline had never been exercised through the running processes | Probe through uvicorn + Vite (fake candidate, no real PII): step1 wire format exact (node-tagged statuses, realistic gap list), step2 full run scored 70/100 (`score_class: warn`, LLM-with-salvage happy path) with all four artifacts shipped and downloaded live (PDF 163 KB, LaTeX normalized the model's unicode-space artifacts); fan-out arrived as separate node statuses; queue/auth/validation paths probed zero-cost through the proxy |
+| **`.env` exposure claim debunked** (Oct 28, plan review) | An external plan document claimed live keys were committed to the repo | Verified NOT true: `git ls-files .env` empty, `git check-ignore .env` passes, `git log --all -- .env` = 0 commits - keys were never committed, no forced rotation required. (Routine rotation remains good hygiene.) |
+| **Product roadmap decision: browser extension as a third API client** (Oct 28, plan review) | The plan document proposed a separate multi-tenant stack (PostgreSQL/Redis/billing) for an extension MVP | Decision: the extension reuses the SAME FastAPI API as the web frontend (BYO-key in `chrome.storage.local`, not `.sync`); the content-script JD extraction is the killer feature and bypasses `url_fetch.py` for that client only; multi-tenant storage/billing deferred until SaaS mode; Typst stays on the backlog |
+
 ### UI Fixes
 
 | Change | Reason |
@@ -459,7 +501,7 @@ venv\Scripts\python.exe -m pytest tests -v
 | **Uploads** | PDF magic-byte check, 5 MB / 8-page limits, encryption rejected |
 | **API keys** | `.env` gitignored (verified untracked); keys never logged; auth errors fail fast instead of retrying |
 | **Files on disk** | Per-request UUID directories (mode 0700); startup sweep deletes request dirs older than 24 h so uploaded resumes and generated PDFs don't accumulate |
-| **Deployment** | Optional basic auth via `GRADIO_AUTH_USERNAME`/`GRADIO_AUTH_PASSWORD` (unauthenticated by default — fine for localhost); queue concurrency limited to 1 to protect Groq quota |
+| **Deployment** | Optional basic auth: FastAPI `APP_AUTH_USERNAME`/`APP_AUTH_PASSWORD`, legacy Gradio `GRADIO_AUTH_USERNAME`/`GRADIO_AUTH_PASSWORD` (both unauthenticated by default - fine for localhost); queue concurrency limited to 1 (max 5 waiting clients) to protect Groq quota |
 
 ### Measured Impact
 
@@ -538,7 +580,7 @@ To ensure robust 24/7 cloud deployments (Hugging Face Spaces, Docker containers,
 
 ### Next Steps (Roadmap)
  
-1. **Interactive Resume Diff & Comparison View**: Side-by-side viewer in Gradio highlighting added technical skills and rewritten bullet points, alongside before/after ATS score comparison.
+1. **Interactive Resume Diff & Comparison View**: Side-by-side viewer in the web UI highlighting added technical skills and rewritten bullet points, alongside before/after ATS score comparison.
 2. **Advanced ATS Diagnostics & Google XYZ Bullet Impact Scorer**: Categorized hard vs. soft skill breakdown and Google XYZ formula audit (`Accomplished [X] as measured by [Y] by doing [Z]`) with active verb recommendations.
 3. **Multi-Provider LLM & Local Model Support**: Support for OpenAI, Anthropic, DeepSeek, and local offline Ollama alongside Groq.
 4. **Multi-language support**: per-language stopwords/stemmers (Snowball covers ~15 languages) + prompt language parameter.

@@ -1,6 +1,6 @@
 # Next Steps — Job Application Optimizer
 
-Last updated: **Oct 21 2026** · Snapshot: 131 tests passing (~1:00) · coverage 87% (CI gate 84%) · `pip check` clean · langgraph stack 1.2.16 · working tree clean
+Last updated: **Oct 28 2026** · Snapshot: 185 tests passing (~2:30) · coverage 85% (CI gate 84% over agent+app+server) · langgraph stack 1.2.16 · FastAPI `server/` + Vite React `frontend/` shipped & live-probed · working tree clean
 
 This is the living roadmap. The public, permanent record of *what was done and why* lives in [README.md](README.md) ("Changelog & Design Decisions" → "Session — Oct 21 2026"); this file tracks **what's next** and the current state. Legend: ✅ done this cycle · 🔲 planned · 🔶 optional.
 
@@ -37,10 +37,25 @@ The seven professional skill definitions kept locally in `draft/` (gitignored) w
 
 ---
 
+## Product layer — FastAPI server + React frontend ✅ SHIPPED (Oct 24–28)
+
+The Phase-4 "frontend rebuild" trigger fired. Details in README changelog → "Session — Oct 24–28 2026".
+
+| # | Item | Outcome | Commit |
+|---|------|---------|--------|
+| P1 | FastAPI API server | `server/`: SSE step1/step2 + health + artifact downloads + optional auth + Gradio-equivalent queue semantics; 23-test suite | `4ffb4fe`, `73c4cf4` |
+| P2 | Vite React frontend | Two-step wizard, gap-review step, node-driven streaming timeline, results tabs + download center; `tsc && vite build` clean | `0dd08bb`, `5bf3565` |
+| P3 | Contract hardening | Status events carry graph node ids (fan-out + correction loop display correctly); `warning`/`session` SSE events parsed; reviewer-feedback panel restored; weights rendered from server payload | `5bf3565` |
+| P4 | Live validation | Real-stack probe (fake candidate, no real PII): step1 wire exact, step2 scored 70/100 with all four artifacts downloaded live; queue/auth/validation paths probed zero-cost through the dev proxy | — |
+
+**Remaining frontend polish:** light-mode theming decision (dark-only token set today), Geist font pairing + restrained motion polish, single-container production deploy superseding the Gradio Space.
+
+---
+
 ## Phase 3 — Feature roadmap 🔲 OPEN (priority order)
 
 ### 11 🔲 Before/After diff view — first candidate
-Side-by-side original vs optimized resume in Gradio with changed bullets/skills highlighted and a score-delta badge (before/after ATS % + composite).
+Side-by-side original vs optimized resume in the web UI with changed bullets/skills highlighted and a score-delta badge (before/after ATS % + composite).
 - *Implementation sketch:* streamer re-emits `original_resume` alongside `optimized_resume`; diff via `difflib.SequenceMatcher` (word-level) + `rich`-style markup or two Gradio `HTML` panes; no new LLM calls, no new state fields beyond wiring.
 - *Effort:* M (~1 session). *Why it leads:* highest user-perceived value; directly demonstrates the product's promise.
 
@@ -58,8 +73,8 @@ Refactor `agent/llms.py` around `langchain.chat_models.init_chat_model` behind a
 Snowball stemmers (~15 languages) per the known non-Latin keyword limitation + `PROMPT_LANGUAGE` param for model-facing prompts.
 - *Only if needed* for actual usage; effort M; pairs with the backlog note on ASCII-only extraction.
 
-### 15 🔶 HF Spaces deploy polish
-Pin the Space's `gradio` version to match, ensure 7860 binding default, `.gitattributes` LFS only if PDFs become assets; verify `SKIP_STARTUP_HEALTHCHECK` behavior in Space startup logs.
+### 15 🔶 Production deploy of the new stack
+Single-container deploy serving the built frontend + the FastAPI server (uvicorn) — supersedes the Gradio Space instructions in the README. Verify `SKIP_STARTUP_HEALTHCHECK` behavior in startup logs; `.gitattributes` LFS only if PDFs become assets.
 
 ---
 
@@ -69,7 +84,7 @@ Pin the Space's `gradio` version to match, ensure 7860 binding default, `.gitatt
 |-----|-------|
 | LangSmith eval set | Replay exported traces + fresh runs into a dataset (score sanity ranges, no fabricated sections, keyword precision). **Must use `client.runs.query()`** — `list_runs()` deprecates after **Jan 31 2027** |
 | Dockerfile | Bake LaTeX toolchain for reproducible deploys beside HF Spaces path |
-| Frontend rebuild (Streamlit / FastAPI+React) | Only if Gradio blocks something concrete; current UI is tested and streaming-capable |
+| ✅ Frontend rebuild (FastAPI+React) | **SHIPPED Oct 24–28** — `server/` + `frontend/`, live-probed; see the "Product layer" section above |
 
 ---
 
@@ -78,6 +93,9 @@ Pin the Space's `gradio` version to match, ensure 7860 binding default, `.gitatt
 1. **Semantic-verify retry** (`ats_check_node::_semantic_verify_missing`) — same structured-output transient-failure family as the reviewer; currently fails soft (keeps keywords as missing). Consider the same retry-once pattern once traces show its failure rate.
 2. **Top-20 frequency bias** — on the incident JD, `python`/`git`/`llm` lost the top-20 cut to generic words (`workflows`, `ai`); smoke preflight flagged it. Not a defect; a ranking-quality observation for the ATS extractor.
 3. **Ubuntu vs Windows coverage drift** — the 84% gate has headroom (measured 87% on Windows); if CI (Linux) trends near the gate, consider measuring coverage locally with the same flags before raising/flooring it.
+4. **Light-mode theming decision (frontend)** — the design is dark-only (`frontend/src/index.css` tokens + hardcoded hex in components); decide: proper light token set (recommended) vs defer indefinitely. One design pass, touch every component.
+5. **Geist font pairing + motion polish (frontend)** — typography is the system-font stack today; `@fontsource-variable/geist` + `geist-mono` candidates; `motion` is installed but unused — restrained reveal/progress transitions only.
+6. **Chrome extension MVP** — decision recorded (README, Oct 28): third client of the same FastAPI API as the web frontend, BYO-key in `chrome.storage.local`, Manifest V3 + side panel reusing the API; content-script JD extraction (LinkedIn/Indeed/Greenhouse/Lever/Workday) is the killer feature. No new backend surfaces except, possibly, per-client CORS. Realistic effort 1–2 focused weeks.
 
 ## Production-readiness checklist (from full-history trace data, Oct 22)
 
@@ -106,7 +124,7 @@ Evidence base: 871 runs / 73 traces (2026-08-02 → 2026-10-21), 159 LLM runs, 1
 venv\Scripts\python.exe -m pytest tests -q
 
 # Coverage check (mirrors CI gate)
-venv\Scripts\python.exe -m pytest tests -q --cov=agent --cov=app --cov-report=term --cov-fail-under=84
+venv\Scripts\python.exe -m pytest tests -q --cov=agent --cov=app --cov=server --cov-report=term --cov-fail-under=84
 
 # Live traced smoke run (one real pipeline run; exports trace to traces/)
 # script kept in %TEMP%\opencode\smoke_run_traced.py during the session
