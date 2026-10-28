@@ -98,8 +98,12 @@ def premask_resume_name(resume_source) -> None:
         print(f"[PII] name pre-registration skipped: {exc}")
 
 
-def _status(message: str) -> dict:
-    return {"type": "status", "message": message}
+def _status(message: str, node: str | None = None) -> dict:
+    info = {"type": "status", "message": message}
+    if node:
+        info["node"] = node
+        info["node_state"] = "running"
+    return info
 
 
 def stream_step1(job_description: str, resume_source: str,
@@ -128,7 +132,7 @@ def stream_step1(job_description: str, resume_source: str,
             for node, delta in update.items():
                 if node and delta:
                     yield _status(
-                        f"{NODE_STATUS.get(node, node + '...')} (step 1 of 2)")
+                        f"{NODE_STATUS.get(node, node + '...')} (step 1 of 2)", node)
         snapshot = agent_app.get_state(config)
         missing = (snapshot.values or {}).get("missing_skills", "")
     except Exception as e:
@@ -224,7 +228,7 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
                                            config=config, stream_mode="updates"):
                 for node, delta in update.items():
                     if node and delta:
-                        yield _status(f"{NODE_STATUS.get(node, node + '...')} (1/2)")
+                        yield _status(f"{NODE_STATUS.get(node, node + '...')} (1/2)", node)
 
         # Inject the user's edited gaps/context at the human-review checkpoint
         agent_app.update_state(config, {
@@ -241,7 +245,7 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
             for node, delta in update.items():
                 if node and delta:
                     final_state.update(delta)
-                    yield _status(f"{NODE_STATUS.get(node, node + '...')} (2/2)")
+                    yield _status(f"{NODE_STATUS.get(node, node + '...')} (2/2)", node)
     except Exception as e:
         traceback.print_exc()
         yield {"type": "error", "message": f"Optimization failed: {e}"}

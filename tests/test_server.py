@@ -212,6 +212,11 @@ def test_step1_stream_premasks_name_and_returns_gaps(client, fake_llms, clean_na
     assert "Kubernetes" in done["missing_skills"]
     assert any("(step 1 of 2)" in s for s in _statuses(events))
     assert any("Loading documents..." in s for s in _statuses(events))
+    # node-aware statuses: every tagged event carries a node id + running state
+    tagged = [e for kind, e in events if kind == "status" and e.get("node")]
+    assert tagged and all(e["node_state"] == "running" for e in tagged)
+    tagged_nodes = {e["node"] for e in tagged}
+    assert {"loader", "scanner"} <= tagged_nodes or tagged_nodes == {"loader"}
     assert "Jane Roe" in agent.tracing._KNOWN_NAMES  # pasted resume pre-masked
 
 
@@ -290,6 +295,13 @@ def test_step2_from_scratch_warns_and_returns_full_result(client, fake_llms, mon
     assert any("(1/2)" in s for s in statuses)
     assert any("(2/2)" in s for s in statuses)
 
+    # node ids accompany the per-node statuses across the whole run incl. fan-out
+    tagged = [e for kind, e in events if kind == "status" and e.get("node")]
+    assert tagged and all(e["node_state"] == "running" for e in tagged)
+    tagged_nodes = {e["node"] for e in tagged}
+    assert {"loader", "scanner", "improver", "reviewer", "ats_check",
+            "cover_letter", "interview_prep", "pdf_exporter"} <= tagged_nodes
+
 
 def test_step2_resumes_interrupted_session_from_step1(client, fake_llms, clean_name_register):
     r1 = client.post("/api/v1/step1",
@@ -307,6 +319,10 @@ def test_step2_resumes_interrupted_session_from_step1(client, fake_llms, clean_n
     # checkpoint interruption: segment 1 (loader/scanner) is NOT re-run
     assert not any("(1/2)" in s for s in statuses)
     assert any("(2/2)" in s for s in statuses)
+    tagged_nodes = {e["node"] for kind, e in events
+                    if kind == "status" and e.get("node")}
+    assert "improver" in tagged_nodes
+    assert not {"loader", "scanner"} & tagged_nodes
 
     # the user's edited notes were injected at the human-review checkpoint
     snapshot = agent.agent_app.get_state({"configurable": {"thread_id": session}})
