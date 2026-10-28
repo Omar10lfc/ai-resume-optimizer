@@ -5,6 +5,8 @@ import type { PipelineStage } from "../types";
 interface StepTimelineProps {
   stage: PipelineStage;
   statusMessage: string;
+  /** Graph node ids in arrival order, from status events carrying a node id. */
+  nodeLog: string[];
 }
 
 interface TimelineNode {
@@ -13,6 +15,10 @@ interface TimelineNode {
   stepNum: number;
 }
 
+// Full pipeline topology incl. the cover_letter / interview_prep fan-out.
+// "checkpoint" is a pseudo-node: the graph INTERRUPTS before the improver and
+// never announces it as a node update - the pipeline paused there during the
+// step 1 review.
 const NODES: TimelineNode[] = [
   { id: "loader", label: "Ingest Docs", stepNum: 1 },
   { id: "scanner", label: "Gap Analysis", stepNum: 1 },
@@ -20,57 +26,61 @@ const NODES: TimelineNode[] = [
   { id: "improver", label: "Tailor Resume", stepNum: 2 },
   { id: "reviewer", label: "Quality Audit", stepNum: 2 },
   { id: "ats_check", label: "ATS Match", stepNum: 2 },
+  { id: "cover_letter", label: "Cover Letter", stepNum: 2 },
+  { id: "interview_prep", label: "Interview Prep", stepNum: 2 },
   { id: "pdf_exporter", label: "Export PDF", stepNum: 2 },
 ];
 
-export const StepTimeline: React.FC<StepTimelineProps> = ({ stage, statusMessage }) => {
-  // Determine state of each node based on the pipeline stage and status message
+const ORDER = NODES.map((n) => n.id);
+const isStep1Node = (id: string) =>
+  id === "loader" || id === "scanner" || id === "checkpoint";
+
+export const StepTimeline: React.FC<StepTimelineProps> = ({ stage, statusMessage, nodeLog }) => {
+  // Progress is derived from the node arrival log (server truth), NOT from
+  // prose-sniffing status messages. The LAST arrival is the running node;
+  // anything already announced stays completed (the improver <-> reviewer ->
+  // ats_check correction loop re-announces nodes, which arrival history
+  // handles naturally).
+  const current = nodeLog.length > 0 ? nodeLog[nodeLog.length - 1] : null;
+  const currentIdx = current ? ORDER.indexOf(current) : -1;
+  const seen = new Set(nodeLog);
+
   const getNodeState = (nodeId: string): "completed" | "running" | "pending" => {
     if (stage === "idle") return "pending";
+    if (stage === "step2_done") return "completed";
 
     if (stage === "step1_running") {
-      if (statusMessage.toLowerCase().includes("scanning") || statusMessage.toLowerCase().includes("gap")) {
-        if (nodeId === "loader") return "completed";
-        if (nodeId === "scanner") return "running";
-        return "pending";
-      }
-      if (nodeId === "loader") return "running";
-      return "pending";
+      if (current === nodeId) return "running";
+      if (seen.has(nodeId)) return "completed";
+      return nodeId === "loader" ? "running" : "pending"; // before the first update arrives
     }
 
     if (stage === "step1_review") {
-      if (nodeId === "loader" || nodeId === "scanner") return "completed";
+      // the graph is paused at the interrupt: the human IS the checkpoint
       if (nodeId === "checkpoint") return "running";
+      if (nodeId === "loader" || nodeId === "scanner") return "completed";
       return "pending";
     }
 
-    if (stage === "step2_running") {
-      if (nodeId === "loader" || nodeId === "scanner" || nodeId === "checkpoint") return "completed";
-
-      const msg = statusMessage.toLowerCase();
-      if (msg.includes("exporting") || msg.includes("pdf") || msg.includes("latex")) {
-        if (["improver", "reviewer", "ats_check"].includes(nodeId)) return "completed";
-        if (nodeId === "pdf_exporter") return "running";
-        return "pending";
-      }
-      if (msg.includes("ats") || msg.includes("keyword")) {
-        if (["improver", "reviewer"].includes(nodeId)) return "completed";
-        if (nodeId === "ats_check") return "running";
-        return "pending";
-      }
-      if (msg.includes("reviewing") || msg.includes("judging") || msg.includes("quality")) {
-        if (nodeId === "improver") return "completed";
-        if (nodeId === "reviewer") return "running";
-        return "pending";
-      }
-      if (nodeId === "improver") return "running";
-      return "pending";
+    // step2_running
+    if (nodeLog.length === 0) {
+      if (nodeId === "improver") return "running"; // resume segment starts here
+      return isStep1Node(nodeId) ? "completed" : "pending";
     }
+    if (current === nodeId) return "running";
+    if (seen.has(nodeId)) return "completed";
 
-    if (stage === "step2_done") {
+    if (isStep1Node(nodeId)) {
+      // Plain resume: segment 1 is never re-announced -> it is history.
+      // Fresh re-run: loader/scanner arrive again, so only step-1 nodes
+      // behind the last arrival in canonical order count as done.
+      if (seen.has("loader") || seen.has("scanner")) {
+        return ORDER.indexOf(nodeId) < currentIdx ? "completed" : "pending";
+      }
       return "completed";
     }
-
+    // Fan-out pair runs in parallel: without a completion event for an
+    // unseen node it stays honest-pending until its own arrival.
     return "pending";
   };
 
@@ -90,7 +100,7 @@ export const StepTimeline: React.FC<StepTimelineProps> = ({ stage, statusMessage
       </div>
 
       {/* Node stages */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-9 gap-2">
         {NODES.map((node) => {
           const state = getNodeState(node.id);
           const isCompleted = state === "completed";

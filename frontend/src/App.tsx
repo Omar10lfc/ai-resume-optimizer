@@ -6,7 +6,7 @@ import { HumanReviewModal } from "./components/HumanReviewModal";
 import { ResultsDashboard } from "./components/ResultsDashboard";
 import { runStep1, runStep2, checkProviderHealth } from "./api";
 import type { PipelineStage, OptimizationResult } from "./types";
-import { WarningCircle, X, SlidersHorizontal, CaretDown, CaretUp, FileText } from "@phosphor-icons/react";
+import { WarningCircle, Warning, X, SlidersHorizontal, CaretDown, CaretUp, FileText } from "@phosphor-icons/react";
 
 export function App() {
   const [healthOk, setHealthOk] = useState<boolean | null>(null);
@@ -14,6 +14,10 @@ export function App() {
   const [stage, setStage] = useState<PipelineStage>("idle");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [warningMessage, setWarningMessage] = useState<string | null>(null);
+  // Graph node ids in arrival order, fed by status events carrying a node id
+  // (drives the pipeline timeline without prose-sniffing status messages)
+  const [nodeLog, setNodeLog] = useState<string[]>([]);
 
   const [session, setSession] = useState<string>("");
   const [jobMode, setJobMode] = useState<"text" | "url">("text");
@@ -53,6 +57,8 @@ export function App() {
     setStage("idle");
     setStatusMessage("");
     setErrorMessage(null);
+    setWarningMessage(null);
+    setNodeLog([]);
     setSession("");
     setMissingSkills("");
     setUserNotes("");
@@ -60,8 +66,16 @@ export function App() {
     setShowInputs(false);
   };
 
+  // Node-bearing statuses append to the nodeLog; generic ones only update the chip
+  const handleStreamStatus = (msg: string, node?: string) => {
+    setStatusMessage(msg);
+    if (node) setNodeLog((log) => [...log, node]);
+  };
+
   const handleAnalyzeStep1 = () => {
     setErrorMessage(null);
+    setWarningMessage(null);
+    setNodeLog([]);
     setStage("step1_running");
     setStatusMessage("Initializing documents...");
 
@@ -80,7 +94,7 @@ export function App() {
     }
 
     runStep1(fd, {
-      onStatus: (msg) => setStatusMessage(msg),
+      onStatus: handleStreamStatus,
       onDone: (data) => {
         setSession(data.session);
         setMissingSkills(data.missing_skills);
@@ -97,6 +111,8 @@ export function App() {
 
   const handleOptimizeStep2 = () => {
     setErrorMessage(null);
+    setWarningMessage(null);
+    setNodeLog([]);
     setStage("step2_running");
     setStatusMessage("Resuming pipeline from checkpoint...");
 
@@ -116,8 +132,11 @@ export function App() {
     }
 
     runStep2(fd, {
-      onStatus: (msg) => setStatusMessage(msg),
+      onStatus: handleStreamStatus,
+      onWarning: (msg) => setWarningMessage(msg),
+      onSession: (s) => setSession(s),
       onResult: (res) => {
+        setSession(res.session);
         setResult(res);
         setStage("step2_done");
         setStatusMessage("Career documents generated successfully.");
@@ -160,6 +179,22 @@ export function App() {
           </div>
         )}
 
+        {/* Warning notification banner (mid-stream notices, e.g. auto-detected gaps) */}
+        {warningMessage && (
+          <div className="mb-6 p-4 rounded-xl bg-amber-950/40 border border-amber-500/40 text-amber-300 text-sm flex items-center justify-between gap-3 animate-fade-in">
+            <div className="flex items-center gap-2.5">
+              <Warning weight="bold" className="w-5 h-5 text-amber-400 shrink-0" />
+              <span>{warningMessage}</span>
+            </div>
+            <button
+              onClick={() => setWarningMessage(null)}
+              className="p-1 hover:text-white transition-colors"
+            >
+              <X weight="bold" className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* Hero Section: Lean, un-bloated copy */}
         <section className="mb-8">
           <div className="max-w-3xl">
@@ -176,7 +211,7 @@ export function App() {
         </section>
 
         {/* 3. Pipeline Step Visualizer */}
-        <StepTimeline stage={stage} statusMessage={statusMessage} />
+        <StepTimeline stage={stage} statusMessage={statusMessage} nodeLog={nodeLog} />
 
         {/* 4. Input Section: Collapsed once results are ready, expandable on demand */}
         {stage === "step2_done" && !showInputs ? (

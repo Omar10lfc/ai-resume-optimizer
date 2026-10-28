@@ -10,6 +10,7 @@ export interface OptimizationResult {
   cover_letter: string;
   interview_questions: string;
   ats_result: string;
+  feedback: string;
   ats_percentage: number;
   score: number;
   score_class: "good" | "warn" | "bad";
@@ -21,7 +22,7 @@ export interface OptimizationResult {
   status: string;
 }
 
-export type PipelineStage = 
+export type PipelineStage =
   | "idle"
   | "step1_running"
   | "step1_review"

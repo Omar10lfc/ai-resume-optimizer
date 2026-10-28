@@ -12,6 +12,7 @@ import {
   ChartBar,
   Question,
   Sparkle,
+  Lightbulb,
 } from "@phosphor-icons/react";
 import type { OptimizationResult, Artifact } from "../types";
 
@@ -137,7 +138,7 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result }) =>
               Optimized Career Documents Generated
             </h3>
             <p className="text-xs text-[#64748b] mt-0.5">
-              60% deterministic ATS keywords ({result.ats_percentage}%) + 40% presentation quality rubric
+              {Math.round(result.weights.ats * 100)}% deterministic ATS keywords ({result.ats_percentage}%) + {Math.round(result.weights.llm * 100)}% presentation quality rubric
             </p>
           </div>
         </div>
@@ -243,6 +244,17 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result }) =>
                 {result.optimized_resume}
               </ReactMarkdown>
             </div>
+            {result.feedback && (
+              <div className="mt-5 pt-4 border-t border-[#1e2436]">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Lightbulb weight="bold" className="w-4 h-4 text-[#06b6d4]" />
+                  <span className="text-xs font-mono uppercase tracking-wider text-[#94a3b8]">Reviewer Feedback</span>
+                </div>
+                <div className="text-xs text-[#94a3b8] leading-relaxed whitespace-pre-line">
+                  {result.feedback}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

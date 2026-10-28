@@ -1,7 +1,9 @@
 import type { OptimizationResult } from "./types";
 
 interface StreamCallbacks<T> {
-  onStatus: (message: string) => void;
+  onStatus: (message: string, node?: string) => void;
+  onWarning?: (message: string) => void;
+  onSession?: (session: string) => void;
   onDone?: (data: T) => void;
   onResult?: (data: T) => void;
   onError: (error: string) => void;
@@ -62,7 +64,11 @@ async function consumeSSE<T>(
         try {
           const payload = JSON.parse(dataStr);
           if (eventType === "status" && payload.message) {
-            callbacks.onStatus(payload.message);
+            callbacks.onStatus(payload.message, payload.node);
+          } else if (eventType === "warning" && payload.message) {
+            callbacks.onWarning?.(payload.message);
+          } else if (eventType === "session" && payload.session) {
+            callbacks.onSession?.(payload.session);
           } else if (eventType === "error" && payload.message) {
             callbacks.onError(payload.message);
             return;
