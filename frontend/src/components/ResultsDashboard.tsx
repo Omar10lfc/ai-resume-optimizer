@@ -1,6 +1,4 @@
-import React, { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   DownloadSimple,
   Copy,
@@ -13,338 +11,273 @@ import {
   Question,
   Sparkle,
   Lightbulb,
+  ArrowsLeftRight,
 } from "@phosphor-icons/react";
-import type { OptimizationResult, Artifact } from "../types";
+import type { OptimizationResult } from "../types";
+import { resolveArtifactUrl } from "../api";
+import { ScoreGauge } from "./ScoreGauge";
+import { DiffView } from "./DiffView";
+import { Markdown } from "./Markdown";
+
+type TabId = "resume" | "cover" | "ats" | "interview";
 
 interface ResultsDashboardProps {
   result: OptimizationResult;
+  /** Present only in paste mode: powers the before/after diff view. */
+  originalResume?: string;
 }
 
-export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result }) => {
-  const [activeTab, setActiveTab] = useState<"resume" | "cover" | "ats" | "interview">("resume");
+const TABS: Array<{ id: TabId; label: string; icon: React.ElementType }> = [
+  { id: "resume", label: "Resume", icon: Article },
+  { id: "cover", label: "Cover letter", icon: Sparkle },
+  { id: "ats", label: "ATS report", icon: ChartBar },
+  { id: "interview", label: "Interview prep", icon: Question },
+];
+
+const ARTIFACT_META: Record<string, { label: string; icon: React.ElementType; className: string }> = {
+  "resume-pdf": { label: "Resume PDF", icon: FilePdf, className: "text-danger" },
+  "cover-pdf": { label: "Cover letter PDF", icon: FilePdf, className: "text-danger" },
+  "resume-docx": { label: "Resume DOCX", icon: FileDoc, className: "text-info" },
+  "resume-tex": { label: "LaTeX source", icon: FileCode, className: "text-ok" },
+};
+
+function useCopyFeedback(): { copied: string | null; copy: (text: string, label: string) => void } {
   const [copied, setCopied] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const copy = useCallback((text: string, label: string) => {
+    navigator.clipboard.writeText(text).then(
+      () => {
+        setCopied(label);
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => setCopied(null), 2000);
+      },
+      () => {
+        // clipboard may be blocked in some embedded contexts; silent failure
+        // is acceptable here since the text is still visible on screen
+      }
+    );
+  }, []);
+  return { copied, copy };
+}
 
-  const copyToClipboard = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(label);
-    setTimeout(() => setCopied(null), 2000);
-  };
+export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, originalResume }) => {
+  const [activeTab, setActiveTab] = useState<TabId>("resume");
+  const [artifactUrls, setArtifactUrls] = useState<Record<string, string>>({});
+  const [showDiff, setShowDiff] = useState(false);
+  const { copied, copy } = useCopyFeedback();
+  const tabRefs = useRef(new Map<TabId, HTMLButtonElement | null>());
 
-  // Score-class taxonomy comes from the server (good/warn/bad thresholds in
-  // one place). The numeric badge still shows the composite score itself.
-  const getScoreBadge = (scoreClass: "good" | "warn" | "bad") => {
-    if (scoreClass === "good") {
-      return {
-        bg: "bg-emerald-950/40 border-emerald-500/40 text-emerald-400",
-        label: "Ready to Apply",
-        statusClass: "text-emerald-400",
-      };
+  // Artifact URLs resolve against the configured backend base. Resolution is
+  // a string build (no network), so links may point at the raw relative path
+  // immediately and are replaced in place — no skeletons needed, no shift.
+  useEffect(() => {
+    let isMounted = true;
+    async function loadUrls() {
+      const map: Record<string, string> = {};
+      for (const art of result.artifacts) {
+        map[art.url] = await resolveArtifactUrl(art.url);
+      }
+      if (isMounted) setArtifactUrls(map);
     }
-    if (scoreClass === "warn") {
-      return {
-        bg: "bg-amber-950/40 border-amber-500/40 text-amber-400",
-        label: "Moderate Match",
-        statusClass: "text-amber-400",
-      };
-    }
-    return {
-      bg: "bg-rose-950/40 border-rose-500/40 text-rose-400",
-      label: "Needs Review",
-      statusClass: "text-rose-400",
+    loadUrls();
+    return () => {
+      isMounted = false;
     };
-  };
+  }, [result]);
 
-  const badge = getScoreBadge(result.score_class);
-
-  const getArtifactIcon = (kind: Artifact["kind"]) => {
-    switch (kind) {
-      case "resume-pdf":
-      case "cover-pdf":
-        return <FilePdf weight="bold" className="w-4 h-4 text-rose-400" />;
-      case "resume-docx":
-        return <FileDoc weight="bold" className="w-4 h-4 text-blue-400" />;
-      case "resume-tex":
-        return <FileCode weight="bold" className="w-4 h-4 text-emerald-400" />;
+  // ARIA tablist: roving tabindex with arrow keys, Home/End support.
+  const onTablistKeyDown = (e: React.KeyboardEvent) => {
+    const idx = TABS.findIndex((t) => t.id === activeTab);
+    const move = (dir: number) => {
+      e.preventDefault();
+      const next = TABS[(idx + dir + TABS.length) % TABS.length];
+      setActiveTab(next.id);
+      tabRefs.current.get(next.id)?.focus();
+    };
+    if (e.key === "ArrowRight") move(1);
+    else if (e.key === "ArrowLeft") move(-1);
+    else if (e.key === "Home") {
+      e.preventDefault();
+      setActiveTab(TABS[0].id);
+      tabRefs.current.get(TABS[0].id)?.focus();
+    } else if (e.key === "End") {
+      e.preventDefault();
+      const last = TABS[TABS.length - 1];
+      setActiveTab(last.id);
+      tabRefs.current.get(last.id)?.focus();
     }
   };
 
-  const getArtifactLabel = (kind: Artifact["kind"]) => {
-    switch (kind) {
-      case "resume-pdf":
-        return "Resume PDF (LaTeX)";
-      case "cover-pdf":
-        return "Cover Letter PDF";
-      case "resume-docx":
-        return "Resume DOCX (Word)";
-      case "resume-tex":
-        return "LaTeX Source (.tex)";
-    }
-  };
+  const canDiff = Boolean(originalResume && originalResume.trim().length > 40);
 
-  const markdownComponents = {
-    h1: ({ ...props }) => (
-      <h1 className="text-lg font-bold text-[#f8fafc] mt-4 mb-3 pb-1 border-b border-[#1e2436]" {...props} />
-    ),
-    h2: ({ ...props }) => (
-      <h2 className="text-base font-semibold text-[#f8fafc] mt-5 mb-2 pb-1 border-b border-[#1e2436] flex items-center gap-2" {...props} />
-    ),
-    h3: ({ ...props }) => (
-      <h3 className="text-xs font-mono font-semibold uppercase tracking-wider text-[#06b6d4] mt-4 mb-2" {...props} />
-    ),
-    p: ({ ...props }) => (
-      <p className="text-sm text-[#cbd5e1] leading-relaxed my-2" {...props} />
-    ),
-    strong: ({ ...props }) => (
-      <strong className="font-semibold text-[#f8fafc]" {...props} />
-    ),
-    blockquote: ({ ...props }) => (
-      <blockquote className="border-l-2 border-[#06b6d4]/70 bg-[#151926]/60 pl-3.5 py-2 my-2.5 rounded-r-lg text-xs text-[#94a3b8] italic" {...props} />
-    ),
-    ul: ({ ...props }) => (
-      <ul className="list-disc pl-5 my-2.5 space-y-1.5 text-sm text-[#cbd5e1]" {...props} />
-    ),
-    ol: ({ ...props }) => (
-      <ol className="list-decimal pl-5 my-2.5 space-y-1.5 text-sm text-[#cbd5e1]" {...props} />
-    ),
-    li: ({ ...props }) => (
-      <li className="text-sm text-[#cbd5e1] leading-relaxed" {...props} />
-    ),
-    code: ({ ...props }) => (
-      <code className="font-mono text-xs px-1.5 py-0.5 rounded bg-[#151926] text-[#06b6d4] border border-[#1e2436]" {...props} />
-    ),
-  };
+  const renderCopyRow = (label: string, text: string) => (
+    <button type="button" onClick={() => copy(text, label)} className="btn btn-secondary btn-sm">
+      {copied === label ? (
+        <>
+          <Check weight="bold" className="w-3.5 h-3.5 text-ok" />
+          <span className="text-ok">Copied</span>
+        </>
+      ) : (
+        <>
+          <Copy weight="bold" className="w-3.5 h-3.5" />
+          <span>Copy</span>
+        </>
+      )}
+    </button>
+  );
 
   return (
-    <div className="w-full bg-[#10131c] border border-[#1e2436] rounded-2xl p-6 mb-12 shadow-xl">
-      {/* 1. Score & Overview Banner */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-6 mb-6 border-b border-[#1e2436]">
-        <div className="flex items-center gap-5">
-          {/* Score Dial */}
-          <div className="w-20 h-20 rounded-2xl bg-[#151926] border border-[#1e2436] flex flex-col items-center justify-center p-2 text-center shrink-0 shadow-inner">
-            <span className={`text-2xl font-bold font-mono tracking-tight ${badge.statusClass}`}>
-              {result.score}
-            </span>
-            <span className="text-[10px] text-[#64748b] font-mono uppercase tracking-wider mt-0.5">/ 100</span>
-          </div>
+    <div className="panel p-4 sm:p-5 mb-8">
+      {/* 1. Score head */}
+      <div className="pb-4 mb-4 border-b border-line">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h2 className="text-sm font-semibold text-ink">Your optimized documents</h2>
+          <span className="text-2xs text-ink-3 font-mono truncate max-w-[45%]" title={result.session}>
+            run {result.session ? result.session.slice(0, 8) : "—"}
+          </span>
+        </div>
+        <ScoreGauge
+          score={result.score}
+          scoreClass={result.score_class}
+          atsPercentage={result.ats_percentage}
+          weights={result.weights}
+        />
+      </div>
 
-          <div>
-            <div className="flex items-center gap-2">
-              <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${badge.bg}`}>
-                {badge.label}
-              </span>
-              <span className="text-xs text-[#94a3b8] font-mono">Composite Quality</span>
-            </div>
-            <h3 className="text-lg font-semibold text-[#f8fafc] mt-1.5">
-              Optimized Career Documents Generated
-            </h3>
-            <p className="text-xs text-[#64748b] mt-0.5">
-              {Math.round(result.weights.ats * 100)}% deterministic ATS keywords ({result.ats_percentage}%) + {Math.round(result.weights.llm * 100)}% presentation quality rubric
+      {/* 2. Download rows */}
+      <div className="mb-4" aria-label="Downloads">
+        <h3 className="field-label !mb-2">Downloads</h3>
+        <div className="space-y-1.5">
+          {result.artifacts.length === 0 && (
+            <p className="px-3 py-2.5 rounded-md2 bg-warn-tint border border-warn/25 text-2xs text-warn" role="status">
+              No files came back with this run. The text tabs below hold everything that was generated.
             </p>
-          </div>
-        </div>
-
-        {/* 2. Download Center */}
-        <div className="flex flex-wrap items-center gap-2">
-          {result.artifacts.map((art) => (
-            <a
-              key={art.url}
-              href={`/${art.url}`}
-              download={art.filename}
-              className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#151926] hover:bg-[#1b2030] border border-[#1e2436] hover:border-[#2a334c] text-xs font-medium text-[#f8fafc] transition-all shadow-sm active:scale-[0.98]"
-            >
-              {getArtifactIcon(art.kind)}
-              <span>{getArtifactLabel(art.kind)}</span>
-              <DownloadSimple weight="bold" className="w-3.5 h-3.5 text-[#94a3b8]" />
-            </a>
-          ))}
-        </div>
-      </div>
-
-      {/* 3. Tab Bar */}
-      <div className="flex items-center gap-1 p-1 rounded-xl bg-[#090a0f] border border-[#1e2436] mb-6 overflow-x-auto">
-        <button
-          type="button"
-          onClick={() => setActiveTab("resume")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 ${
-            activeTab === "resume"
-              ? "bg-[#151926] text-[#06b6d4] shadow-sm border border-[#1e2436]"
-              : "text-[#94a3b8] hover:text-[#f8fafc]"
-          }`}
-        >
-          <Article weight="bold" className="w-4 h-4" />
-          <span>Optimized Resume</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab("cover")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 ${
-            activeTab === "cover"
-              ? "bg-[#151926] text-[#06b6d4] shadow-sm border border-[#1e2436]"
-              : "text-[#94a3b8] hover:text-[#f8fafc]"
-          }`}
-        >
-          <Sparkle weight="bold" className="w-4 h-4" />
-          <span>Tailored Cover Letter</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab("ats")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 ${
-            activeTab === "ats"
-              ? "bg-[#151926] text-[#06b6d4] shadow-sm border border-[#1e2436]"
-              : "text-[#94a3b8] hover:text-[#f8fafc]"
-          }`}
-        >
-          <ChartBar weight="bold" className="w-4 h-4" />
-          <span>ATS Keyword Breakdown</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab("interview")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 ${
-            activeTab === "interview"
-              ? "bg-[#151926] text-[#06b6d4] shadow-sm border border-[#1e2436]"
-              : "text-[#94a3b8] hover:text-[#f8fafc]"
-          }`}
-        >
-          <Question weight="bold" className="w-4 h-4" />
-          <span>Interview Prep and Questions</span>
-        </button>
-      </div>
-
-      {/* 4. Tab Content Pane */}
-      <div className="relative">
-        {activeTab === "resume" && (
-          <div className="bg-[#090a0f] border border-[#1e2436] rounded-xl p-6">
-            <div className="flex justify-between items-center pb-4 mb-4 border-b border-[#1e2436]">
-              <span className="text-xs font-mono text-[#94a3b8]">Single-page formatted resume preview</span>
-              <button
-                type="button"
-                onClick={() => copyToClipboard(result.optimized_resume, "resume")}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#151926] border border-[#1e2436] text-xs font-medium text-[#f8fafc] hover:bg-[#1b2030] transition-all"
+          )}
+          {result.artifacts.map((art) => {
+            const meta = ARTIFACT_META[art.kind] ?? { label: art.kind, icon: FileCode, className: "text-ink" };
+            const Icon = meta.icon;
+            const href = artifactUrls[art.url] || `/${art.url}`;
+            return (
+              <a
+                key={art.url}
+                href={href}
+                download={art.filename}
+                className="flex items-center gap-2.5 px-3 py-2 rounded-md2 bg-raised hover:bg-raised-hover border border-line hover:border-line-strong transition-colors group min-h-[2.5rem]"
               >
-                {copied === "resume" ? (
-                  <>
-                    <Check weight="bold" className="w-3.5 h-3.5 text-emerald-400" />
-                    <span className="text-emerald-400">Copied!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy weight="bold" className="w-3.5 h-3.5" />
-                    <span>Copy Markdown</span>
-                  </>
-                )}
-              </button>
+                <Icon weight="bold" className={`w-4 h-4 shrink-0 ${meta.className}`} />
+                <span className="flex-1 min-w-0">
+                  <span className="block text-xs text-ink font-medium truncate">{meta.label}</span>
+                  <span className="block text-2xs text-ink-3 font-mono truncate">{art.filename}</span>
+                </span>
+                <DownloadSimple weight="bold" className="w-4 h-4 text-ink-3 group-hover:text-accent transition-colors shrink-0" />
+              </a>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 3. Tabs */}
+      <div
+        role="tablist"
+        aria-label="Result sections"
+        onKeyDown={onTablistKeyDown}
+        className="flex items-center gap-1 p-1 rounded-md2 bg-inset border border-line mb-3 overflow-x-auto"
+      >
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            ref={(el) => {
+              tabRefs.current.set(tab.id, el);
+            }}
+            id={`tab-${tab.id}`}
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls={`panel-${tab.id}`}
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-sm2 text-2xs font-semibold transition-all shrink-0 ${
+              activeTab === tab.id
+                ? "bg-raised text-accent shadow-card"
+                : "text-ink-3 hover:text-ink"
+            }`}
+          >
+            <tab.icon weight="bold" className="w-3.5 h-3.5" />
+            <span>{tab.label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* 4. Panels (lazy: only the active tab renders) */}
+      <div>
+        {activeTab === "resume" && (
+          <div id="panel-resume" role="tabpanel" aria-labelledby="tab-resume" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
+            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-line">
+              <span className="text-2xs text-ink-3 font-mono">Markdown preview of the rewritten resume</span>
+              {renderCopyRow("resume", result.optimized_resume)}
             </div>
-            <div className="max-w-none text-sm text-[#cbd5e1] font-mono leading-relaxed overflow-x-auto">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {result.optimized_resume}
-              </ReactMarkdown>
-            </div>
+
+            {canDiff && (
+              <div className="mb-3">
+                <button
+                  type="button"
+                  onClick={() => setShowDiff((s) => !s)}
+                  aria-expanded={showDiff}
+                  aria-controls="resume-diff"
+                  className="flex items-center gap-1.5 text-2xs font-medium text-accent hover:text-accent-strong transition-colors px-2 py-1 rounded-sm2 bg-accent-tint border border-accent/20"
+                >
+                  <ArrowsLeftRight weight="bold" className="w-3.5 h-3.5" />
+                  {showDiff ? "Hide before/after" : "Compare with original"}
+                </button>
+              </div>
+            )}
+            {showDiff && canDiff && (
+              <div id="resume-diff" className="animate-in rounded-md2 bg-surface border border-line p-3 mb-4">
+                <DiffView original={originalResume!} optimized={result.optimized_resume} />
+              </div>
+            )}
+
+            <Markdown>{result.optimized_resume}</Markdown>
+
             {result.feedback && (
-              <div className="mt-5 pt-4 border-t border-[#1e2436]">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <Lightbulb weight="bold" className="w-4 h-4 text-[#06b6d4]" />
-                  <span className="text-xs font-mono uppercase tracking-wider text-[#94a3b8]">Reviewer Feedback</span>
+              <div className="mt-4 pt-3 border-t border-line">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Lightbulb weight="bold" className="w-3.5 h-3.5 text-accent" />
+                  <span className="text-2xs font-semibold uppercase tracking-wide text-ink-2">Reviewer notes</span>
                 </div>
-                <div className="text-xs text-[#94a3b8] leading-relaxed whitespace-pre-line">
-                  {result.feedback}
-                </div>
+                <p className="text-2xs text-ink-2 leading-relaxed whitespace-pre-line">{result.feedback}</p>
               </div>
             )}
           </div>
         )}
 
         {activeTab === "cover" && (
-          <div className="bg-[#090a0f] border border-[#1e2436] rounded-xl p-6">
-            <div className="flex justify-between items-center pb-4 mb-4 border-b border-[#1e2436]">
-              <span className="text-xs font-mono text-[#94a3b8]">Prose cover letter with role hooks</span>
-              <button
-                type="button"
-                onClick={() => copyToClipboard(result.cover_letter, "cover")}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#151926] border border-[#1e2436] text-xs font-medium text-[#f8fafc] hover:bg-[#1b2030] transition-all"
-              >
-                {copied === "cover" ? (
-                  <>
-                    <Check weight="bold" className="w-3.5 h-3.5 text-emerald-400" />
-                    <span className="text-emerald-400">Copied!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy weight="bold" className="w-3.5 h-3.5" />
-                    <span>Copy Letter</span>
-                  </>
-                )}
-              </button>
+          <div id="panel-cover" role="tabpanel" aria-labelledby="tab-cover" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
+            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-line">
+              <span className="text-2xs text-ink-3 font-mono">Cover letter generated for this role</span>
+              {renderCopyRow("cover", result.cover_letter)}
             </div>
-            <div className="max-w-none text-sm text-[#cbd5e1] leading-relaxed">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {result.cover_letter}
-              </ReactMarkdown>
-            </div>
+            <Markdown>{result.cover_letter}</Markdown>
           </div>
         )}
 
         {activeTab === "ats" && (
-          <div className="bg-[#090a0f] border border-[#1e2436] rounded-xl p-6">
-            <div className="flex justify-between items-center pb-4 mb-4 border-b border-[#1e2436]">
-              <span className="text-xs font-mono text-[#94a3b8]">Tier-weighted keyword match report</span>
-              <button
-                type="button"
-                onClick={() => copyToClipboard(result.ats_result, "ats")}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#151926] border border-[#1e2436] text-xs font-medium text-[#f8fafc] hover:bg-[#1b2030] transition-all"
-              >
-                {copied === "ats" ? (
-                  <>
-                    <Check weight="bold" className="w-3.5 h-3.5 text-emerald-400" />
-                    <span className="text-emerald-400">Copied!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy weight="bold" className="w-3.5 h-3.5" />
-                    <span>Copy ATS Report</span>
-                  </>
-                )}
-              </button>
+          <div id="panel-ats" role="tabpanel" aria-labelledby="tab-ats" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
+            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-line">
+              <span className="text-2xs text-ink-3 font-mono">Keyword coverage report (deterministic)</span>
+              {renderCopyRow("ats", result.ats_result)}
             </div>
-            <div className="max-w-none text-sm text-[#cbd5e1] font-mono leading-relaxed overflow-x-auto whitespace-pre-wrap">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {result.ats_result}
-              </ReactMarkdown>
-            </div>
+            <Markdown className="font-mono">{result.ats_result}</Markdown>
           </div>
         )}
 
         {activeTab === "interview" && (
-          <div className="bg-[#090a0f] border border-[#1e2436] rounded-xl p-6">
-            <div className="flex justify-between items-center pb-4 mb-4 border-b border-[#1e2436]">
-              <span className="text-xs font-mono text-[#94a3b8]">Targeted role questions and STAR framework stories</span>
-              <button
-                type="button"
-                onClick={() => copyToClipboard(result.interview_questions, "interview")}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#151926] border border-[#1e2436] text-xs font-medium text-[#f8fafc] hover:bg-[#1b2030] transition-all"
-              >
-                {copied === "interview" ? (
-                  <>
-                    <Check weight="bold" className="w-3.5 h-3.5 text-emerald-400" />
-                    <span className="text-emerald-400">Copied!</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy weight="bold" className="w-3.5 h-3.5" />
-                    <span>Copy Questions</span>
-                  </>
-                )}
-              </button>
+          <div id="panel-interview" role="tabpanel" aria-labelledby="tab-interview" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
+            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-line">
+              <span className="text-2xs text-ink-3 font-mono">Role-specific questions with STAR prompts</span>
+              {renderCopyRow("interview", result.interview_questions)}
             </div>
-            <div className="max-w-none text-sm text-[#cbd5e1] leading-relaxed">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {result.interview_questions}
-              </ReactMarkdown>
-            </div>
+            <Markdown>{result.interview_questions}</Markdown>
           </div>
         )}
       </div>

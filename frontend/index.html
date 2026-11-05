@@ -1,17 +1,21 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AI Resume Optimizer | Agentic Career Document Pipeline</title>
+    <title>AI Resume Optimizer</title>
     <meta
       name="description"
       content="Autonomous multi-stage resume optimizer with deterministic ATS keyword scoring, LangGraph human-in-the-loop checkpoints, and LaTeX PDF export."
     />
+    <!-- Pre-paint background follows the system scheme; lib/theme.ts flips
+         data-theme when the user overrides. CSS only — no inline scripts,
+         which keeps MV3 content-security policy intact. -->
     <style>
-      html, body {
-        background-color: #090a0f;
-        color: #f8fafc;
+      html { background-color: #f5f7fb; }
+      html[data-theme="dark"] { background-color: #090a0f; }
+      @media (prefers-color-scheme: dark) {
+        html:not([data-theme="light"]) { background-color: #090a0f; }
       }
     </style>
   </head>

@@ -1,6 +1,6 @@
 # Next Steps — Job Application Optimizer
 
-Last updated: **Oct 28 2026** · Snapshot: 185 tests passing (~2:30) · coverage 85% (CI gate 84% over agent+app+server) · langgraph stack 1.2.16 · FastAPI `server/` + Vite React `frontend/` shipped & live-probed · working tree clean
+Last updated: **Nov 3 2026** · Snapshot: 191 tests passing (~1:50) · coverage 85% (CI gate 84% over agent+app+server) · langgraph stack 1.2.16 · FastAPI `server/` + Vite React `frontend/` shipped & live-probed · **Chrome extension MVP built + UI/UX redesign committed**
 
 This is the living roadmap. The public, permanent record of *what was done and why* lives in [README.md](README.md) ("Changelog & Design Decisions" → "Session — Oct 21 2026"); this file tracks **what's next** and the current state. Legend: ✅ done this cycle · 🔲 planned · 🔶 optional.
 
@@ -48,16 +48,33 @@ The Phase-4 "frontend rebuild" trigger fired. Details in README changelog → "S
 | P3 | Contract hardening | Status events carry graph node ids (fan-out + correction loop display correctly); `warning`/`session` SSE events parsed; reviewer-feedback panel restored; weights rendered from server payload | `5bf3565` |
 | P4 | Live validation | Real-stack probe (fake candidate, no real PII): step1 wire exact, step2 scored 70/100 with all four artifacts downloaded live; queue/auth/validation paths probed zero-cost through the dev proxy | — |
 
-**Remaining frontend polish:** light-mode theming decision (dark-only token set today), Geist font pairing + restrained motion polish, single-container production deploy superseding the Gradio Space.
+**Remaining frontend polish:** ✅ light-mode + token theming shipped (Nov 3 redesign, shared with the extension); still open: dynamic-import the markdown tabs (570 kB chunk warning), single-container production deploy superseding the Gradio Space.
+
+---
+
+## Browser extension — Chrome MV3 side panel 🔨 MVP BUILT, UNCOMMITTED (Nov 2)
+
+Third API client per the product implementation plan; reuses the same FastAPI API (no separate stack). Build: `cd frontend && npm run build:extension`, then "Load unpacked" on `extension/` — details in [extension/README.md](extension/README.md).
+
+| # | Item | Outcome |
+|---|------|---------|
+| X1 | MV3 scaffold + side panel | Manifest (`sidePanel`/`storage`/`activeTab`/`scripting`, Chrome ≥ 114), React app compiled into the panel, ESM background worker, floating-button content script (IIFE); toolbar click + button click both open the panel |
+| X2 | JD scraper | Site registry (LinkedIn, Greenhouse, Lever, Indeed, Workday, Ashby) + generic fallback; scraped payload lands in the panel's job form with a title/company badge |
+| X3 | **Server BYO-key** | The `X-Groq-Api-Key` header (sent by the existing settings UI) is now honored: per-request key override in `agent/llms.py` (key-scoped chains + restore-on-exit), threaded via `server/app.py` → `runners`; `/health` validates the user key; keys capped/sanitized; 5 new tests |
+| X4 | Resume vault | Resume text persisted & restored across sessions (chrome.storage / localStorage); stale saved text purged when the user clears it; artifact downloads resolve against the configured backend URL |
+| X5 | Hygiene | `typecheck:extension` script + strict tsconfig for `extension/src`; stale mirrored assets cleaned on rebuild; `.env.example` documents `APP_AUTH_*`, `EXTENSION_ORIGINS`, BYOK |
+| X6 | **UI/UX redesign (Nov 3)** | Design-token CSS system with light+dark themes (system-follow + manual toggle, `uiTheme` storage key); gap chips grouped tool/concept/general with per-chip notes/undo/keyboard map; classified error card with actions; score gauge with ATS/quality split; elapsed-timer timeline with staleness hints; before/after diff in paste mode; ARIA tabs; debounced storage writes; 3-step onboarding; "forget my data" eraser — see README changelog "Session — Nov 3 2026" |
+
+**Next for the extension:** CWS store assets (screenshots, promo tile, privacy policy), scraper fixture tests, permission review (broad `https://*/*` host permission needed only for a configurable cloud backend — consider `optional_host_permissions`), a live LinkedIn smoke pass, and a new-bundle reload check in `chrome://extensions` after the redesign (hash changes with every build).
 
 ---
 
 ## Phase 3 — Feature roadmap 🔲 OPEN (priority order)
 
-### 11 🔲 Before/After diff view — first candidate
-Side-by-side original vs optimized resume in the web UI with changed bullets/skills highlighted and a score-delta badge (before/after ATS % + composite).
-- *Implementation sketch:* streamer re-emits `original_resume` alongside `optimized_resume`; diff via `difflib.SequenceMatcher` (word-level) + `rich`-style markup or two Gradio `HTML` panes; no new LLM calls, no new state fields beyond wiring.
-- *Effort:* M (~1 session). *Why it leads:* highest user-perceived value; directly demonstrates the product's promise.
+### 11 🔶 Before/After diff view — extension side SHIPPED (paste mode), web/server side open
+The extension now diff-checks the optimized resume against the original client-side (line LCS + similarity pairing, `frontend/src/components/DiffView.tsx`) whenever the resume was pasted. The remaining gap is an API one: uploaded files are parsed server-side, and `OptimizationResult` never echoes the original — sending it would require the payload change the redesign brief excluded. ATS score delta needs a pre-run score the backend doesn't produce.
+- *Server-side completion sketch (needs API change sign-off):* streamer re-emits `original_resume` alongside `optimized_resume`; the same client component consumes it; add `/step2?include_diff=original` so the field is opt-in.
+- *Effort:* S (wiring only, once the contract change is approved).
 
 ### 12 🔲 Google XYZ bullet impact scorer
 Audit every bullet against "Accomplished [X] as measured by [Y] by doing [Z]"; flag bullets with no metric/weak verb.
@@ -95,7 +112,7 @@ Single-container deploy serving the built frontend + the FastAPI server (uvicorn
 3. **Ubuntu vs Windows coverage drift** — the 84% gate has headroom (measured 87% on Windows); if CI (Linux) trends near the gate, consider measuring coverage locally with the same flags before raising/flooring it.
 4. **Light-mode theming decision (frontend)** — the design is dark-only (`frontend/src/index.css` tokens + hardcoded hex in components); decide: proper light token set (recommended) vs defer indefinitely. One design pass, touch every component.
 5. **Geist font pairing + motion polish (frontend)** — typography is the system-font stack today; `@fontsource-variable/geist` + `geist-mono` candidates; `motion` is installed but unused — restrained reveal/progress transitions only.
-6. **Chrome extension MVP** — decision recorded (README, Oct 28): third client of the same FastAPI API as the web frontend, BYO-key in `chrome.storage.local`, Manifest V3 + side panel reusing the API; content-script JD extraction (LinkedIn/Indeed/Greenhouse/Lever/Workday) is the killer feature. No new backend surfaces except, possibly, per-client CORS. Realistic effort 1–2 focused weeks.
+6. **Chrome extension MVP** — decision recorded (README, Oct 28): third client of the same FastAPI API as the web frontend, BYO-key in `chrome.storage.local`, Manifest V3 + side panel reusing the API; content-script JD extraction (LinkedIn/Indeed/Greenhouse/Lever/Workday) is the killer feature. **MVP built Nov 2 — committed as `9e96ba3`; the Nov 3 UI redesign follows in the `feat(extension-ui)` commit.** Next: store assets, scraper fixture tests, permission review, live LinkedIn smoke pass.
 
 ## Production-readiness checklist (from full-history trace data, Oct 22)
 
@@ -125,6 +142,11 @@ venv\Scripts\python.exe -m pytest tests -q
 
 # Coverage check (mirrors CI gate)
 venv\Scripts\python.exe -m pytest tests -q --cov=agent --cov=app --cov=server --cov-report=term --cov-fail-under=84
+
+# Frontend + extension checks / build
+cd frontend
+npm run lint && npx tsc -b && npm run typecheck:extension
+npm run build:extension   # regenerates extension/ and extension/dist/ (Load unpacked)
 
 # Live traced smoke run (one real pipeline run; exports trace to traces/)
 # script kept in %TEMP%\opencode\smoke_run_traced.py during the session
