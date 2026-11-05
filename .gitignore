@@ -37,6 +37,7 @@ traces/
 new-traces/
 *traces*/
 *-traces/
+inspect_traces.py
 
 # Testing & tool caches
 .mypy_cache/
