@@ -10,6 +10,7 @@ import { Onboarding } from "./components/Onboarding";
 import { ToastStack } from "./components/ToastStack";
 import { useToasts } from "./lib/useToasts";
 import { isOnboarded } from "./lib/onboarding";
+import { parseGapSkills } from "./lib/gaps";
 import { ReviewSkeleton, ResultsSkeleton } from "./components/Skeleton";
 import { runStep1, runStep2, checkProviderHealth } from "./api";
 import { classifyError, type ErrorInfo } from "./lib/errors";
@@ -24,6 +25,18 @@ function readSavedWebResume(): string {
       return ""; // extension flow owns the restore
     }
     return localStorage.getItem("saved_resume_text") || "";
+  } catch {
+    return "";
+  }
+}
+
+// Optional optimizer context survives reloads the same way (web path).
+function readSavedWebNotes(): string {
+  try {
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      return "";
+    }
+    return localStorage.getItem("pending_optimizer_notes") || "";
   } catch {
     return "";
   }
@@ -59,7 +72,10 @@ export function App() {
   const [resumeFile, setResumeFile] = useState<File | null>(null);
 
   const [missingSkills, setMissingSkills] = useState<string>("");
-  const [userNotes, setUserNotes] = useState<string>("");
+  const [userNotes, setUserNotes] = useState<string>(readSavedWebNotes());
+  // True after the scan produced gap chips; false when the zero-gap
+  // straight-through path skips the review dialog entirely.
+  const [reviewOpen, setReviewOpen] = useState<boolean>(false);
 
   const [result, setResult] = useState<OptimizationResult | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
@@ -79,6 +95,55 @@ export function App() {
   // storage.get restore that happens on mount).
   const savedResumeOnceRef = useRef(false);
 
+  // Latest user notes for closures that must not depend on committed state
+  // (the zero-gap auto-run path fires from a step-1 stream callback).
+  const userNotesRef = useRef(userNotes);
+  useEffect(() => {
+    userNotesRef.current = userNotes;
+  }, [userNotes]);
+
+  // Persist the optimizer context (chrome.storage.local / localStorage),
+  // debounced like the resume vault. Purged by Reset, the Settings eraser,
+  // and by actively clearing the text.
+  const notesStoredOnceRef = useRef(false);
+  useEffect(() => {
+    const isExtension = typeof chrome !== "undefined" && !!chrome.storage?.local;
+    const persist = () => {
+      try {
+        if (isExtension) {
+          chrome.storage.local.set({ pendingUserNotes: userNotes });
+        } else {
+          localStorage.setItem("pending_optimizer_notes", userNotes);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    const purge = () => {
+      try {
+        if (isExtension) {
+          chrome.storage.local.remove("pendingUserNotes");
+        } else {
+          localStorage.removeItem("pending_optimizer_notes");
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    if (userNotes.trim() !== "") {
+      notesStoredOnceRef.current = true;
+    } else if (notesStoredOnceRef.current && userNotes === "") {
+      notesStoredOnceRef.current = false;
+      purge();
+      return;
+    }
+    if (userNotes.trim() === "") return;
+
+    const t = setTimeout(persist, RESUME_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [userNotes]);
+
   useEffect(() => {
     latestResumeRef.current = { text: resumeText, mode: resumeMode, file: resumeFile };
   }, [resumeText, resumeMode, resumeFile]);
@@ -95,12 +160,16 @@ export function App() {
     refreshHealth();
 
     if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.get(["savedResumeText", "pendingScrapedJob", "onboardedAt"], (data: Record<string, any>) => {
+      chrome.storage.local.get(["savedResumeText", "pendingScrapedJob", "onboardedAt", "pendingUserNotes"], (data: Record<string, any>) => {
         const current = latestResumeRef.current;
         if (data.savedResumeText && !current.text && !current.file) {
           setResumeText(data.savedResumeText);
           setResumeMode("paste");
           push("info", "Picked up your saved resume from this browser. Erase it any time in Settings.");
+        }
+        if (data.pendingUserNotes && !(userNotesRef.current || "").trim()) {
+          setUserNotes(data.pendingUserNotes);
+          push("info", "Restored your optimization notes from this browser. Erase them in Settings.");
         }
         if (data.pendingScrapedJob) {
           const scraped = data.pendingScrapedJob;
@@ -200,6 +269,7 @@ export function App() {
     setSession("");
     setMissingSkills("");
     setUserNotes("");
+    setReviewOpen(false);
     setResult(null);
     setShowForm(true);
   };
@@ -240,6 +310,17 @@ export function App() {
       onDone: (data) => {
         setSession(data.session);
         setMissingSkills(data.missing_skills);
+        const gapCount = parseGapSkills(data.missing_skills).length;
+        if (gapCount === 0) {
+          // Nothing to decide → no review checkpoint. Tailor straight away;
+          // optional context typed below the inputs is picked up via the ref.
+          setReviewOpen(false);
+          setStatusMessage("No missing skills found — optimizing directly.");
+          push("info", "No missing skills found — tailoring your resume to this job right away.");
+          handleOptimizeStep2();
+          return;
+        }
+        setReviewOpen(true);
         setStage("step1_review");
         setStatusMessage("Gap analysis complete — awaiting your review.");
       },
@@ -253,7 +334,14 @@ export function App() {
     });
   };
 
-  const handleOptimizeStep2 = () => {
+  /**
+   * notesArg: the composed review string from the gap editor. Passed through
+   * explicitly because setUserNotes in the modal doesn't commit synchronously
+   * (stale-state race, live-run evidence Nov 5 2026). Retries and the
+   * zero-gap auto-run fall back to the ref, which always holds the latest
+   * typed context.
+   */
+  const handleOptimizeStep2 = (notesArg?: string) => {
     setErrorInfo(null);
     setWarningMessage(null);
     setNodeLog([]);
@@ -264,7 +352,7 @@ export function App() {
     setLastEventAt(Date.now());
 
     const fd = buildFormData();
-    fd.append("notes", userNotes);
+    fd.append("notes", notesArg ?? userNotesRef.current);
 
     runStep2(fd, {
       onStatus: handleStreamStatus,
@@ -281,7 +369,12 @@ export function App() {
         setFailedNode(nodeLog[nodeLog.length - 1] ?? "improver");
         setWhichStepFailed(2);
         setErrorInfo(classifyError(err));
-        setStage("step1_review"); // back at the checkpoint, notes intact
+        // With a gap review: return to the checkpoint (reviewOpen is true →
+        // the modal reopens, notes intact). In the straight-through run
+        // there IS no checkpoint — stay on step2_running so the timeline
+        // marks the failure at its actual node instead of a review that
+        // never existed.
+        if (reviewOpen) setStage("step1_review");
         setStatusMessage("");
       },
     });
@@ -387,34 +480,60 @@ export function App() {
           </div>
         )}
         {showForm && (
-          <InputSection
-            jobText={jobText}
-            setJobText={setJobText}
-            jobUrl={jobUrl}
-            setJobUrl={setJobUrl}
-            jobMode={jobMode}
-            setJobMode={setJobMode}
-            jobMeta={jobMeta}
-            setJobMeta={setJobMeta}
-            resumeText={resumeText}
-            setResumeText={setResumeText}
-            resumeFile={resumeFile}
-            setResumeFile={setResumeFile}
-            resumeMode={resumeMode}
-            setResumeMode={setResumeMode}
-            onAnalyze={handleAnalyzeStep1}
-            isProcessing={stage === "step1_running"}
-            disabled={stage === "step2_running"}
-          />
+          <>
+            <InputSection
+              jobText={jobText}
+              setJobText={setJobText}
+              jobUrl={jobUrl}
+              setJobUrl={setJobUrl}
+              jobMode={jobMode}
+              setJobMode={setJobMode}
+              jobMeta={jobMeta}
+              setJobMeta={setJobMeta}
+              resumeText={resumeText}
+              setResumeText={setResumeText}
+              resumeFile={resumeFile}
+              setResumeFile={setResumeFile}
+              resumeMode={resumeMode}
+              setResumeMode={setResumeMode}
+              onAnalyze={handleAnalyzeStep1}
+              isProcessing={stage === "step1_running"}
+              disabled={stage === "step2_running"}
+            />
+
+            {/* Optional optimizer context. Feeds Step 2 even when the scan
+                finds no gaps (straight-through run) and pre-fills the gap
+                editor when a review checkpoint opens. Survives reloads. */}
+            <div className="panel p-3.5 mt-3">
+              <label htmlFor="optimizer-notes" className="text-2xs font-semibold text-ink">
+                Add context for the optimizer <span className="font-normal text-ink-3">(optional)</span>
+              </label>
+              <p className="text-2xs text-ink-3 leading-relaxed mt-1">
+                Projects or experience that prove a missing skill, tools to emphasize, or things to leave out.
+                This rides along with every run until you erase it (Settings · Reset).
+              </p>
+              <textarea
+                id="optimizer-notes"
+                value={userNotes}
+                onChange={(e) => setUserNotes(e.target.value)}
+                rows={3}
+                maxLength={3000}
+                disabled={stage === "step1_running" || stage === "step2_running"}
+                placeholder={`e.g. "I built an n8n workflow cutting delivery errors 30% — feature it." or "Do NOT feature MCP, I have no hands-on experience."`}
+                className="input mt-2 w-full"
+              />
+            </div>
+          </>
         )}
 
-        {/* 5. Human-in-the-loop review checkpoint */}
-        {(stage === "step1_review" || stage === "step2_running") && (
+        {/* 5. Human-in-the-loop review checkpoint (skipped when the scan
+             found no gaps — data.session flows straight to Step 2) */}
+        {reviewOpen && (stage === "step1_review" || stage === "step2_running") && (
           <HumanReviewModal
             missingSkills={missingSkills}
             userNotes={userNotes}
             setUserNotes={setUserNotes}
-            onSubmit={handleOptimizeStep2}
+            onSubmit={(notes) => handleOptimizeStep2(notes)}
             isProcessing={stage === "step2_running"}
           />
         )}

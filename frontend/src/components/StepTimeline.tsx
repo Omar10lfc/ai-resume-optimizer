@@ -30,6 +30,7 @@ const NODES: TimelineNode[] = [
   { id: "scanner", label: "Gap analysis", stepNum: 1, hint: "usually under 1 min" },
   { id: "checkpoint", label: "Your review", stepNum: 1, hint: "waits for you" },
   { id: "improver", label: "Tailor resume", stepNum: 2, hint: "usually 1–3 min" },
+  { id: "polisher", label: "Polish with review notes", stepNum: 2, hint: "second pass" },
   { id: "reviewer", label: "Quality audit", stepNum: 2, hint: "usually under 1 min" },
   { id: "ats_check", label: "ATS match", stepNum: 2, hint: "seconds" },
   { id: "cover_letter", label: "Cover letter", stepNum: 2, hint: "usually under 1 min" },

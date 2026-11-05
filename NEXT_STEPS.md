@@ -1,6 +1,6 @@
 # Next Steps — Job Application Optimizer
 
-Last updated: **Nov 3 2026** · Snapshot: 191 tests passing (~1:50) · coverage 85% (CI gate 84% over agent+app+server) · langgraph stack 1.2.16 · FastAPI `server/` + Vite React `frontend/` shipped & live-probed · **Chrome extension MVP built + UI/UX redesign committed**
+Last updated: **Nov 5 2026** · Snapshot: 199 tests passing (~1:10) · coverage 85% (CI gate 84% over agent+app+server) · langgraph stack 1.2.16 · FastAPI `server/` + Vite React `frontend/` shipped & live-probed · **Chrome extension MVP + UI/UX redesign committed (`9e96ba3`, `60ea3d1`) · Nov 5: gap-handoff fix + zero-gap straight-through flow + ATS round two + best-of-2 polish loop landed (`10d48ca`)**
 
 This is the living roadmap. The public, permanent record of *what was done and why* lives in [README.md](README.md) ("Changelog & Design Decisions" → "Session — Oct 21 2026"); this file tracks **what's next** and the current state. Legend: ✅ done this cycle · 🔲 planned · 🔶 optional.
 
@@ -64,8 +64,25 @@ Third API client per the product implementation plan; reuses the same FastAPI AP
 | X4 | Resume vault | Resume text persisted & restored across sessions (chrome.storage / localStorage); stale saved text purged when the user clears it; artifact downloads resolve against the configured backend URL |
 | X5 | Hygiene | `typecheck:extension` script + strict tsconfig for `extension/src`; stale mirrored assets cleaned on rebuild; `.env.example` documents `APP_AUTH_*`, `EXTENSION_ORIGINS`, BYOK |
 | X6 | **UI/UX redesign (Nov 3)** | Design-token CSS system with light+dark themes (system-follow + manual toggle, `uiTheme` storage key); gap chips grouped tool/concept/general with per-chip notes/undo/keyboard map; classified error card with actions; score gauge with ATS/quality split; elapsed-timer timeline with staleness hints; before/after diff in paste mode; ARIA tabs; debounced storage writes; 3-step onboarding; "forget my data" eraser — see README changelog "Session — Nov 3 2026" |
+| X7 | **Gap-flow behavior (Nov 5)** | Review→step-2 handoff race fixed (`onSubmit(notes: string)` passes the composed string — state reads in the same tick were stale); zero-gap scans skip the review modal and optimize straight away; new optional "Add context for the optimizer" box under the inputs persists across sessions (`pendingUserNotes` / `pending_optimizer_notes`, purged by Reset and the Settings eraser); timeline gains the polisher pass-2 row — see README changelog "Session — Nov 5 2026" |
 
-**Next for the extension:** CWS store assets (screenshots, promo tile, privacy policy), scraper fixture tests, permission review (broad `https://*/*` host permission needed only for a configurable cloud backend — consider `optional_host_permissions`), a live LinkedIn smoke pass, and a new-bundle reload check in `chrome://extensions` after the redesign (hash changes with every build).
+**Next for the extension:** CWS store assets (screenshots, promo tile, privacy policy), scraper fixture tests, permission review (broad `https://*/*` host permission needed only for a configurable cloud backend — consider `optional_host_permissions`), a live LinkedIn smoke pass, and a reload of the unpacked extension in `chrome://extensions` to pick up the Nov 5 panel changes (bundle `index-BmpG6Jfp.js`).
+
+---
+
+## Agent core — Nov 5 2026 (straight-through tailoring, ATS round two, best-of-2 loop) ✅ LANDED (`10d48ca` + panel-side commit)
+
+Motivated by the user's live run (trace `520188c7`, request `3ffdcffc`): the human-review handoff race dropped composed gap notes, the ATS scored posting boilerplate, and the reviewer's feedback never reached the improver because `MAX_ITERATIONS=1` stopped the loop at the cap. Panel fixes (App/Modal/Settings/Timeline) ship in this session's frontend/doc commit.
+
+| # | Item | Outcome | Detail |
+|---|------|---------|--------|
+| A1 | Gap handoff fix | `onSubmit(notes: string)` carries the composed review directly; retries/auto-run fall back to `userNotesRef` | Race: React state committed too late for the step-2 request |
+| A2 | Zero-gap straight-through | `reviewOpen` gating + toast + auto-run when the scan finds no gaps | The JD-tailoring flow is automatic; review = context-adding only |
+| A3 | Optimizer-context box | Persistent optional notes under the inputs (extension + web keys), eraser-aware | Also pre-fills the gap editor when it opens |
+| A4 | ATS hygiene round two | Perk/EEO/apply-section stripping + timeline/logistics/qualifier stopwords + camelCase brand filter | Probe: noise zero, core tech kept, 73.3% synthetic ATS |
+| A5 | `devsecops` regression fixed | `_CAMEL_TECH_ALLOW` extended; regression test added | Caught by the golden fixture during validation |
+| A6 | Best-of-2 loop | `MAX_ITERATIONS` 1→2 + `best_result` snapshot restore in `ats_check`; polisher node routing (interrupt stays on first improver visit) | Extra polish can never regress the final result |
+| A7 | Suite 191 → 199 | 8 new agent tests; salvage test pinned to the loop cap for exact retry counting | Full-suite green before commit |
 
 ---
 

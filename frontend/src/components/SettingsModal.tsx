@@ -91,9 +91,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
     }
     try {
       if (isExtension()) {
-        await chrome.storage.local.remove(["savedResumeText", "pendingScrapedJob", "onboardedAt"]);
+        await chrome.storage.local.remove(["savedResumeText", "pendingScrapedJob", "onboardedAt", "pendingUserNotes"]);
       } else {
         localStorage.removeItem("saved_resume_text");
+        localStorage.removeItem("pending_optimizer_notes");
         localStorage.removeItem("onboardedAt");
       }
       setEraseDone(true);

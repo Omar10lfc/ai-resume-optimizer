@@ -32,7 +32,14 @@ interface HumanReviewModalProps {
   missingSkills: string;
   userNotes: string;
   setUserNotes: (val: string) => void;
-  onSubmit: () => void;
+  /**
+   * Receives the COMPOSED notes string. Passing it as an argument (instead of
+   * letting App read `userNotes` state) is deliberate: setUserNotes here is
+   * async, so reading state in the same tick submits the stale pre-edit value
+   * — live-run evidence, Nov 5 2026 trace 520188c7: the composed gap list was
+   * silently dropped and step 2 ran with empty notes.
+   */
+  onSubmit: (notes: string) => void;
   isProcessing: boolean;
 }
 
@@ -147,8 +154,11 @@ export const HumanReviewModal: React.FC<HumanReviewModalProps> = ({
         `Do NOT feature the following: ${removedLabels.join(", ")}. Do not add them unless the resume already proves them.`
       );
     }
-    setUserNotes(parts.join("\n"));
-    onSubmit();
+    const composed = parts.join("\n");
+    // Sync state (for retries/reload persistence) AND pass the string through
+    // directly — the submit must never depend on the not-yet-committed state.
+    setUserNotes(composed);
+    onSubmit(composed);
   };
 
   const chipKeyboard = (chip: EditorChip) => (e: React.KeyboardEvent) => {
