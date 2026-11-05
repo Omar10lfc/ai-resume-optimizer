@@ -126,6 +126,60 @@ def test_action_verbs_never_keywords():
         assert verb not in kws
 
 
+def test_extract_keywords_skips_perk_and_apply_sections():
+    """Perk/legal/application sections never yield keywords (live-run
+    evidence Nov 5 2026: 'tools', 'basic' leaked via such content)."""
+    jd = (
+        "Temperature data agents need Python, Kafka and strong APIs.\n"
+        "## What we offer\nFree snacks, gym membership and a commuting budget.\n"
+        "## How to apply\nSend your CV with a short note to jobs@fortyguard.example\n"
+    )
+    kws = agent._extract_keywords(jd)
+    assert "python" in kws and "kafka" in kws
+    junk = [k for k in ("snacks", "gym", "commuting", "cv") if k in kws]
+    assert junk == []
+
+
+def test_extract_keywords_stops_timeline_and_logistics_noise():
+    jd = (
+        "## Requirements\nStrong Python engineering.\n"
+        "Start date: January 2027. Duration: 6 months, flexible hours.\n"
+        "Eligibility: basic scheduling. Relocation support available.\n"
+    )
+    kws = agent._extract_keywords(jd)
+    assert "python" in kws
+    leaked = [k for k in ("january", "start", "date", "duration", "basic",
+                          "scheduling", "flexible", "hours", "relocation") if k in kws]
+    assert leaked == []
+
+
+def test_extract_keywords_strips_camelcase_brand_but_keeps_tech():
+    jd = ("FortyGuard builds temperature-data agents. Requirements: Python "
+          "and OpenCV. We also use MySQL.")
+    kws = agent._extract_keywords(jd)
+    assert "fortyguard" not in kws
+    assert "python" in kws
+    assert "opencv" in kws   # CamelCase tech term protected via tier list
+    assert "mysql" in kws    # CamelCase tech term protected via allowlist
+
+
+def test_camelcase_brand_filter_never_eats_devsecops():
+    """Golden JD regression (Nov 5 2026): the camelCase brand filter matched
+    Dev|Sec|Ops and dropped the required 'devsecops' keyword because it is
+    absent from the tier lists — it must survive alongside 'devops'."""
+    jd = "Support DevOps, DevSecOps, CI/CD automation, testing."
+    kws = agent._extract_keywords(jd, top_n=20)
+    assert "devsecops" in kws
+    assert "devops" in kws
+
+
+def test_extract_keywords_passes_plain_text_without_headings():
+    """No recognized heading → nothing is stripped (evidence, not guessing)."""
+    jd = "Python, Docker, Kafka, and API experience needed. Great growth path."
+    kws = agent._extract_keywords(jd)
+    assert "python" in kws and "docker" in kws and "kafka" in kws
+
+
 def test_extract_keywords_normalizes_literal_escaped_newlines():
     jd = ("Your responsibilities\\nSupport engineering teams.\\n"
           "Design Agentic AI workflows using LangGraph.\\n"
@@ -203,7 +257,9 @@ def test_composite_score_formula():
 
 def test_score_threshold_and_cap_constants():
     assert agent.SCORE_THRESHOLD == 80
-    assert agent.MAX_ITERATIONS == 1
+    # 2 = one feedback-driven polish pass beyond the first draft; the
+    # ats_check best-of guard keeps regression impossible.
+    assert agent.MAX_ITERATIONS == 2
     assert abs(agent.ATS_SCORE_WEIGHT + agent.LLM_SCORE_WEIGHT - 1.0) < 1e-9
 
 
@@ -407,6 +463,78 @@ def test_optimizer_reviewer_failure_skips_retry(fake_llms, monkeypatch):
     result = agent.full_app.invoke(_base_inputs())
     assert result["review_failed"] is True
     assert result["iteration"] == 1
+
+
+# ==========================================
+# Best-of guard: extra polish iteration (MAX_ITERATIONS=2)
+# ==========================================
+
+class SeqCreativeLLM:
+    """Returns queued drafts in call order; tracks invocations."""
+
+    def __init__(self, contents):
+        self._contents = list(contents)
+        self.calls = 0
+
+    def invoke(self, messages):
+        idx = min(self.calls, len(self._contents) - 1)
+        self.calls += 1
+        return AIMessage(content=self._contents[idx])
+
+
+def _run_with_drafts(drafts, monkeypatch, reviewer_score=60):
+    """Reviewer 60 keeps the composite under the 80 threshold so the loop
+    actually runs a second iteration under the new default cap."""
+
+    class FixedReviewer(FakeStrictLLM):
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    return agent.ReviewOutput(score=reviewer_score, feedback="Add metrics.")
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", FixedReviewer())
+    seq = SeqCreativeLLM(drafts)
+    monkeypatch.setattr(agent.llms, "llm_creative", seq)
+    return agent.full_app.invoke(_base_inputs()), seq
+
+
+def test_iteration_two_can_never_regress_below_draft_one(fake_llms, monkeypatch):
+    """A weaker second draft loses: the first draft is restored wholesale
+    (resume, ATS result, percentage, composite, quality)."""
+    good = "## Skills\nPython, Docker, Kubernetes\n## Experience\nBuilt Python services on Kubernetes with Docker."
+    worse = "## Skills\nPython\n## Experience\nWrote some scripts."
+    result, seq = _run_with_drafts([good, worse], monkeypatch)
+
+    assert seq.calls == 2
+    assert result["optimized_resume"] == good
+    expected_pct = agent.compute_ats_match(_base_inputs()["job_description"], good)["percentage"]
+    assert result["ats_percentage"] == expected_pct
+    assert result["score"] == round(agent.ATS_SCORE_WEIGHT * expected_pct
+                                    + agent.LLM_SCORE_WEIGHT * 60)
+    assert result["llm_quality_score"] == 60
+
+
+def test_iteration_two_wins_when_stronger(fake_llms, monkeypatch):
+    """A stronger second draft is adopted (feedback actually improves fit)."""
+    weaker = "## Skills\nPython\n## Experience\nWrote some scripts."
+    better = "## Skills\nPython, Docker, Kubernetes\n## Experience\nBuilt Kubernetes pipelines with Docker and Python."
+    result, seq = _run_with_drafts([weaker, better], monkeypatch)
+
+    assert seq.calls == 2
+    assert result["optimized_resume"] == better
+    expected_pct = agent.compute_ats_match(_base_inputs()["job_description"], better)["percentage"]
+    assert result["ats_percentage"] == expected_pct
+
+
+def test_max_iterations_cap_still_respected(fake_llms, monkeypatch):
+    """MAX_ITERATIONS=1 keeps the single-pass behavior opt-in."""
+    good = "## Skills\nPython, Docker, Kubernetes\n## Experience\nBuilt Kubernetes services with Python and Docker."
+    monkeypatch.setattr(agent.graphs, "MAX_ITERATIONS", 1)
+    result, seq = _run_with_drafts([good, "## Skills\nPython"], monkeypatch)
+
+    assert seq.calls == 1
+    assert result["optimized_resume"] == good
 
 
 def test_semantic_verification_reclassifies_expressed_keywords(fake_llms, monkeypatch):
@@ -803,6 +931,10 @@ def test_salvage_parses_score_from_failed_generation(fake_llms, monkeypatch):
             return Structured()
 
     monkeypatch.setattr(agent.llms, "llm_strict", FoldedReviewer())
+    # Pin the loop cap so `calls` counts reviewer invocations of ONE iteration
+    # (the default MAX_ITERATIONS=2 runs the reviewer once per pass and the
+    # intent of this test is the salvage shortcut, not the loop length).
+    monkeypatch.setattr(agent.graphs, "MAX_ITERATIONS", 1)
     result = agent.full_app.invoke(_base_inputs())
     assert result["review_failed"] is False
     assert result["llm_quality_score"] == 80

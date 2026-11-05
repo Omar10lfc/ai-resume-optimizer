@@ -95,6 +95,25 @@ _STOPWORDS = {
     "premium", "headcount", "applicant", "applicants",
     # Location words
     "riyadh", "cairo", "egypt", "saudi", "arabia", "remote", "hybrid", "onsite",
+    # Dates, timelines, and application logistics. Live-run evidence (Nov 5
+    # 2026, trace 520188c7): 'january', 'basic', 'start', 'date', 'duration'
+    # all scored as keywords while real terms missed — none of these can be
+    # resume content, so they are stopped outright.
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct",
+    "nov", "dec",
+    "start", "starting", "starts", "begin", "begins", "beginning",
+    "date", "dates", "duration", "timeline", "timing", "deadline",
+    "immediately", "immediate", "flexibility", "flexible", "availability",
+    "available", "commence", "commencing", "commencement", "ongoing",
+    "eligible", "eligibility", "relocate", "relocation", "relocating",
+    "visa", "sponsorship", "stipend", "salary", "compensation", "benefits",
+    "perks", "weekday", "weekdays", "weekly", "monthly", "hours",
+    # Generic qualifier/noise adjectives carrying no signal
+    "basic", "basics", "general", "generally", "typical", "typically",
+    "various", "certain", "relevant", "respective", "powered", "focused",
+    "specialized", "experienced", "solid", "deep",
 }
 
 _LOW_SIGNAL_TERMS = {
@@ -103,6 +122,7 @@ _LOW_SIGNAL_TERMS = {
     "solutions", "services", "processes", "tools", "technologies",
     "assistants", "pipelines", "code", "design", "engineers",
     "integrations", "configurations", "environments", "ides",
+    "scheduling", "planning", "tracking",
 }
 
 
@@ -111,19 +131,52 @@ def _extract_company_names(text: str) -> set[str]:
     patterns = [
         r'(?:[Jj]oin|[Aa]t|[Aa]bout)\s+([A-Z][a-zA-Z]+)',
         r'([A-Z][a-zA-Z]+)\s+is an? ',
-        r'([A-Z][a-zA-Z]+)\s+(?:values?|welcomes?|offers?|develops?)',
+        r'([A-Z][a-zA-Z]+)\s+(?:values?|welcomes?|offers?|develops?|builds?)',
     ]
     for pat in patterns:
         for match in re.findall(pat, text):
             m_lower = match.lower()
             if m_lower not in _STOPWORDS and m_lower not in _LOW_SIGNAL_TERMS and len(match) >= 3:
                 names.add(m_lower)
+    # CamelCase brand names (FortyGuard, TempFlow). These are entity noise for
+    # a resume ("try adding fortyguard" is useless advice), but genuine
+    # CamelCase tech terms (JavaScript, GitHub) must survive — they are
+    # protected via the tier lists and the allowlist, checked at call time
+    # because the tier constants are defined later in the module.
+    for match in _CAMEL_NAME_RE.findall(text):
+        m_lower = match.lower()
+        if len(match) < 6:
+            continue
+        if m_lower in _CAMEL_TECH_ALLOW:
+            continue
+        if m_lower in _TIER1_TOOLS or m_lower in _TIER2_CONCEPTS:
+            continue
+        if m_lower in _LOW_SIGNAL_TERMS:
+            continue
+        if m_lower in _COMPOUND_PHRASES or any(
+            m_lower == _normalize_phrase_key(p) for p in _COMPOUND_PHRASES
+        ):
+            continue
+        names.add(m_lower)
     return names
 
 
 # ==========================================
 # Compound Phrases & Short Tech Terms
 # ==========================================
+
+# CamelCase brand/entity detector (two capitalised segments): FortyGuard,
+# TempFlow. One-off names from the posting are not resume content.
+_CAMEL_NAME_RE = re.compile(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+[A-Za-z]*)\b')
+
+# CamelCase forms that are REAL tech terms and must never be treated as
+# companies when they are not in the tier lists above (checked at call time).
+# Golden-fixture evidence (Nov 5 2026): 'DevSecOps' was eaten by the brand
+# filter (Dev|Sec|Ops camel-shaped, and absent from the tier lists) which
+# silently dropped a required ATS keyword.
+_CAMEL_TECH_ALLOW = {"mysql", "opencv", "sqlite", "nosql", "github", "gitlab",
+                     "devsecops", "devops", "jupyter", "colab", "nodejs",
+                     "nextjs", "reactjs", "vuejs", "openai", "agenticai"}
 
 _COMPOUND_PHRASES = [
     "machine learning", "deep learning", "natural language processing",
@@ -337,12 +390,94 @@ def _suggest_section(keyword: str) -> str:
 
 
 # ==========================================
+# JD Section Hygiene (boilerplate stripping)
+# ==========================================
+
+# Headings whose content never yields resume keywords: perks/compensation,
+# legal/EEO, application logistics. Matches markdown ("## Benefits:"),
+# bold-label ("**What we offer**"), and colon-plain ("Benefits:") styles.
+_BOILERPLATE_HEADING_RE = re.compile(
+    r"^\s*(?:#+\s*)?(?:\*\*)?\s*"
+    r"(?:what\s+(?:we\s+offer|'?s\s+in\s+it\s+for\s+you|you.?ll\s+(?:get|gain))|"
+    r"perks?|benefits?|pay\s*(?:&|and)?\s*benefits|compensation|salary|"
+    r"why\s+(?:us|join(?:\s+us)?|you|work\s+with\s+us)|about\s+us|who\s+we\s+are|"
+    r"equal\s+opp(?:ortunity)?|e\.?e\.?o\.?|diversity|inclusion\s+\(?.*\)?$|"
+    r"how\s+to\s+apply|application\s+(?:process|instructions|details)|"
+    r"apply\s+now|to\s+apply|our\s+values|selection\s+process|hiring\s+process)"
+    r"\b.*?:?\s*(?:\*\*)?\s*(?:#+)?\s*$",
+    re.IGNORECASE,
+)
+
+# Headings that DO carry requirement/qualification content — they end any
+# active skip even if they also contain a boilerplate word ("Requirements &
+# Compensation" resolves to content).
+_CONTENT_HEADING_RE = re.compile(
+    r"^\s*(?:#+\s*)?(?:\*\*)?\s*"
+    r"(?:requirements|qualifications|responsibilities|duties|"
+    r"who\s+you\s+are|what\s+you.?ll\s+do|what\s+(?:we.?re\s+looking\s+for|"
+    r"you.?ll\s+be\s+doing|you.?re\s+going\s+to\s+do)|"
+    r"your\s+(?:role|responsibilities)|the\s+role|job\s+description|"
+    r"about\s+the\s+role|description|overview|skills|"
+    r"nice\s+to\s+have|preferred|bonus|must[- ]haves?)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_boilerplate_sections(text: str) -> str:
+    """Drops the *content* of perk/legal/application-logistics sections.
+
+    Extraction scans the whole posting, so 'Free snacks' or 'Send your CV to'
+    otherwise become scored keywords (live-run evidence, Nov 5 2026: 'tools',
+    'basic' entering via such sections). A heading-less JD passes through
+    untouched; skipped blocks end at the next recognized heading or after two
+    consecutive blank lines. If stripping removes over 75% of the text, the
+    original text wins (protects against a heading regex going wide).
+    """
+    lines = text.splitlines()
+    if not any(_BOILERPLATE_HEADING_RE.match(line.strip()) for line in lines):
+        return text
+
+    kept: list[str] = []
+    skipping = False
+    blanks = 0
+    removed_chars = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            blanks += 1
+            if skipping and blanks >= 2:
+                skipping = False  # paragraph-block separator ends the section
+            if not skipping:
+                kept.append(line)
+            continue
+        blanks = 0
+        content_heading = _CONTENT_HEADING_RE.match(stripped)
+        if content_heading or _BOILERPLATE_HEADING_RE.match(stripped):
+            skipping = bool(_BOILERPLATE_HEADING_RE.match(stripped)) and content_heading is None
+            if not skipping:
+                kept.append(line)
+            continue
+        if not skipping:
+            kept.append(line)
+        else:
+            removed_chars += len(stripped)
+
+    stripped_text = "\n".join(kept)
+    if removed_chars == 0 or not re.search(r"[a-zA-Z]", stripped_text) \
+            or len(stripped_text) < 0.25 * len(text):
+        return text
+    return stripped_text
+
+
+# ==========================================
 # Keyword Extraction
 # ==========================================
 
 def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
     # Normalize literal \r, \n, \t escapes if text is passed with raw escape sequences
     text = text.replace('\\r', ' ').replace('\\n', ' ').replace('\\t', ' ')
+    # Drop perk/legal/application-logistics sections before counting tokens
+    text = _strip_boilerplate_sections(text)
     # Strip URLs so website links or domains never become keywords
     text_no_urls = re.sub(r'https?://\S+|www\.\S+', ' ', text)
     text_lower = text_no_urls.lower()

@@ -59,8 +59,33 @@ def ats_check_node(state: AgentState):
     _safe_print(f"-> ATS Match: {result['percentage']}% ({result['match_count']}/{result['total']})")
     _safe_print(f"-> Composite score: {composite}/100 (ATS {result['percentage']:.0f}% x 0.6 + LLM quality {llm_quality} x 0.4)")
 
+    # Best-of guard: a polish iteration (MAX_ITERATIONS > 1) must never leave
+    # the user with a worse resume than an earlier draft. Composite ties keep
+    # the newest draft — it carries one more feedback-driven revision.
+    best = dict(state.get("best_result") or {})
+    best_score = int(best.get("score", -1))
+    if composite >= best_score:
+        best = {
+            "score": composite,
+            "optimized_resume": state["optimized_resume"],
+            "ats_result": result["formatted"],
+            "ats_percentage": result["percentage"],
+            "llm_quality_score": llm_quality,
+        }
+    if composite < best_score:
+        _safe_print(f"-> Draft {state.get('iteration', 0)} regressed ({composite} < {best_score}); keeping the best draft.")
+        return {
+            "ats_result": best["ats_result"],
+            "ats_percentage": best["ats_percentage"],
+            "score": best["score"],
+            "optimized_resume": best["optimized_resume"],
+            "llm_quality_score": best["llm_quality_score"],
+            "best_result": best,
+        }
+
     return {
         "ats_result": result["formatted"],
         "ats_percentage": result["percentage"],
         "score": composite,
+        "best_result": best,
     }

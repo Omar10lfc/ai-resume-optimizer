@@ -48,6 +48,10 @@ class AgentState(TypedDict):
     resume_pages: NotRequired[int]
     resume_compacted: NotRequired[bool]
     page_overflow_warning: NotRequired[str]
+    # Best-of guard (ats_check): snapshot of the highest-composite draft seen
+    # so far in this run, so extra polish iterations can never regress the
+    # final result below an earlier draft.
+    best_result: NotRequired[dict]
 
 
 class ReviewOutput(BaseModel):

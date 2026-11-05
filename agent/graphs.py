@@ -15,7 +15,14 @@ from .helpers import _safe_print
 
 def should_continue(state: AgentState) -> str | list[str]:
     """Gate after ats_check. Returning a list fans out to both branches
-    concurrently (LangGraph native parallelism)."""
+    concurrently (LangGraph native parallelism).
+
+    Retry iterations route to 'polisher' — a second graph entry for the same
+    improver function — because 'improver' carries the human-review
+    interrupt: with interrupt_before, EVERY loop entry into that node would
+    pause for human input (found Nov 5 2026 when MAX_ITERATIONS went 1→2:
+    the second pass silently hung the run at a phantom checkpoint).
+    """
     if state.get('review_failed', False):
         _safe_print("Reviewer failed - proceeding with current draft (no retry).")
         return ["cover_letter", "interview_prep"]
@@ -26,13 +33,14 @@ def should_continue(state: AgentState) -> str | list[str]:
         _safe_print(f"Max iterations ({MAX_ITERATIONS}) reached. Generating Docs anyway...")
         return ["cover_letter", "interview_prep"]
     else:
-        _safe_print(f"Composite score {state['score']} < {SCORE_THRESHOLD}. Retrying...")
-        return "improver"
+        _safe_print(f"Composite score {state['score']} < {SCORE_THRESHOLD}. Polishing further...")
+        return "polisher"
 
 
 def _add_optimization_core(g: StateGraph):
     """Shared improver -> reviewer -> ats_check loop + fan-out + export wiring."""
     g.add_node("improver", improver_node)
+    g.add_node("polisher", improver_node)
     g.add_node("reviewer", reviewer_node)
     g.add_node("ats_check", ats_check_node)
     g.add_node("cover_letter", cover_letter_node)
@@ -40,6 +48,7 @@ def _add_optimization_core(g: StateGraph):
     g.add_node("pdf_exporter", pdf_exporter_node)
 
     g.add_edge("improver", "reviewer")
+    g.add_edge("polisher", "reviewer")
     g.add_edge("reviewer", "ats_check")
 
     # Native fan-out: returning two destinations runs cover_letter and

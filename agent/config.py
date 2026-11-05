@@ -28,7 +28,11 @@ FETCH_TIMEOUT_SECONDS = int(os.environ.get("FETCH_TIMEOUT_SECONDS", 8))
 
 # --- Self-correction loop tuning (env-overridable) ---
 SCORE_THRESHOLD = int(os.environ.get("SCORE_THRESHOLD", 80))
-MAX_ITERATIONS = int(os.environ.get("MAX_ITERATIONS", 1))
+# 2 = one polish pass applying the reviewer's feedback beyond the first draft.
+# Live-run evidence (Nov 5 2026): with the default 1 the reviewer's concrete,
+# JD-tailored suggestion never reached the improver. The ats_check node keeps
+# the best-scoring draft, so a second pass can never regress the result.
+MAX_ITERATIONS = int(os.environ.get("MAX_ITERATIONS", 2))
 ATS_SCORE_WEIGHT = float(os.environ.get("ATS_SCORE_WEIGHT", 0.6))
 LLM_SCORE_WEIGHT = float(os.environ.get("LLM_SCORE_WEIGHT", 0.4))
 

@@ -35,6 +35,7 @@ NODE_STATUS = {
     "loader": "Loading documents...",
     "scanner": "Scanning for skill gaps...",
     "improver": "Improving resume...",
+    "polisher": "Polishing draft with review feedback...",
     "reviewer": "Reviewer is grading the draft...",
     "ats_check": "Computing ATS keyword match...",
     "cover_letter": "Writing cover letter...",
