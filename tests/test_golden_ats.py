@@ -73,3 +73,24 @@ def test_golden_hard_requirements_count_matched():
                   if k in {r["keyword"] for r in result["keywords"]}]
     lost = sorted(set(must_count) - found)
     assert not lost, f"skills the resume demonstrably has, scored missing: {lost}"
+
+
+def test_golden_corporate_filler_and_verbs_never_keywords():
+    """Verifies that non-skills (translate, stakeholders, datasets, fresh, graduate,
+    decisions, organizations, business, solutions) are never extracted as keywords,
+    and technical skills (.NET, Python, SQL, Docker) are prioritized."""
+    jd = (
+        "Lamdax develops scalable digital solutions that streamline business processes "
+        "and help organizations turn data into actionable decisions. "
+        "Collaborate with engineers and stakeholders to translate requirements into AI solutions. "
+        "Prepare, clean, and analyze datasets for AI model development. "
+        "Fresh graduate with a bachelor's degree in Computer Science. "
+        "Working knowledge of Python, SQL, and .NET. Docker and APIs experience."
+    )
+    kws = agent._extract_keywords(jd, top_n=20)
+    for garbage in ("translate", "stakeholders", "datasets", "fresh", "graduate",
+                    "organizations", "decisions", "business", "solutions"):
+        assert garbage not in kws, f"Garbage '{garbage}' leaked into extracted keywords"
+    for expected in ("python", "sql", ".net", "docker"):
+        assert expected in kws, f"Core skill '{expected}' missing from extracted keywords"
+

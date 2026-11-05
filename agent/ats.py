@@ -52,6 +52,49 @@ _STOPWORDS = {
     "familiarity", "understanding", "knowledge", "foundation",
     "concepts", "trends", "productivity", "tooling", "documentation",
     "major", "graduation", "grads", "emerging", "current", "senior",
+    # Action verbs and verb forms (not skills)
+    "translate", "translating", "translates", "translation",
+    "prepare", "preparing", "prepared", "preparation",
+    "present", "presenting", "presents", "presentation", "presentations",
+    "turn", "turning", "turned",
+    "shape", "shaping", "shaped",
+    "deliver", "delivering", "delivered", "delivery",
+    "streamline", "streamlining", "streamlined",
+    "drive", "driving", "driven",
+    "solve", "solving", "solved",
+    "gather", "gathering", "conduct", "conducting",
+    "communicate", "communicating", "communication",
+    "participate", "participating", "participation",
+    "assist", "assisting",
+    "document", "documenting", "documents",
+    "develop", "develops", "developing", "developed",
+    # Corporate, stakeholder, and process filler
+    "stakeholder", "stakeholders",
+    "organization", "organizations", "organizational",
+    "decision", "decisions",
+    "insight", "insights",
+    "business", "businesses",
+    "solution", "solutions",
+    "initiative", "initiatives", "priority", "priorities",
+    "meeting", "meetings", "client", "clients", "customer", "customers",
+    "practice", "practices", "approach", "approaches",
+    "strategy", "strategies", "strategic",
+    "operational", "operation", "operations", "operate", "operating", "operated",
+    "technology", "technologies",
+    # Generic artifacts, models, and data nouns (standalones)
+    "dataset", "datasets",
+    "model", "models",
+    "finding", "findings", "experiment", "experiments",
+    # Candidate level, education, and degree descriptors
+    "fresh", "graduate", "graduates", "undergraduate", "undergraduates",
+    "bachelor", "bachelor's", "bachelors", "academic", "student", "students",
+    "intern", "interns", "internship", "internships", "entry-level", "mid-level",
+    # Adjectives and adverbs common in JD boilerplate
+    "scalable", "actionable", "digital", "effectively", "collaborative", "structured",
+    "elsewhere", "around", "along", "eager", "fit", "sits", "intersection",
+    "premium", "headcount", "applicant", "applicants",
+    # Location words
+    "riyadh", "cairo", "egypt", "saudi", "arabia", "remote", "hybrid", "onsite",
 }
 
 _LOW_SIGNAL_TERMS = {
@@ -68,12 +111,13 @@ def _extract_company_names(text: str) -> set[str]:
     patterns = [
         r'(?:[Jj]oin|[Aa]t|[Aa]bout)\s+([A-Z][a-zA-Z]+)',
         r'([A-Z][a-zA-Z]+)\s+is an? ',
-        r'([A-Z][a-zA-Z]+)\s+(?:values?|welcomes?|offers?)',
+        r'([A-Z][a-zA-Z]+)\s+(?:values?|welcomes?|offers?|develops?)',
     ]
     for pat in patterns:
         for match in re.findall(pat, text):
-            if match.lower() not in _STOPWORDS and len(match) >= 3:
-                names.add(match.lower())
+            m_lower = match.lower()
+            if m_lower not in _STOPWORDS and m_lower not in _LOW_SIGNAL_TERMS and len(match) >= 3:
+                names.add(m_lower)
     return names
 
 
@@ -150,7 +194,7 @@ _SYNONYMS = {
     "ci/cd": ["continuous integration", "continuous deployment", "ci cd"],
     "continuous integration": ["ci/cd"], "ci cd": ["ci/cd"],
     "iac": ["infrastructure as code"], "infrastructure as code": ["iac", "terraform"],
-    "docker": ["containerization"], "containerization": ["docker"],
+    "docker": ["containerization", "containers"], "containerization": ["docker"],
     "js": ["javascript"], "javascript": ["js"],
     "ts": ["typescript"], "typescript": ["ts"],
     "python3": ["python"], "python": ["python3"],
@@ -160,6 +204,10 @@ _SYNONYMS = {
     "postgres": ["postgresql", "postgre sql"],
     "postgresql": ["postgres"],
     "nosql": ["non-relational database", "mongodb", "dynamodb"],
+    ".net": ["dotnet", "c#", "asp.net"],
+    "dotnet": [".net", "asp.net"],
+    "api": ["apis", "rest api", "restful api"],
+    "apis": ["api", "rest api", "restful api"],
 }
 
 
@@ -193,14 +241,16 @@ def _simple_stem(word: str) -> str:
 
 _TIER1_TOOLS = {
     "python", "java", "scala", "rust", "go", "r", "julia",
-    "javascript", "typescript", "c++", "c#", "sql",
+    "javascript", "typescript", "c++", "c#", ".net", "dotnet", "sql",
     "pytorch", "tensorflow", "keras", "jax", "scikit-learn", "sklearn",
     "hugging face", "huggingface", "langchain", "llamaindex", "langgraph",
     "xgboost", "lightgbm", "catboost", "optuna",
+    "pandas", "numpy", "scipy", "matplotlib", "seaborn", "plotly", "opencv",
     "aws", "gcp", "azure", "sagemaker", "lambda", "ec2", "s3",
     "spark", "pyspark", "hadoop", "kafka", "airflow", "dbt", "snowflake",
     "bigquery", "redshift", "postgresql", "mongodb", "redis", "elasticsearch",
     "docker", "kubernetes", "k8s", "terraform", "ansible",
+    "git", "github", "linux", "bash",
     "jenkins", "github actions", "gitlab ci",
     "mlflow", "wandb", "dvc", "kubeflow", "bentoml", "triton",
     "faiss", "pinecone", "weaviate", "chromadb", "qdrant",
@@ -219,7 +269,7 @@ _TIER2_CONCEPTS = {
     "prompt engineering", "fine tuning", "fine-tuning",
     "retrieval augmented generation", "rag",
     "distributed computing", "microservices",
-    "rest api", "restful api", "api",
+    "rest api", "restful api", "api", "apis", "cloud", "monitoring",
     "etl", "data warehouse", "data lake",
     "vector database", "semantic search",
     "infrastructure as code", "containerization",
@@ -293,8 +343,10 @@ def _suggest_section(keyword: str) -> str:
 def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
     # Normalize literal \r, \n, \t escapes if text is passed with raw escape sequences
     text = text.replace('\\r', ' ').replace('\\n', ' ').replace('\\t', ' ')
-    text_lower = text.lower()
-    company_names = _extract_company_names(text)
+    # Strip URLs so website links or domains never become keywords
+    text_no_urls = re.sub(r'https?://\S+|www\.\S+', ' ', text)
+    text_lower = text_no_urls.lower()
+    company_names = _extract_company_names(text_no_urls)
 
     found_compounds = []
     seen_phrases = set()
@@ -309,6 +361,7 @@ def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
 
     tokens = re.findall(r'[a-zA-Z#+/.:-]{2,}', text_lower)
     tokens = [t.strip('.-/:') for t in tokens if t.strip('.-/:')]
+    tokens = [t for t in tokens if not t.startswith("http") and "://" not in t and not t.startswith("www.")]
 
     # Detect version-qualified terms (python3.11, node20, react18) and map to base form
     versioned_keywords = []
@@ -317,6 +370,12 @@ def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
             base = _VERSIONED_TERMS[token]
             if base not in versioned_keywords:
                 versioned_keywords.append(base)
+
+    found_special = []
+    if re.search(r'(?<![a-z0-9])\.net(?![a-z0-9])', text_lower) or re.search(r'(?<![a-z0-9])dotnet(?![a-z0-9])', text_lower):
+        if _normalize_phrase_key(".net") not in seen_phrases:
+            found_special.append(".net")
+            seen_phrases.add(_normalize_phrase_key(".net"))
 
     _compound_keys = {_normalize_phrase_key(p) for p in _COMPOUND_PHRASES}
 
@@ -333,10 +392,22 @@ def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
     ]
 
     freq = Counter(meaningful)
-    single_keywords = [kw for kw, _ in freq.most_common(top_n * 2)]
 
-    combined = found_compounds + versioned_keywords + single_keywords
-    return combined[:top_n]
+    tier1_singles = [kw for kw, _ in freq.most_common() if kw in _TIER1_TOOLS]
+    tier2_singles = [kw for kw, _ in freq.most_common() if kw in _TIER2_CONCEPTS and kw not in _TIER1_TOOLS]
+    other_singles = [kw for kw, _ in freq.most_common() if kw not in _TIER1_TOOLS and kw not in _TIER2_CONCEPTS]
+
+    raw_candidates = found_compounds + found_special + versioned_keywords + tier1_singles + tier2_singles + other_singles
+
+    deduped = []
+    seen = set()
+    for kw in raw_candidates:
+        norm = _normalize_phrase_key(kw)
+        if norm not in seen:
+            seen.add(norm)
+            deduped.append(kw)
+
+    return deduped[:top_n]
 
 
 # ==========================================

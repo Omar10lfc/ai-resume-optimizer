@@ -9,6 +9,99 @@ interface StreamCallbacks<T> {
   onError: (error: string) => void;
 }
 
+export interface ExtensionSettings {
+  backendUrl: string;
+  appAuthUser: string;
+  appAuthPass: string;
+  customGroqKey: string;
+}
+
+const DEFAULT_SETTINGS: ExtensionSettings = {
+  backendUrl: typeof chrome !== "undefined" && chrome.runtime?.id ? "http://localhost:8000" : "",
+  appAuthUser: "",
+  appAuthPass: "",
+  customGroqKey: "",
+};
+
+export async function getSettings(): Promise<ExtensionSettings> {
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+    try {
+      const data = (await chrome.storage.local.get([
+        "backendUrl",
+        "appAuthUser",
+        "appAuthPass",
+        "customGroqKey",
+      ])) as Record<string, string | undefined>;
+
+      return {
+        backendUrl: typeof data.backendUrl === "string" ? data.backendUrl : DEFAULT_SETTINGS.backendUrl,
+        appAuthUser: typeof data.appAuthUser === "string" ? data.appAuthUser : "",
+        appAuthPass: typeof data.appAuthPass === "string" ? data.appAuthPass : "",
+        customGroqKey: typeof data.customGroqKey === "string" ? data.customGroqKey : "",
+      };
+    } catch {
+      // fallback
+    }
+  }
+
+  // Web browser fallback to localStorage
+  try {
+    const raw = localStorage.getItem("resume_optimizer_settings");
+    if (raw) {
+      return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    }
+  } catch {
+    // fallback
+  }
+
+  return DEFAULT_SETTINGS;
+}
+
+export async function saveSettings(settings: Partial<ExtensionSettings>): Promise<void> {
+  const current = await getSettings();
+  const updated = { ...current, ...settings };
+
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+    await chrome.storage.local.set(updated);
+  } else {
+    try {
+      localStorage.setItem("resume_optimizer_settings", JSON.stringify(updated));
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export async function getBaseUrl(): Promise<string> {
+  const settings = await getSettings();
+  return (settings.backendUrl || "").replace(/\/+$/, "");
+}
+
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const settings = await getSettings();
+  const headers: Record<string, string> = {};
+
+  if (settings.appAuthUser && settings.appAuthPass) {
+    const encoded = btoa(`${settings.appAuthUser}:${settings.appAuthPass}`);
+    headers["Authorization"] = `Basic ${encoded}`;
+  }
+
+  if (settings.customGroqKey) {
+    headers["X-Groq-Api-Key"] = settings.customGroqKey.trim();
+  }
+
+  return headers;
+}
+
+export async function resolveArtifactUrl(relativePath: string): Promise<string> {
+  if (relativePath.startsWith("http://") || relativePath.startsWith("https://")) {
+    return relativePath;
+  }
+  const baseUrl = await getBaseUrl();
+  const cleanPath = relativePath.startsWith("/") ? relativePath : `/${relativePath}`;
+  return `${baseUrl}${cleanPath}`;
+}
+
 async function consumeSSE<T>(
   response: Response,
   callbacks: StreamCallbacks<T>,
@@ -95,8 +188,12 @@ export async function runStep1(
   callbacks: StreamCallbacks<{ session: string; missing_skills: string }>
 ) {
   try {
-    const response = await fetch("/api/v1/step1", {
+    const baseUrl = await getBaseUrl();
+    const authHeaders = await getAuthHeaders();
+
+    const response = await fetch(`${baseUrl}/api/v1/step1`, {
       method: "POST",
+      headers: authHeaders,
       body: formData,
     });
     await consumeSSE(response, callbacks, "done");
@@ -111,8 +208,12 @@ export async function runStep2(
   callbacks: StreamCallbacks<OptimizationResult>
 ) {
   try {
-    const response = await fetch("/api/v1/step2", {
+    const baseUrl = await getBaseUrl();
+    const authHeaders = await getAuthHeaders();
+
+    const response = await fetch(`${baseUrl}/api/v1/step2`, {
       method: "POST",
+      headers: authHeaders,
       body: formData,
     });
     await consumeSSE(response, callbacks, "result");
@@ -124,10 +225,15 @@ export async function runStep2(
 
 export async function checkProviderHealth(): Promise<{ ok: boolean; message: string }> {
   try {
-    const res = await fetch("/api/v1/health");
+    const baseUrl = await getBaseUrl();
+    const authHeaders = await getAuthHeaders();
+
+    const res = await fetch(`${baseUrl}/api/v1/health`, {
+      headers: authHeaders,
+    });
     if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
     return await res.json();
-  } catch (err: unknown) {
-    return { ok: false, message: "Server offline" };
+  } catch {
+    return { ok: false, message: "Backend offline (check URL or run server)" };
   }
 }

@@ -1,4 +1,4 @@
-"""FastAPI backend replacing the Gradio UI (frontend is now Next.js + BFF).
+"""FastAPI backend replacing the Gradio UI (frontend is the Vite + React SPA).
 
 Ports the Gradio app's startup block and runtime guarantees 1:1:
 
@@ -39,6 +39,7 @@ from starlette.responses import StreamingResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_413_CONTENT_TOO_LARGE
 
 from agent import config as agent_config
+from agent.llms import _groq_models_status
 from server import runners
 
 # ---------------------------------------------------------------------------
@@ -65,6 +66,18 @@ def _load_auth() -> tuple[str, str] | None:
 
 
 AUTH_CREDENTIALS = _load_auth()
+
+
+# Header carrying a client's own Groq key (browser-extension BYOK support).
+_CLIENT_GROQ_KEY_HEADER = "X-Groq-Api-Key"
+
+
+def _client_groq_key(request: Request) -> str | None:
+    """Reads (and sanity-caps) the optional client Groq key from a request."""
+    key = (request.headers.get(_CLIENT_GROQ_KEY_HEADER) or "").strip()
+    # Cap beyond any realistic key length: untrusted input should never reach
+    # the LLM client constructor unchecked.
+    return key[:512] if key else None
 
 
 _security = HTTPBasic(auto_error=False)
@@ -250,17 +263,25 @@ def create_app() -> FastAPI:
                   lifespan=lifespan,
                   dependencies=[Depends(require_auth)])
 
-    # Dev convenience for direct, non-BFF calls; the Next.js BFF proxies
-    # server-side (same origin), so CORS is not needed in production.
+    # Dev convenience for direct, non-proxy browser calls (Vite dev origin) and
+    # for the browser-extension client (chrome-extension://<32-char id>).
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_origin_regex=os.environ.get(
+            "EXTENSION_ORIGINS", r"^chrome-extension://[a-p0-9]{32}$"),
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
     @app.get("/api/v1/health")
     def get_health(request: Request) -> dict:
+        # BYOK clients verify THEIR key, not the server's (one cheap /models
+        # call, zero generation tokens).
+        user_key = _client_groq_key(request)
+        if user_key:
+            ok, message = _groq_models_status(user_key)
+            return {"ok": ok, "message": message}
         health = getattr(request.app.state, "health", None)
         if health is None:
             return {"ok": None,
@@ -268,7 +289,8 @@ def create_app() -> FastAPI:
         return health
 
     @app.post("/api/v1/step1")
-    def step1(job_description: str = Form(...),
+    def step1(request: Request,
+              job_description: str = Form(...),
               resume_text: str = Form(""),
               resume_file: UploadFile | None = File(None),
               session: str = Form("")) -> StreamingResponse:
@@ -277,14 +299,15 @@ def create_app() -> FastAPI:
         session = _safeguard_session(session)
         gen = runners.stream_step1(job_description,
                                    runners.resolve_resume_source(resume_path, resume_text),
-                                   session)
+                                   session, groq_api_key=_client_groq_key(request))
         temp = [resume_path] if resume_path else []
         return StreamingResponse(
             _wrapped_pipeline(gen, temp),
             media_type="text/event-stream", headers=_SSE_HEADERS)
 
     @app.post("/api/v1/step2")
-    def step2(job_description: str = Form(...),
+    def step2(request: Request,
+              job_description: str = Form(...),
               resume_text: str = Form(""),
               resume_file: UploadFile | None = File(None),
               notes: str = Form(""),
@@ -294,7 +317,7 @@ def create_app() -> FastAPI:
         session = _safeguard_session(session)
         gen = runners.stream_step2(job_description,
                                    runners.resolve_resume_source(resume_path, resume_text),
-                                   notes, session)
+                                   notes, session, groq_api_key=_client_groq_key(request))
         temp = [resume_path] if resume_path else []
         return StreamingResponse(
             _wrapped_pipeline(gen, temp),

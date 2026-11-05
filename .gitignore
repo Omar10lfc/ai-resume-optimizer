@@ -6,6 +6,12 @@ __pycache__/
 dist/
 build/
 node_modules/
+extension/dist/
+extension/background.js
+extension/content.js
+extension/sidepanel.html
+extension/index.html
+extension/assets/
 
 # Environment files
 .env

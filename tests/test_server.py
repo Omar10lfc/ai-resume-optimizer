@@ -481,3 +481,113 @@ def test_api_documentation_not_exposed(client, monkeypatch):
 
 def test_open_access_when_auth_not_configured(client):
     assert client.get("/api/v1/health").status_code == 200
+
+
+# ==========================================
+# BYO Groq key (browser-extension BYOK support)
+# ==========================================
+
+BYO_KEY = "gsk_client_supplied_for_tests"
+
+
+class _FakeChain:
+    def invoke(self, messages):  # duck-typed delegate for Easy stubbing
+        return "invoked"
+
+
+def test_groq_key_override_rebinds_and_restores(monkeypatch):
+    recorded: list[tuple[str, str | None]] = []
+
+    def fake_create_llm(temperature, reasoning_effort=None, api_key=None):
+        recorded.append(("llm", api_key))
+        return _FakeChain()
+
+    def fake_create_llm_fast(temperature, api_key=None):
+        recorded.append(("fast", api_key))
+        return _FakeChain()
+
+    monkeypatch.setattr(agent.llms, "_create_llm", fake_create_llm)
+    monkeypatch.setattr(agent.llms, "_create_llm_fast", fake_create_llm_fast)
+    monkeypatch.setattr(agent.llms, "_OVERRIDDEN_CHAINS", {})
+    monkeypatch.setattr(agent.llms, "_ACTIVE_GROQ_KEY", None)
+
+    assert agent.llms.active_groq_key() is None
+    with agent.llms.groq_key_override(BYO_KEY):
+        assert agent.llms.active_groq_key() == BYO_KEY
+
+        # First attribute resolution builds ALL three scoped chains for the key
+        assert agent.llms.llm_strict.invoke([]) == "invoked"
+        assert [(kind, key) for kind, key in recorded] == \
+            [("llm", BYO_KEY), ("llm", BYO_KEY), ("fast", BYO_KEY)]
+        assert BYO_KEY in agent.llms._OVERRIDDEN_CHAINS
+
+        # Subsequent resolutions reuse the cached chains without rebuilding
+        assert agent.llms.llm_fast.invoke([]) == "invoked"
+        assert len(recorded) == 3
+
+    with pytest.raises(RuntimeError):
+        with agent.llms.groq_key_override("gsk_nested_key"):
+            raise RuntimeError("boom")
+    assert agent.llms.active_groq_key() is None
+
+
+def test_stream_step1_clears_groq_key_after_run(fake_llms, clean_name_register):
+    events = list(runners.stream_step1(JD, RESUME_TEXT, None, groq_api_key=BYO_KEY))
+    assert agent.llms.active_groq_key() is None
+    assert events[-1]["type"] == "done"
+
+
+def test_step_passes_client_groq_key_header_to_runner(client, fake_llms,
+                                                      clean_name_register, monkeypatch):
+    captured: dict[str, str | None] = {}
+    original_step1, original_step2 = runners.stream_step1, runners.stream_step2
+
+    def spy_step1(job_description, resume_source, session, groq_api_key=None):
+        captured["step1"] = groq_api_key
+        return original_step1(job_description, resume_source, session, groq_api_key)
+
+    def spy_step2(job_description, resume_source, notes, session, groq_api_key=None):
+        captured["step2"] = groq_api_key
+        return original_step2(job_description, resume_source, notes, session, groq_api_key)
+
+    monkeypatch.setattr(runners, "stream_step1", spy_step1)
+    monkeypatch.setattr(runners, "stream_step2", spy_step2)
+
+    # step1 carries the header; step2 intentionally does not
+    r1 = client.post("/api/v1/step1",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT},
+                     headers={server_app._CLIENT_GROQ_KEY_HEADER: BYO_KEY})
+    _ = parse_sse(r1.text)
+    assert captured["step1"] == BYO_KEY
+
+    r2 = client.post("/api/v1/step2",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT})
+    _ = parse_sse(r2.text)
+    assert captured["step2"] is None
+
+
+def test_health_with_user_key_validates_that_key(client, monkeypatch):
+    seen: dict[str, str] = {}
+
+    def fake_status(key, *args, **kwargs):
+        seen["key"] = key
+        return True, "API reachable (99 models)."
+
+    monkeypatch.setattr(server_app, "_groq_models_status", fake_status)
+    body = client.get("/api/v1/health",
+                      headers={server_app._CLIENT_GROQ_KEY_HEADER: BYO_KEY}).json()
+    assert seen["key"] == BYO_KEY
+    assert body == {"ok": True, "message": "API reachable (99 models)."}
+
+    # no header -> unchanged behavior (pre-parse comes from startup state)
+    assert client.get("/api/v1/health").status_code == 200
+
+
+def test_client_groq_key_header_is_sanitized():
+    from fastapi import Request as _Request  # local import keeps the test lint-clean
+
+    req = _Request({"type": "http", "query_string": b"", "headers": [(b"x-groq-api-key", b"  gsk_x  ")]})
+    assert server_app._client_groq_key(req) == "gsk_x"
+
+    req_empty = _Request({"type": "http", "query_string": b"", "headers": []})
+    assert server_app._client_groq_key(req_empty) is None

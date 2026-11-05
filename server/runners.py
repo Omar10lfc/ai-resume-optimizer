@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from agent import TRACE_CALLBACKS, agent_app
 from agent import config as agent_config
+from agent.llms import groq_key_override
 from agent.tracing import (
     candidate_name_hint,
     log_pipeline_feedback,
@@ -107,8 +108,12 @@ def _status(message: str, node: str | None = None) -> dict:
 
 
 def stream_step1(job_description: str, resume_source: str,
-                 session: str | None) -> Iterator[dict]:
+                 session: str | None, groq_api_key: str | None = None) -> Iterator[dict]:
     """Step 1: loader -> scanner, interrupt before the improver.
+
+    groq_api_key (optional) honors a client-supplied Groq key (browser
+    extension BYOK): every LLM call inside the segment binds to it instead of
+    the server's GROQ_API_KEY.
 
     Yields dict events; the final one is
     ``{"type": "done", "session", "missing_skills"}``.
@@ -120,28 +125,29 @@ def stream_step1(job_description: str, resume_source: str,
         yield {"type": "error", "message": "Please upload a resume PDF or paste your resume text."}
         return
 
-    premask_resume_name(resume_source)
-    session = session or str(uuid4())
-    config = _thread_config(session)
+    with groq_key_override(groq_api_key):
+        premask_resume_name(resume_source)
+        session = session or str(uuid4())
+        config = _thread_config(session)
 
-    yield _status("Loading documents...")
-    try:
-        for update in agent_app.stream(_initial_inputs(job_description, resume_source),
-                                       config=config, stream_mode="updates",
-                                       subgraphs=False):
-            for node, delta in update.items():
-                if node and delta:
-                    yield _status(
-                        f"{NODE_STATUS.get(node, node + '...')} (step 1 of 2)", node)
-        snapshot = agent_app.get_state(config)
-        missing = (snapshot.values or {}).get("missing_skills", "")
-    except Exception as e:
-        traceback.print_exc()
-        yield {"type": "error", "message": f"Scan failed: {e}"}
-        return
+        yield _status("Loading documents...")
+        try:
+            for update in agent_app.stream(_initial_inputs(job_description, resume_source),
+                                           config=config, stream_mode="updates",
+                                           subgraphs=False):
+                for node, delta in update.items():
+                    if node and delta:
+                        yield _status(
+                            f"{NODE_STATUS.get(node, node + '...')} (step 1 of 2)", node)
+            snapshot = agent_app.get_state(config)
+            missing = (snapshot.values or {}).get("missing_skills", "")
+        except Exception as e:
+            traceback.print_exc()
+            yield {"type": "error", "message": f"Scan failed: {e}"}
+            return
 
-    yield {"type": "done", "session": session, "missing_skills": missing,
-           "status": "Analysis complete - review & edit the gaps below, then run Step 2."}
+        yield {"type": "done", "session": session, "missing_skills": missing,
+               "status": "Analysis complete - review & edit the gaps below, then run Step 2."}
 
 
 def _extract_results(final_state: dict) -> dict:
@@ -191,8 +197,10 @@ def _extract_results(final_state: dict) -> dict:
 
 
 def stream_step2(job_description: str, resume_source: str, notes: str,
-                 session: str | None) -> Iterator[dict]:
+                 session: str | None, groq_api_key: str | None = None) -> Iterator[dict]:
     """Step 2: resumes the interrupted session (or starts fresh).
+
+    groq_api_key (optional) honors a client-supplied Groq key - see stream_step1.
 
     Final event: ``{"type": "result", **payload}``.
     """
@@ -203,64 +211,65 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
         yield {"type": "error", "message": "Please upload a resume PDF or paste your resume text."}
         return
 
-    premask_resume_name(resume_source)
+    with groq_key_override(groq_api_key):
+        premask_resume_name(resume_source)
 
-    if not notes or not notes.strip():
-        yield {"type": "warning",
-               "message": "No missing skills / context provided. Running with auto-detected gaps only."}
+        if not notes or not notes.strip():
+            yield {"type": "warning",
+                   "message": "No missing skills / context provided. Running with auto-detected gaps only."}
 
-    session = session or str(uuid4())
-    config = _thread_config(session)
+        session = session or str(uuid4())
+        config = _thread_config(session)
 
-    yield _status("Starting pipeline...")
-    final_state: dict = {}
-    try:
-        state = agent_app.get_state(config)
-        if not state.next:
-            if state.values:
-                # previous run completed in this session -> start a fresh one
-                session = str(uuid4())
-                config = _thread_config(session)
-                yield {"type": "session", "session": session}
-                yield _status("Starting a fresh run...")
-            # Step 1 was skipped: run loader -> scanner up to the interrupt
-            for update in agent_app.stream(_initial_inputs(job_description, resume_source),
-                                           config=config, stream_mode="updates"):
+        yield _status("Starting pipeline...")
+        final_state: dict = {}
+        try:
+            state = agent_app.get_state(config)
+            if not state.next:
+                if state.values:
+                    # previous run completed in this session -> start a fresh one
+                    session = str(uuid4())
+                    config = _thread_config(session)
+                    yield {"type": "session", "session": session}
+                    yield _status("Starting a fresh run...")
+                # Step 1 was skipped: run loader -> scanner up to the interrupt
+                for update in agent_app.stream(_initial_inputs(job_description, resume_source),
+                                               config=config, stream_mode="updates"):
+                    for node, delta in update.items():
+                        if node and delta:
+                            yield _status(f"{NODE_STATUS.get(node, node + '...')} (1/2)", node)
+
+            # Inject the user's edited gaps/context at the human-review checkpoint
+            agent_app.update_state(config, {
+                "human_notes": notes or "",
+                "missing_skills": notes or "",
+            })
+
+            # Resume: improver <-> reviewer -> ats_check -> fan-out -> pdf_exporter.
+            # A pinned root run id lets the post-run feedback records attach to
+            # the exact LangSmith trace (threshold/root of THIS segment).
+            resume_run_id = str(uuid4())
+            for update in agent_app.stream(None, config=_thread_config(session, resume_run_id),
+                                           stream_mode="updates"):
                 for node, delta in update.items():
                     if node and delta:
-                        yield _status(f"{NODE_STATUS.get(node, node + '...')} (1/2)", node)
+                        final_state.update(delta)
+                        yield _status(f"{NODE_STATUS.get(node, node + '...')} (2/2)", node)
+        except Exception as e:
+            traceback.print_exc()
+            yield {"type": "error", "message": f"Optimization failed: {e}"}
+            return
 
-        # Inject the user's edited gaps/context at the human-review checkpoint
-        agent_app.update_state(config, {
-            "human_notes": notes or "",
-            "missing_skills": notes or "",
-        })
+        if not final_state:
+            snapshot = agent_app.get_state(config)
+            final_state = snapshot.values or {}
 
-        # Resume: improver <-> reviewer -> ats_check -> fan-out -> pdf_exporter.
-        # A pinned root run id lets the post-run feedback records attach to
-        # the exact LangSmith trace (threshold/root of THIS segment).
-        resume_run_id = str(uuid4())
-        for update in agent_app.stream(None, config=_thread_config(session, resume_run_id),
-                                       stream_mode="updates"):
-            for node, delta in update.items():
-                if node and delta:
-                    final_state.update(delta)
-                    yield _status(f"{NODE_STATUS.get(node, node + '...')} (2/2)", node)
-    except Exception as e:
-        traceback.print_exc()
-        yield {"type": "error", "message": f"Optimization failed: {e}"}
-        return
+        # Score + failure feedback on the pinned trace root. Degraded runs become
+        # queryable on the LangSmith dashboard (composite_score low / review_failed
+        # = 1) even though no run inside the trace ever carried error status.
+        # (Only successful full runs reach this point - pipeline errors returned
+        # above, mirroring the original Gradio semantics.)
+        log_pipeline_feedback(final_state, resume_run_id)
 
-    if not final_state:
-        snapshot = agent_app.get_state(config)
-        final_state = snapshot.values or {}
-
-    # Score + failure feedback on the pinned trace root. Degraded runs become
-    # queryable on the LangSmith dashboard (composite_score low / review_failed
-    # = 1) even though no run inside the trace ever carried error status.
-    # (Only successful full runs reach this point - pipeline errors returned
-    # above, mirroring the original Gradio semantics.)
-    log_pipeline_feedback(final_state, resume_run_id)
-
-    yield {"type": "result", "session": session,
-           **_extract_results(final_state)}
+        yield {"type": "result", "session": session,
+               **_extract_results(final_state)}
