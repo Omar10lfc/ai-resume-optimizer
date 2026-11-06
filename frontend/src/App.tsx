@@ -311,14 +311,23 @@ export function App() {
         setSession(data.session);
         setMissingSkills(data.missing_skills);
         const gapCount = parseGapSkills(data.missing_skills).length;
-        if (gapCount === 0) {
-          // Nothing to decide → no review checkpoint. Tailor straight away;
-          // optional context typed below the inputs is picked up via the ref.
+        const scannerOutput = data.missing_skills.trim().length > 0;
+        if (gapCount === 0 && !scannerOutput) {
+          // Nothing to decide AND the scanner reported nothing → no review
+          // checkpoint. Tailor straight away; optional context typed below
+          // the inputs is picked up via the ref.
           setReviewOpen(false);
           setStatusMessage("No missing skills found — optimizing directly.");
           push("info", "No missing skills found — tailoring your resume to this job right away.");
           handleOptimizeStep2();
           return;
+        }
+        if (gapCount === 0 && scannerOutput) {
+          // Scanner produced text the parser can't turn into chips (exotic
+          // bullet formatting, prose). Never auto-run past the decision
+          // surface — the raw text goes to the review dialog so the user
+          // decides what to feature.
+          push("info", "Gap scan returned an unusual format — review it below before optimizing.");
         }
         setReviewOpen(true);
         setStage("step1_review");

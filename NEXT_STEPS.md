@@ -66,7 +66,7 @@ Third API client per the product implementation plan; reuses the same FastAPI AP
 | X6 | **UI/UX redesign (Nov 3)** | Design-token CSS system with light+dark themes (system-follow + manual toggle, `uiTheme` storage key); gap chips grouped tool/concept/general with per-chip notes/undo/keyboard map; classified error card with actions; score gauge with ATS/quality split; elapsed-timer timeline with staleness hints; before/after diff in paste mode; ARIA tabs; debounced storage writes; 3-step onboarding; "forget my data" eraser — see README changelog "Session — Nov 3 2026" |
 | X7 | **Gap-flow behavior (Nov 5)** | Review→step-2 handoff race fixed (`onSubmit(notes: string)` passes the composed string — state reads in the same tick were stale); zero-gap scans skip the review modal and optimize straight away; new optional "Add context for the optimizer" box under the inputs persists across sessions (`pendingUserNotes` / `pending_optimizer_notes`, purged by Reset and the Settings eraser); timeline gains the polisher pass-2 row — see README changelog "Session — Nov 5 2026" |
 
-**Next for the extension:** CWS store assets (screenshots, promo tile, privacy policy), scraper fixture tests, permission review (broad `https://*/*` host permission needed only for a configurable cloud backend — consider `optional_host_permissions`), a live LinkedIn smoke pass, and a reload of the unpacked extension in `chrome://extensions` to pick up the Nov 5 panel changes (bundle `index-BmpG6Jfp.js`).
+**Next for the extension:** CWS store assets (screenshots, promo tile, privacy policy), scraper fixture tests, permission review (broad `https://*/*` host permission needed only for a configurable cloud backend — consider `optional_host_permissions`), a live LinkedIn smoke pass, and a reload of the unpacked extension in `chrome://extensions` to pick up the Nov 5–7 panel changes (bundle `index-Czb7PI05.js` — tonight's fabrication incident traced back to a stale panel bundle, so this reload matters).
 
 ---
 
@@ -83,6 +83,25 @@ Motivated by the user's live run (trace `520188c7`, request `3ffdcffc`): the hum
 | A5 | `devsecops` regression fixed | `_CAMEL_TECH_ALLOW` extended; regression test added | Caught by the golden fixture during validation |
 | A6 | Best-of-2 loop | `MAX_ITERATIONS` 1→2 + `best_result` snapshot restore in `ats_check`; polisher node routing (interrupt stays on first improver visit) | Extra polish can never regress the final result |
 | A7 | Suite 191 → 199 | 8 new agent tests; salvage test pinned to the loop cap for exact retry counting | Full-suite green before commit |
+
+---
+
+## Agent core + panel — Nov 6–7 2026 (fabrication guardrails, pass-case polish, gauge contrast) ✅ LANDED (this session's two commits)
+
+Driven by the user's live run (request `14751ff9…`, UI session `8dcb2cab`, LangSmith roots `01a1b28e` + `c71e0454`): the run was healthy (86 composite / 90.5% ATS / 1 iteration / 1-page PDF) but the optimized resume + cover letter **fabricated tools and a metric** (n8n "cut … by 40%", FortyGuard MCP integration, Claude Code/Cursor/Codex) from gap chips with EMPTY user notes — the stale panel bundle kept re-dropping the composed review, and the improver prompt's "plausibly has" line licensed the invention. The screenshot's "broken" quality bar turned out to be a contrast bug (`--line-strong` border token on a dark inset track).
+
+| # | Item | Outcome | Detail |
+|---|------|---------|--------|
+| A8 | Integrity tripwire | `find_unevidenced_metric_claims` (spacing-compact matching; years/versions exempt) → improver stamps `guardrail_warnings` → runner emits a `warning` SSE event before `result` | Detection-only; run 14751ff9's invented "40%" would now be surfaced to the user |
+| A9 | Reviewer truthfulness gate | Score capped at 40 + invented claims named in feedback; ORIGINAL RESUME embedded as the evidence anchor | Fabrication is graded, not just prompted against |
+| A10 | Improver prompt rewrite | Gap items = RESEARCH TOPICS; named tools/integrations only when evidenced; zero-tolerance metric rule | "Plausibly has relevant experience" line removed |
+| A11 | Pass-case polish | `should_continue` routes to `polisher` on non-empty feedback whenever the cap allows (cap first; `review_failed` fans out) | Run 14751ff9's "adjust the professional summary" suggestion is now applied on the next pass; best-of guard prevents regressions |
+| A12 | Bullet Unicode hygiene | `_tame_unicode_bullets` on scanner output + gap-chip labels (`Claude\u202fCode`, `Hands\u2011on`) | Chips/ATS spans get plain ASCII separators |
+| A13 | Zero-gap gate hardened | Auto-run only when `gapCount === 0 && !scannerOutput` | Unparseable-but-nonempty scanner text opens the review modal instead of bypassing the decision surface |
+| A14 | Score-gauge contrast | ATS bar `var(--accent)`, quality bar `var(--info)`, per-bar color-coded % labels, tightened ring-center type | The 79% quality fill is visible again (was border-token-on-inset) |
+| A15 | Suite 199 → 211 (agent 112, server 29) | Pass-case polish ×3, integrity ×5, Unicode ×3, reviewer-gate asserts, server warning-event ordering test | Full suite green; frontend lint/tsc/typecheck/builds clean; bundle `index-Czb7PI05.js` |
+
+**⚠️ Run 14751ff9 artifacts (`Optimized_Resume (10).pdf` etc.) must not be sent out** — they contain the fabricated n8n/FortyGuard-MCP/Claude-Code claims. Regenerate after reloading the unpacked extension in `chrome://extensions`.
 
 ---
 

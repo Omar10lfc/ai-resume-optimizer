@@ -98,7 +98,14 @@ export function parseGapSkills(raw: string): GapItem[] {
   const seen = new Set<string>();
   const items: GapItem[] = [];
   for (const line of (raw || "").split(/\r?\n/)) {
-    const label = line.replace(/^\s*(?:[-•*·]|\d+[.)])\s*/, "").trim();
+    const label = line
+      // Bullet markers: "- ", "• ", "*", "1. " / "1)"
+      .replace(/^\s*(?:[-•*·]|\d+[.)])\s*/, "")
+      // Exotic whitespace/hyphens the LLM inherits from scraped JD text
+      // (live-run evidence: "Claude\u202fCode", "Hands\u2011on").
+      .replace(/[\u00a0\u2007\u202f]/g, " ")
+      .replace(/[\u2010\u2011\u2012\ufe63]/g, "-")
+      .trim();
     if (!label || label.length < 2 || label.length > 120) continue;
     if (/^(missing|skills?)\s*:?$/i.test(label)) continue;
     const key = normalize(label);

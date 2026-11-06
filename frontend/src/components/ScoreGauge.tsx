@@ -48,10 +48,16 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({ score, scoreClass, atsPe
   // Dash arcs: fill for score, notch at the pass threshold (80).
   const arc = (C * clamped) / 100;
 
+  // Two clearly distinct hues with AA contrast in both themes: the ATS bar
+  // owns the accent (cyan; the score's deterministic half), the quality bar
+  // owns --info (soft blue in dark / brand blue in light). The previous
+  // --line-strong fill was a border token — nearly invisible against the
+  // dark inset track, so the 79% bar read as "broken/short" (user complaint,
+  // Nov 6 2026 screenshot: run 8dcb2cab).
   const bars = useMemo(
     () => [
-      { label: "ATS keywords", pct: Math.round(atsPercentage), color: "bg-accent", weightNote: `${Math.round(weights.ats * 100)}% weight` },
-      { label: "Presentation quality", pct: quality, color: "bg-line-strong", weightNote: `${Math.round(weights.llm * 100)}% weight` },
+      { label: "ATS keywords", pct: Math.round(atsPercentage), colorVar: "var(--accent)", weightNote: `${Math.round(weights.ats * 100)}% weight` },
+      { label: "Presentation quality", pct: quality, colorVar: "var(--info)", weightNote: `${Math.round(weights.llm * 100)}% weight` },
     ],
     [atsPercentage, quality, weights.ats, weights.llm]
   );
@@ -87,8 +93,8 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({ score, scoreClass, atsPe
           <circle cx={threshold.x} cy={threshold.y} r="2.5" fill="var(--ink-3)" />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-xl font-bold text-ink font-mono tabular-nums">{clamped}</span>
-          <span className="text-2xs text-ink-3 font-mono">/ 100</span>
+          <span className="text-xl font-bold text-ink font-mono tabular-nums leading-none">{clamped}</span>
+          <span className="text-2xs text-ink-3 font-mono leading-none mt-1">/ 100</span>
         </div>
       </div>
 
@@ -110,13 +116,13 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({ score, scoreClass, atsPe
           <div key={bar.label} className="mb-2 last:mb-0">
             <div className="flex items-baseline justify-between mb-1">
               <span className="text-2xs text-ink-2 font-medium">{bar.label}</span>
-              <span className="text-2xs text-accent font-mono tabular-nums">{bar.pct}%</span>
+              <span className="text-2xs font-mono tabular-nums" style={{ color: bar.colorVar }}>{bar.pct}%</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="h-1.5 flex-1 rounded-full bg-inset overflow-hidden">
                 <div
-                  className={`h-full rounded-full ${bar.color} transition-[width] duration-700 ease-out motion-reduce:transition-none`}
-                  style={{ width: `${bar.pct}%` }}
+                  className="h-full rounded-full transition-[width] duration-700 ease-out motion-reduce:transition-none"
+                  style={{ width: `${bar.pct}%`, background: bar.colorVar }}
                 />
               </div>
               <span className="text-2xs text-ink-3 font-mono shrink-0">{bar.weightNote}</span>
