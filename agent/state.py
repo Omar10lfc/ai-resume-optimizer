@@ -52,6 +52,10 @@ class AgentState(TypedDict):
     # so far in this run, so extra polish iterations can never regress the
     # final result below an earlier draft.
     best_result: NotRequired[dict]
+    # Integrity tripwire (improver): metric-shaped tokens in the current draft
+    # that neither the source resume nor user notes contain. Surfaced to the
+    # user as a warning by the server runner; never trusted as content.
+    guardrail_warnings: NotRequired[list]
 
 
 class ReviewOutput(BaseModel):

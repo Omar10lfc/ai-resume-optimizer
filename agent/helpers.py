@@ -225,6 +225,73 @@ def _filter_hallucinated_sections(optimized: str, original: str) -> str:
     return '\n'.join(filtered_lines)
 
 
+# ==========================================
+# Untrusting-text helpers: bullet hygiene + evidence checks
+# ==========================================
+
+# Whitespace/hyphen variants LLM bullets pick up from web-sourced JD text:
+# U+00A0 (no-break), U+2007+U+202F (figures/narrow no-break) as spaces;
+# U+2010-2012/FE63 hyphen variants. Live-run evidence (Nov 6 2026): scanner
+# bullets carried "Claude\u202fCode" and "Hands\u2011on", which then leaked
+# into comprehension-sensitive surfaces (frontend gap chips, ATS text spans).
+_NBSP_CLASS = "\u00a0\u2007\u202f"
+_HYPHEN_CLASS = "\u2010\u2011\u2012\u2012\ufe63"
+
+
+def _tame_unicode_bullets(text: str) -> str:
+    """Normalizes exotic whitespace/hyphens and per-line trailing spaces in
+    LLM-produced bullet text so every downstream parser sees plain bytes."""
+    if not text:
+        return text
+    t = text.replace("\r\n", "\n").replace("\r", "\n")
+    for ch in _NBSP_CLASS:
+        t = t.replace(ch, " ")
+    for ch in _HYPHEN_CLASS:
+        t = t.replace(ch, "-")
+    t = "\n".join(line.rstrip() for line in t.split("\n"))
+    return t
+
+
+# Metric-shaped numerals: percentages, X-factors ("3x"), and millisecond
+# rates ("1.7 ms"). Plain years/version numbers (GPT-4, Python 3.12) have no
+# unit and are deliberately NOT matched - they are not metric claims.
+_METRIC_TOKEN_RE = re.compile(
+    r"(?<![\w.])(\d+(?:[.,]\d+)?(?:\s?(?:%|x(?![a-zA-Z])|ms\b|mm\b)))"
+)
+
+
+def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
+                                   max_claims: int = 6) -> list[str]:
+    """Returns metric-shaped tokens in the optimized resume that the evidence
+    (source resume + user notes) does not contain.
+
+    The improver is prompted never to coin numbers, but prompt guards alone
+    demonstrably fold (live-run evidence Nov 6 2026, request 14751ff9: an
+    empty user context still produced "cut manual data-ingestion effort by
+    40%"). This check turns the violation into an explicit, user-visible
+    warning instead of silently shipping invented metrics.
+    """
+    if not optimized_text:
+        return []
+    src = re.sub(r"\s+", " ", (evidence_text or "").lower())
+    claims: list[str] = []
+    seen: set[str] = set()
+    for match in _METRIC_TOKEN_RE.finditer(optimized_text):
+        token = match.group(1)
+        key = token.lower()
+        compact = key.replace(" ", "")
+        if key in seen:
+            continue
+        if key in src or compact in src:
+            seen.add(key)
+            continue
+        seen.add(key)
+        claims.append(token)
+        if len(claims) >= max_claims:
+            break
+    return claims
+
+
 def _sanitize_html_for_pdf(html: str) -> str:
     """Strip dangerous tags and attributes from HTML before passing to xhtml2pdf.
 

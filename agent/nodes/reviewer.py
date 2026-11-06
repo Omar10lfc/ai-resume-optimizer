@@ -156,6 +156,13 @@ def reviewer_node(state: AgentState):
       structure, bullets kept to 1-2 lines, natural keyword use (no stuffing),
       free of filler?
 
+    TRUTHFULNESS GATE (overrides the anchors above): the candidate's evidence
+    is the ORIGINAL RESUME plus explicit user context ONLY. If the rewritten
+    resume claims tools, projects, integrations, employers, or NUMBERS that
+    neither of those shows, that is fabrication: cap the score at 40 and name
+    the invented claims in the feedback. Do not reward good style for
+    invented content.
+
     Calibration anchors - anchor the combined score to these reference points:
     - 85-100: Every bullet opens with a strong action verb and carries a true,
       verifiable metric (numbers, percentages, or scale); the summary names the
@@ -168,6 +175,8 @@ def reviewer_node(state: AgentState):
       is generic (not tailored to this JD); weak or verbose phrasing.
 
     {_untrusted('JOB DESCRIPTION', _safe_truncate(state['job_text'], 2500, 'Job text (reviewer)'))}
+
+    {_untrusted('ORIGINAL RESUME (the only source of true claims beside user context)', _safe_truncate(state['resume_text'], 6000, 'Original resume (reviewer)'))}
 
     {_untrusted('RESUME (flattened plain-text view of the rendered document)', _strip_markdown_for_review(state['optimized_resume']))}
 

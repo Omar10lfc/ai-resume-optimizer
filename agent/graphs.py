@@ -22,19 +22,29 @@ def should_continue(state: AgentState) -> str | list[str]:
     interrupt: with interrupt_before, EVERY loop entry into that node would
     pause for human input (found Nov 5 2026 when MAX_ITERATIONS went 1→2:
     the second pass silently hung the run at a phantom checkpoint).
+
+    Nov 6 2026, live run 14751ff9: a PASSING reviewer (composite 86 ≥ 80)
+    still left concrete feedback ("adjust the summary to target the role")
+    which never got applied because passing scores bailed straight to the
+    fan-out. Directive: feedback gets one polish pass whenever the cap
+    allows it, passing or not — the best-of guard in ats_check keeps the
+    better draft, so the extra pass cannot regress the result.
     """
     if state.get('review_failed', False):
         _safe_print("Reviewer failed - proceeding with current draft (no retry).")
         return ["cover_letter", "interview_prep"]
-    if state['score'] >= SCORE_THRESHOLD:
-        _safe_print(f"Success! Composite score {state['score']} >= {SCORE_THRESHOLD}. Generating Docs...")
+    if state['iteration'] >= MAX_ITERATIONS:
+        _safe_print(f"Max iterations ({MAX_ITERATIONS}) reached. Generating Docs...")
         return ["cover_letter", "interview_prep"]
-    elif state['iteration'] >= MAX_ITERATIONS:
-        _safe_print(f"Max iterations ({MAX_ITERATIONS}) reached. Generating Docs anyway...")
-        return ["cover_letter", "interview_prep"]
-    else:
-        _safe_print(f"Composite score {state['score']} < {SCORE_THRESHOLD}. Polishing further...")
+    feedback = (state.get('feedback') or "").strip()
+    if feedback:
+        if state['score'] >= SCORE_THRESHOLD:
+            _safe_print(f"Score {state['score']} >= {SCORE_THRESHOLD}, but the reviewer left feedback - one polish pass (best-of keeps the better draft).")
+        else:
+            _safe_print(f"Composite score {state['score']} < {SCORE_THRESHOLD}. Polishing further...")
         return "polisher"
+    _safe_print(f"Success! Composite score {state['score']} >= {SCORE_THRESHOLD}. Generating Docs...")
+    return ["cover_letter", "interview_prep"]
 
 
 def _add_optimization_core(g: StateGraph):

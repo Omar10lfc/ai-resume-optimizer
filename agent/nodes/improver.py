@@ -1,7 +1,8 @@
 """NODE 2: Improver - rewrites resume using human notes."""
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
-from ..helpers import _safe_print, _strip_code_fences, _filter_hallucinated_sections
+from ..helpers import (_safe_print, _strip_code_fences, _filter_hallucinated_sections,
+                       _tame_unicode_bullets, find_unevidenced_metric_claims)
 from langchain_core.messages import HumanMessage, SystemMessage
 
 
@@ -51,13 +52,22 @@ def improver_node(state: AgentState):
     (Note: Also preserve any additional legitimate sections present in the original resume, such as Publications, Honors & Awards, Leadership, Volunteering, or Coursework.)
 
     INSTRUCTIONS:
-    1. Address these missing skills where the candidate plausibly has relevant experience:
-       {state['missing_skills']}
+    1. RULES FOR THE MISSING-SKILLS LIST (treat it as RESEARCH TOPICS, never
+       as experience to claim). A gap item may only appear in the rewrite if
+       the original resume or the USER CONTEXT already demonstrates it; in
+       that case weave the demonstrated evidence in. Otherwise OMIT the item
+       entirely. NEVER describe building, deploying, or integrating anything
+       with a named tool, platform, vendor server, or product that neither
+       the resume nor the user context shows (that includes phrasing gaps as
+       existing achievements). For genuinely conceptual items only, phrasing
+       like "Conceptual Knowledge of..." is acceptable.
+       Missing skills under review: {state['missing_skills']}
     2. USE THIS USER CONTEXT: "{state['human_notes']}" (Incorporate this experience if valid).
-    3. If the user provided no evidence for a specific missing TOOL, OMIT IT entirely.
-       For general concepts, phrasing like "Conceptual Knowledge of..." is acceptable.
-    4. Do NOT invent projects, jobs, metrics, or credentials not supported by the
-       original resume or the user context.
+    3. Do NOT invent projects, jobs, tools, integrations, credentials, or
+       numbers not supported by the original resume or the user context.
+    4. METRIC INTEGRITY (zero tolerance): every number in your output must
+       be copied from the ORIGINAL RESUME or the USER CONTEXT. Never coin,
+       copy, or round numbers from the job description or the feedback text.
     5. Feedback from previous review (if any): {state.get('feedback', 'None')}
     6. PRESERVE ALL REAL LINKS: Never drop GitHub links, live demos, portfolio URLs, LinkedIn profile links, or email addresses from the original resume. Attach project links directly to the project header line beside the project title, NEVER as a standalone bullet item.
     7. Retain legitimate existing sections from the candidate's background.
@@ -76,4 +86,13 @@ def improver_node(state: AgentState):
     optimized = _strip_code_fences(response.content)
     optimized = _filter_hallucinated_sections(optimized, state['resume_text'])
 
-    return {"optimized_resume": optimized, "iteration": current_iter}
+    # Evidence tripwire: metric-shaped numbers the source resume and user
+    # notes do not contain are flagged for the user (server warning event)
+    # instead of shipping silently. Detection only - the draft stays intact.
+    evidence = f"{state.get('resume_text') or ''}\n{state.get('human_notes') or ''}"
+    warnings = find_unevidenced_metric_claims(optimized, evidence)
+    if warnings:
+        _safe_print(f"   [Integrity] Unevidenced metric claims in draft: {', '.join(warnings)}")
+
+    return {"optimized_resume": optimized, "iteration": current_iter,
+            "guardrail_warnings": warnings}

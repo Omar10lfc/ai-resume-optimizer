@@ -1,7 +1,7 @@
 """NODE 1: Scanner - analyzes gaps between resume and job."""
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
-from ..helpers import _safe_print, _safe_truncate
+from ..helpers import _safe_print, _safe_truncate, _tame_unicode_bullets
 from langchain_core.messages import HumanMessage, SystemMessage
 
 
@@ -22,6 +22,9 @@ def scanner_node(state: AgentState):
         SystemMessage(content=SYSTEM_GUARDRAIL),
         HumanMessage(content=prompt),
     ])
-    _safe_print(f"   Identified Gaps:\n{response.content}")
-
-    return {"missing_skills": response.content, "iteration": 0}
+    # Tame web-sourced Unicode before the text reaches any consumer: gap
+    # chips, ATS text spans, and notes all assume plain ASCII separators.
+    # Live-run evidence (Nov 6 2026): "Claude\u202fCode" / "Hands\u2011on".
+    missing = _tame_unicode_bullets(str(response.content))
+    _safe_print(f"   Identified Gaps:\n{missing}")
+    return {"missing_skills": missing, "iteration": 0}

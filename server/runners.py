@@ -272,5 +272,17 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
         # above, mirroring the original Gradio semantics.)
         log_pipeline_feedback(final_state, resume_run_id)
 
+        # Integrity tripwire: surface unevidenced metric claims BEFORE the
+        # result lands. The client turns this into its warning banner, so the
+        # user reviews the flagged numbers instead of shipping invented
+        # metrics silently (live-run evidence Nov 6 2026: "cut ... by 40%"
+        # with an empty user context).
+        integrity = final_state.get("guardrail_warnings") or []
+        if integrity:
+            yield {"type": "warning",
+                   "message": "Integrity check: number claims without evidence in your resume or notes — "
+                              + ", ".join(integrity)
+                              + ". Verify or remove them before applying."}
+
         yield {"type": "result", "session": session,
                **_extract_results(final_state)}

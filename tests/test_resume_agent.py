@@ -482,15 +482,16 @@ class SeqCreativeLLM:
         return AIMessage(content=self._contents[idx])
 
 
-def _run_with_drafts(drafts, monkeypatch, reviewer_score=60):
+def _run_with_drafts(drafts, monkeypatch, reviewer_score=60, feedback="Add metrics."):
     """Reviewer 60 keeps the composite under the 80 threshold so the loop
-    actually runs a second iteration under the new default cap."""
+    actually runs a second iteration under the new default cap. Generic
+    feedback keeps the rewriter grounded (improver embeds it as guidance)."""
 
     class FixedReviewer(FakeStrictLLM):
         def with_structured_output(self, schema):
             class Structured:
                 def invoke(self, messages):
-                    return agent.ReviewOutput(score=reviewer_score, feedback="Add metrics.")
+                    return agent.ReviewOutput(score=reviewer_score, feedback=feedback)
             return Structured()
 
     monkeypatch.setattr(agent.llms, "llm_strict", FixedReviewer())
@@ -535,6 +536,135 @@ def test_max_iterations_cap_still_respected(fake_llms, monkeypatch):
 
     assert seq.calls == 1
     assert result["optimized_resume"] == good
+
+
+def test_passing_review_with_feedback_still_gets_one_polish_pass(fake_llms, monkeypatch):
+    """Live run 14751ff9 (Nov 6 2026): a PASSING reviewer (composite 86 >= 80)
+    still left concrete feedback ('adjust the summary to target the role')
+    which was dropped because passing scores bailed straight to fan-out.
+    Directive: non-empty feedback earns exactly one polish pass whenever the
+    iteration cap allows — passing or failing."""
+    good = "## Skills\nPython\n## Experience\nWrote some scripts."
+    polished = "## Skills\nPython, Docker, Kubernetes\n## Experience\nBuilt Kubernetes pipelines with Docker and Python."
+    result, seq = _run_with_drafts([good, polished], monkeypatch, reviewer_score=85)
+
+    assert seq.calls == 2                      # first draft + one polish pass
+    assert result["iteration"] == 2
+    assert result["review_failed"] is False
+    assert result["optimized_resume"] == polished   # best-of adopts the better pass
+
+
+def test_passing_review_without_feedback_skips_polish(fake_llms, monkeypatch):
+    """A clean pass (no feedback) must still finish in a single pass — the
+    polish route keys on feedback, never on marking time."""
+    result, seq = _run_with_drafts(["## Skills\nPython"], monkeypatch,
+                                   reviewer_score=85, feedback="")
+
+    assert seq.calls == 1
+    assert result["iteration"] == 1
+
+
+def test_polish_pass_cannot_regress_below_first_draft(fake_llms, monkeypatch):
+    """A weaker polish draft loses through the same best-of guard that
+    protects failing-score retries."""
+    good = "## Skills\nPython, Docker, Kubernetes\n## Experience\nBuilt Kubernetes pipelines with Docker and Python."
+    worse = "## Skills\nPython\n## Experience\nWrote some scripts."
+    result, seq = _run_with_drafts([good, worse], monkeypatch, reviewer_score=85)
+
+    assert seq.calls == 2
+    assert result["optimized_resume"] == good
+
+
+# ==========================================
+# Integrity tripwire: unevidenced metric claims
+# ==========================================
+
+def test_find_unevidenced_metric_flags_invented_numbers():
+    """Run 14751ff9: empty user context still produced 'cut ... by 40%'.
+    Only metric tokens absent from the evidence are flagged; real ones pass."""
+    evidence = "Built YOLO pipelines reaching 94.8% mAP. Cut latency by 40%."
+    optimized = "Cut ingestion effort by 55%. Trained YOLO to 94.8%. Latency down 40%."
+    assert agent.find_unevidenced_metric_claims(optimized, evidence) == ["55%"]
+
+
+def test_find_unevidenced_metric_matches_spacing_variants():
+    """LLM drafts spell '94.8 %' with a soft space and expect it to count as
+    the same claim as the evidence's '94.8%' (compact comparison)."""
+    evidence = "accuracy of 94.8%"
+    optimized = "Reached 94.8 % accuracy. Achieved 3x throughput."
+    assert agent.find_unevidenced_metric_claims(optimized, evidence) == ["3x"]
+
+
+def test_find_unevidenced_metric_ignores_years_and_versions():
+    """Plain numerals without a metric unit (GPT-4, Python 3.12, years) are
+    not metric claims and must never trigger a warning."""
+    evidence = "Python since 2019."
+    optimized = "GPT-4, Python 3.12, on-device since 2026, 1.7 ms inference."
+    assert agent.find_unevidenced_metric_claims(optimized, evidence) == ["1.7 ms"]
+
+
+def test_find_unevidenced_metric_empty_inputs():
+    assert agent.find_unevidenced_metric_claims("", "94.8%") == []
+    assert agent.find_unevidenced_metric_claims("Cut by 55%", "") == ["55%"]
+
+
+def test_improver_stamps_guardrail_warnings_into_state(monkeypatch):
+    """The improver keeps the draft intact (detection only) but surfaces the
+    flagged numbers via guardrail_warnings, which the server relays as a
+    warning SSE event before the result."""
+    from agent.nodes.improver import improver_node
+
+    state = {
+        "iteration": 0,
+        "optimized_resume": "",          # empty -> base_content = resume_text
+        "resume_text": "# Omar\n## Experience\nBuilt pipelines, cutting latency by 40%.",
+        "job_text": "ML platform engineer role.",
+        "human_notes": "",
+        "missing_skills": "- Kubernetes",
+        "feedback": None,
+    }
+
+    class InventingLLM:
+        def invoke(self, messages):
+            return AIMessage(content="# Omar\n## Experience\n"
+                                     "Cut latency by 40%. Cut manual ingestion effort by 55%.")
+
+    monkeypatch.setattr(agent.llms, "llm_creative", InventingLLM())
+    out = improver_node(state)
+    assert out["iteration"] == 1
+    assert out["guardrail_warnings"] == ["55%"]
+    assert "55%" in out["optimized_resume"]          # draft NOT silently altered
+    assert "40%" in out["optimized_resume"]
+
+
+# ==========================================
+# Bullet Unicode hygiene (live run 14751ff9)
+# ==========================================
+
+def test_tame_unicode_bullets_normalizes_separators():
+    """Scanner bullets from web-sourced JD text carried U+202F and U+2011
+    ('Claude\u202fCode', 'Hands\u2011on') which broke chip parsing downstream."""
+    raw = "- Claude\u202fCode\r\n- Hands\u2011on MCP  \n- NBSP\u00a0item"
+    assert agent._tame_unicode_bullets(raw) == "- Claude Code\n- Hands-on MCP\n- NBSP item"
+
+
+def test_tame_unicode_bullets_untouched_input():
+    plain = "- Kubernetes\n- Terraform "
+    assert agent._tame_unicode_bullets(plain) == "- Kubernetes\n- Terraform"
+
+
+def test_scanner_output_is_tamed_for_consumers(monkeypatch):
+    class ExoticScannerLLM:
+        def invoke(self, messages):
+            return AIMessage(content="- Claude\u202fCode workflows\r\n- Hands\u2011on Kubernetes")
+
+    monkeypatch.setattr(agent.llms, "llm_strict", ExoticScannerLLM())
+    result = agent.agent_app.invoke(_base_inputs(),
+                                    config={"configurable": {"thread_id": "tame-scan"}})
+    ms = result["missing_skills"]
+    assert "- Claude Code workflows" in ms
+    assert "- Hands-on Kubernetes" in ms
+    assert "\u202f" not in ms and "\u2011" not in ms
 
 
 def test_semantic_verification_reclassifies_expressed_keywords(fake_llms, monkeypatch):
@@ -1453,6 +1583,9 @@ def test_reviewer_grades_flattened_text_with_anchors(monkeypatch):
             "## Projects\n"
             "**Event Streamer** [Live Demo](https://github.com/jane/stream) | Go, Kafka | 2025\n"
             "- Processed 10K events/sec with sub-second latency\n"),
+        "resume_text": ("Jane Doe\njane@example.com | github.com/janedoe\n\n"
+                        "Event Streamer | Go, Kafka | 2025 (Live Demo)\n"
+                        "- Processed 10K events/sec with sub-second latency\n"),
         "job_text": "Senior platform engineer with Kafka and Go experience.",
     }
     out = reviewer_node(state)
@@ -1464,6 +1597,9 @@ def test_reviewer_grades_flattened_text_with_anchors(monkeypatch):
     assert "github.com/janedoe" in prompt       # bare contact URL is rendered text
     assert "Live Demo" in prompt and "Event Streamer" in prompt
     assert "Calibration anchors" in prompt
+    # Run 14751ff9 guard: fabrication is graded, not just style.
+    assert "TRUTHFULNESS GATE" in prompt
+    assert "ORIGINAL RESUME" in prompt          # evidence block between JD and draft
 
 
 def test_ats_contact_line_links_still_visible_as_labels():

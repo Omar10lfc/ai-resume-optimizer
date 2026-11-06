@@ -299,7 +299,9 @@ def test_step2_from_scratch_warns_and_returns_full_result(client, fake_llms, mon
     tagged = [e for kind, e in events if kind == "status" and e.get("node")]
     assert tagged and all(e["node_state"] == "running" for e in tagged)
     tagged_nodes = {e["node"] for e in tagged}
-    assert {"loader", "scanner", "improver", "reviewer", "ats_check",
+    # "polisher": the reviewer's default fake (85 + feedback) now earns one
+    # polish pass even on a passing composite (Nov 6 2026 directive).
+    assert {"loader", "scanner", "improver", "reviewer", "ats_check", "polisher",
             "cover_letter", "interview_prep", "pdf_exporter"} <= tagged_nodes
 
 
@@ -359,6 +361,34 @@ def test_step2_pipeline_error_becomes_error_event(client, fake_llms, monkeypatch
     events = parse_sse(r.text)
     assert events[-1][0] == "error"
     assert "provider outage" in events[-1][1]["message"]
+
+
+def test_step2_emits_integrity_warning_before_result(client, fake_llms, monkeypatch):
+    """Run 14751ff9 (Nov 6 2026): with EMPTY user notes the model invented
+    'cut manual data-ingestion effort by 40%'. The integrity tripwire must
+    now surface such claims as a warning event immediately before the
+    result, so the user reviews the drafted numbers."""
+    class InventingCreativeLLM(FakeCreativeLLM):
+        def invoke(self, messages):
+            return AIMessage(content="## Skills\nPython, Docker\n## Experience\n"
+                                     "Built ML pipelines. Cut manual data-ingestion effort by 40%.")
+
+    monkeypatch.setattr(agent.llms, "llm_creative", InventingCreativeLLM())
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": "- I used k8s at work"})
+    events = parse_sse(r.text)
+    kinds = [kind for kind, _ in events]
+    assert kinds[-1] == "result"
+    assert "error" not in kinds
+
+    warnings = [e for kind, e in events if kind == "warning"]
+    # Non-empty notes suppress the auto-detected-gaps warning, so the only
+    # warning in this stream must be the integrity one.
+    assert len(warnings) == 1
+    assert "Integrity check" in warnings[0]["message"]
+    assert "40%" in warnings[0]["message"]
+    assert kinds.index("warning") == len(kinds) - 2      # directly precedes result
 
 
 # ==========================================
