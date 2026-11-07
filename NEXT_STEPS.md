@@ -66,7 +66,7 @@ Third API client per the product implementation plan; reuses the same FastAPI AP
 | X6 | **UI/UX redesign (Nov 3)** | Design-token CSS system with light+dark themes (system-follow + manual toggle, `uiTheme` storage key); gap chips grouped tool/concept/general with per-chip notes/undo/keyboard map; classified error card with actions; score gauge with ATS/quality split; elapsed-timer timeline with staleness hints; before/after diff in paste mode; ARIA tabs; debounced storage writes; 3-step onboarding; "forget my data" eraser — see README changelog "Session — Nov 3 2026" |
 | X7 | **Gap-flow behavior (Nov 5)** | Review→step-2 handoff race fixed (`onSubmit(notes: string)` passes the composed string — state reads in the same tick were stale); zero-gap scans skip the review modal and optimize straight away; new optional "Add context for the optimizer" box under the inputs persists across sessions (`pendingUserNotes` / `pending_optimizer_notes`, purged by Reset and the Settings eraser); timeline gains the polisher pass-2 row — see README changelog "Session — Nov 5 2026" |
 
-**Next for the extension:** CWS store assets (screenshots, promo tile, privacy policy), scraper fixture tests, permission review (broad `https://*/*` host permission needed only for a configurable cloud backend — consider `optional_host_permissions`), a live LinkedIn smoke pass, and a reload of the unpacked extension in `chrome://extensions` to pick up the Nov 5–7 panel changes (bundle `index-Czb7PI05.js` — tonight's fabrication incident traced back to a stale panel bundle, so this reload matters).
+**Next for the extension:** CWS store assets (screenshots, promo tile, privacy policy), scraper fixture tests, permission review (broad `https://*/*` host permission needed only for a configurable cloud backend — consider `optional_host_permissions`), a live LinkedIn smoke pass, and a reload of the unpacked extension in `chrome://extensions` to pick up the Nov 5–7 panel changes (bundle `index-ejUvToFN.js` — the Nov 6–7 fabrication incident traced back to a stale panel bundle, so this reload matters).
 
 ---
 
@@ -102,6 +102,25 @@ Driven by the user's live run (request `14751ff9…`, UI session `8dcb2cab`, Lan
 | A15 | Suite 199 → 211 (agent 112, server 29) | Pass-case polish ×3, integrity ×5, Unicode ×3, reviewer-gate asserts, server warning-event ordering test | Full suite green; frontend lint/tsc/typecheck/builds clean; bundle `index-Czb7PI05.js` |
 
 **⚠️ Run 14751ff9 artifacts (`Optimized_Resume (10).pdf` etc.) must not be sent out** — they contain the fabricated n8n/FortyGuard-MCP/Claude-Code claims. Regenerate after reloading the unpacked extension in `chrome://extensions`.
+
+---
+
+## Agent core — Nov 7 2026 (run pair: traces + chip truncation + PDF overlap) ✅ LANDED (this session's two commits)
+
+Driven by TWO back-to-back live runs with scraped JD context with/without user notes (LangSmith roots `01a1b310`+`39be45ad` = no-context run, score 67 / ATS 85.7 / quality 40 / iter 2, request `a32f30fc…`; `01a1b317`+`763249a5` = context run, score 61 / ATS 76.2 / quality 38 / iter 2, request `868e406d…`). The traces proved the mechanics healthy (polisher + reviewer gate + tripwire all live) but the fabricated n8n/Claude-Code/MCP bullets STILL shipped, the downloaded run-2 PDF printed header rows onto bullet lines, and tripwires flagged the user's REAL numbers.
+
+| # | Item | Outcome | Detail |
+|---|------|---------|--------|
+| A16 | Stamping split (`server/runners.py`) | `_split_composed_notes`: `missing_skills` = kept-chip lines (+ `Do NOT feature`), `human_notes` = ONLY the typed evidence | Root cause of the fabrications: the composed notes string (chips under pasted project text) was stamped into BOTH fields, so the model folded chips into the Aegis project as user-confirmed bullets |
+| A17 | Deterministic scrubber (`agent/helpers.py` `scrub_unsupported_content`, wired in improver **and polisher**) | Gap-echo bullets removed wholesale; skills rows lose unevidenced items + `(or similar)` hedges; prose loses offending sentences; unevidenced metric claims excised (paren → comma segment → whole line) with `_tidy_removal_residue` cleanup | The reviewer's "remove the unverified claims" feedback was ignored TWICE by the model — detection alone cannot clean the artifact; removal notes flow into `guardrail_warnings` → the warning SSE event |
+| A18 | Tripwire whitespace fix | Token compaction strips EVERY whitespace class + per-line compact evidence matching | Run 868e406d flagged `42.69 %` (U+202F narrow space in draft) vs source `42.69%` — the user's real WER numbers; after the fix ALL run-pair numeric flags resolve to evidenced copies (only `< 15 ms` traces to the user's own pasted context) |
+| A19 | Compact-pass rescale (`latex_render.py`) | Auto-compact `vspace` overrides -9/-9/-9/-8/-3pt → -4/-4/-4/-4/-2pt | Measured run-2 header→bullet baselines had collapsed to 2.5–2.9pt (glyph overprint in the shipped PDF); now 7.0pt min gap, still 1 page |
+| A20 | Date/label parsing | `_MONTH_RANGE_RE` (month-to-month `Aug – Sep 2026`), `_STANDALONE_DATE_RE` whole-segment pop for 4-field headers, trailing bare-label de-glue (`Live Demo`/`GitHub` without URLs) | Run-2's `Aug – Sep 2026` was silently dropped from the project header; `Live Demo` was glued onto the Aegis title |
+| A21 | Panel chip truncation fix (`HumanReviewModal.tsx`) | Gap chips wrap to a 2-line clamp with `[overflow-wrap:anywhere]` (was single-line `truncate`), full label stays in the tooltip | The truncation visible in the run-review screenshot; extension needs a chrome://extensions reload to pick the rebuilt bundle `index-ejUvToFN.js` |
+| A22 | Suite 211 → 229 | Scrubber ×6, tripwire exotic-space ×1, splitter ×4 (server), LaTeX date/label/collision regressions ×4 (incl. pypdf baseline-gap ≥ 6.5pt + 1-page compact on the overflow fixture) | Full suite green; frontend lint/tsc/typecheck/builds clean |
+
+**⚠️ Run pair artifacts (`a32f30fc…` / `868e406d…` directories and `Optimized_Resume (10).pdf`) must not be sent out** — regenerate with a fresh run after reloading the extension (the old panel bundles still stamp the unsplit notes; the new pipeline splits, scrubs, and warns).
+
 
 ---
 

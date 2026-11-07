@@ -254,7 +254,7 @@ export const HumanReviewModal: React.FC<HumanReviewModalProps> = ({
                               setEditingId(chip.id);
                               setEditingValue(chip.label);
                             }}
-                            className="flex-1 min-w-0 text-left text-xs text-ink px-1 truncate"
+                            className="flex-1 min-w-0 text-left text-xs text-ink px-1 py-0.5 leading-snug line-clamp-2 [overflow-wrap:anywhere]"
                             title={`${chip.label} — Enter renames · N opens note · Delete removes`}
                           >
                             {chip.label}
