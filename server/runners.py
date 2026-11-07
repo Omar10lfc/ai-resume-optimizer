@@ -13,6 +13,7 @@ the FastAPI SSE layer and the Next.js frontend share the same flow:
   pipeline feedback records attach to the exact LangSmith trace.
 """
 
+import re
 import traceback
 from pathlib import Path
 from typing import Iterator
@@ -197,6 +198,58 @@ def _extract_results(final_state: dict) -> dict:
     }
 
 
+def _norm_gap_line(s: str) -> str:
+    """Normalization for matching a composed notes line against the step-1
+    scanner chips: strip bullet markers, case, and repeated whitespace."""
+    t = (s or "").strip().lower()
+    t = re.sub(r"^[-*+•]\s*", "", t)
+    t = re.sub(r"\s+", " ", t)
+    return t
+
+
+def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
+    """Splits the composed step-2 notes into (missing_skills, human_notes).
+
+    The frontend composes ONE string (frontend/src/lib/gaps.ts): typed free
+    text first, then kept chip lines ("- Label" / "- Label: note"), then a
+    final "Do NOT feature: X, Y" line. A line belongs to the GAP channel
+    when it matches a line of the step-1 scanner snapshot (kept-chip
+    matching tolerates a trailing ": user note" annotation), or when it is
+    the "Do NOT feature" directive. Everything else is the user's typed
+    evidence and goes to human_notes (live run 868e406d: the chips were
+    stamped into the evidence channel under the pasted project text, which
+    made the model emit them as user-confirmed Aegis bullets).
+    """
+    chip_keys: set[str] = set()
+    for line in (pristine_missing or "").splitlines():
+        t = _norm_gap_line(line)
+        if not t:
+            continue
+        chip_keys.add(t)
+        # chips the user annotated ("- Docker: ran containers in coursework"):
+        # also accept the label-only match before the first colon
+        label = t.split(":", 1)[0].strip()
+        if label and len(label) >= 3:
+            chip_keys.add(label)
+
+    gap_lines: list[str] = []
+    evidence_lines: list[str] = []
+    for line in (notes or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        n = _norm_gap_line(s)
+        if (n.startswith("do not feature") or n.startswith("don't feature")
+                or n.startswith("dont feature")):
+            gap_lines.append(s)
+            continue
+        if n in chip_keys or n.split(":", 1)[0].strip() in chip_keys:
+            gap_lines.append(s)
+            continue
+        evidence_lines.append(s)
+    return "\n".join(gap_lines), "\n".join(evidence_lines)
+
+
 def stream_step2(job_description: str, resume_source: str, notes: str,
                  session: str | None, groq_api_key: str | None = None) -> Iterator[dict]:
     """Step 2: resumes the interrupted session (or starts fresh).
@@ -239,11 +292,26 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
                     for node, delta in update.items():
                         if node and delta:
                             yield _status(f"{NODE_STATUS.get(node, node + '...')} (1/2)", node)
+                # refresh the snapshot so the pristine scanner chips below
+                # come from THIS run, not a previous thread's state
+                state = agent_app.get_state(config)
 
-            # Inject the user's edited gaps/context at the human-review checkpoint
+            # Inject the user's edited gaps/context at the human-review
+            # checkpoint. SPLIT (live runs a32f30fc / 868e406d, Nov 6 2026):
+            # stamping the whole composed notes string into BOTH fields
+            # caused the model to fold the kept chips (which sit directly
+            # under the user's pasted project text in the composed string)
+            # into fake "user-confirmed" bullets ("Gained experience with
+            # n8n (or similar ...)"). missing_skills receives ONLY the gap
+            # lines - chips it can treat as research topics and "Do NOT
+            # feature" directives - while human_notes receives the typed
+            # evidence the improver is allowed to cite.
+            pristine_missing = str((state.values or {}).get("missing_skills") or "")
+            gap_lines, evidence_lines = _split_composed_notes(
+                notes or "", pristine_missing)
             agent_app.update_state(config, {
-                "human_notes": notes or "",
-                "missing_skills": notes or "",
+                "human_notes": evidence_lines,
+                "missing_skills": gap_lines,
             })
 
             # Resume: improver <-> reviewer -> ats_check -> fan-out -> pdf_exporter.
@@ -272,17 +340,17 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
         # above, mirroring the original Gradio semantics.)
         log_pipeline_feedback(final_state, resume_run_id)
 
-        # Integrity tripwire: surface unevidenced metric claims BEFORE the
-        # result lands. The client turns this into its warning banner, so the
-        # user reviews the flagged numbers instead of shipping invented
-        # metrics silently (live-run evidence Nov 6 2026: "cut ... by 40%"
-        # with an empty user context).
+        # Integrity tripwire: surface scrubbed + unevidenced content BEFORE
+        # the result lands. The client turns this into its warning banner, so
+        # the user sees what was deterministically removed and which numeric
+        # claims still need review (live-run evidence Nov 6 2026: "cut ... by
+        # 40%" with an empty user context; fabricated n8n/Claude Code/MCP
+        # bullets in runs a32f30fc / 868e406d).
         integrity = final_state.get("guardrail_warnings") or []
         if integrity:
             yield {"type": "warning",
-                   "message": "Integrity check: number claims without evidence in your resume or notes — "
-                              + ", ".join(integrity)
-                              + ". Verify or remove them before applying."}
+                   "message": "Integrity check: " + "; ".join(integrity)
+                              + ". Verify the resume before applying."}
 
         yield {"type": "result", "session": session,
                **_extract_results(final_state)}

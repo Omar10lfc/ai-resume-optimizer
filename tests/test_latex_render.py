@@ -991,4 +991,89 @@ bob@example.com
     assert "21" in text
 
 
+# ==========================================
+# Run 868e406d regressions: dates, labels, compact spacing
+# ==========================================
+# Live run Nov 6 2026 (request 868e406d): the auto-compact pass collapsed
+# header->bullet baselines to ~2.8pt (glyph overprint in the shipped PDF),
+# a month-to-month date ('Aug - Sep 2026') was silently dropped from
+# 4-field project headers, and bare link labels ('Live Demo') glued onto
+# project titles.
+
+def test_month_range_date_without_leading_year_is_recovered():
+    """_DATE_RANGE_RE needs a year BEFORE the dash, so 'Aug - Sep 2026'
+    ranges were dropped. They must land in the date column."""
+    data = parse_markdown_resume(
+        "## Projects\n"
+        "**Aegis: Heat-Risk Operations Agent** | FastAPI, LangGraph | Aug - Sep 2026\n"
+        "- Built the service")
+    e = data.sections[0].entries[0]
+    assert "Aug - Sep 2026" in e.sub_right
+    assert "Aug" not in e.header and "Sep" not in e.header
+
+
+def test_whole_segment_date_pops_from_four_field_headers():
+    """'**Title** | Links-label | Stack | Month-to-Month 2026' headers must
+    map the LAST whole-segment-is-a-date segment into sub_right, not treat
+    a 4th segment as if a date segment never existed."""
+    data = parse_markdown_resume(
+        "## Projects\n"
+        "**Fil-RAG: Football Q&A System** | Live Demo | LangChain, FAISS, BM25 | Sep 2026 - Nov 2026\n"
+        "- Built it")
+    e = data.sections[0].entries[0]
+    assert "Sep 2026" in e.sub_right and "Nov 2026" in e.sub_right
+    for field in (e.header, e.right, e.sub):
+        assert "Sep 2026" not in field
+
+
+def test_bare_link_labels_never_glue_onto_project_titles():
+    """'**Title** Live Demo | GitHub | Stack' (labels WITHOUT URLs, live run
+    868e406d) must render neither a fabricated \\href nor a glued label on
+    the title - links unknown = links absent."""
+    from agent.latex_render import _extract_project_links_and_title
+    title, links = _extract_project_links_and_title(
+        "**Aegis: Heat-Risk Operations Agent** Live Demo",
+        ["GitHub", "FastAPI, LangGraph"],
+        bullet_links=["Live Demo | GitHub"])
+    assert links == []
+    assert "Live Demo" not in title
+    assert "GitHub" not in title
+    assert "Aegis: Heat-Risk Operations Agent" in title
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_compact_pass_renders_one_page_without_baseline_collision(tmp_path):
+    """Run 868e406d shipped a compact PDF whose header rows printed ONTO the
+    bullet lines (measured baseline gap 2.5-2.9pt). After rescaling the
+    compact spacers the render must stay 1 page while keeping every pair of
+    adjacent text rows at least ~6.5pt apart (10pt 'small' glyph height)."""
+    from pypdf import PdfReader
+
+    md = _overflow_resume_markdown()
+    plain = latex_to_pdf(render_resume_tex(parse_markdown_resume(md)), tmp_path, "plain.pdf")
+    assert plain and pdf_page_count(plain) >= 2, "collision fixture must overflow plain spacing"
+
+    compact = latex_to_pdf(
+        render_resume_tex(parse_markdown_resume(md), compact=True), tmp_path, "compact.pdf")
+    assert compact and pdf_page_count(compact) == 1
+
+    reader = PdfReader(str(compact))
+    chunks = []
+
+    def visit(text, cm, tm, font_dict, font_size):
+        # pypdf reports empty separator fragments ('| |') at the page origin
+        # (y=0) - not glyphs, and they'd fake a collision.
+        stripped = (text or "").strip()
+        if stripped and set(stripped) - {"|", " "}:
+            chunks.append(tm[5])
+
+    for page in reader.pages:
+        page.extract_text(visitor_text=visit)
+
+    rows = sorted({round(y, 1) for y in chunks}, reverse=True)
+    min_gap = min(a - b for a, b in zip(rows, rows[1:]))
+    assert min_gap >= 6.5, f"baseline collision: min gap {min_gap}pt"
+
+
+
 

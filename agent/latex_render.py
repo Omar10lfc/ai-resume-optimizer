@@ -122,6 +122,24 @@ _DATE_RANGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Month-to-month ranges without a leading year ("Aug – Sep 2026",
+# "May-Aug 2026"): _DATE_RANGE_RE needs a year BEFORE the dash, so these
+# were silently dropped from 4-field project headers (live run 868e406d:
+# "… | Aug – Sep 2026" lost its date entirely). End-anchored to avoid
+# matching month words mid-stack ("May" inside a tool list).
+_MONTH_RANGE_RE = re.compile(
+    r'(?:[A-Za-z]{3,9}\.?\s*)?[-–—]?\s*[A-Za-z]{3,9}\.?\s*[-–—]{1,3}\s*'
+    r'[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$', re.IGNORECASE)
+# A field whose ENTIRE content is a standalone date-ish token
+# ("Aug 2026 - Present", "2020-2022", "Aug – Sep 2026"). Only whole-segment
+# matches pop a column off, never inline mentions inside longer text.
+_STANDALONE_DATE_RE = re.compile(
+    r'^\s*(?:'
+    r'(?:[A-Za-z]{3,9}\.?\s+)?\d{4}\s*[-–—]{1,3}\s*(?:.+?)?\s*\d{0,4}\s*'
+    r'|[A-Za-z]{3,9}\.?\s+\d{4}\s*$'
+    r'|[A-Za-z]{3,9}\.?\s*[-–—]{1,3}\s*[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$'
+    r')\s*$', re.IGNORECASE)
+
 # A bold label line like "**Languages**: Python" or "**Tools**: Git, Docker"
 # — typically a leaf line under a Technical Skills (or similar) section.
 _BOLD_LABEL_RE = re.compile(r'^\s{0,3}\*\*(.+?)\*\*\s*:\s*(.*)$')
@@ -436,9 +454,12 @@ def _split_header_and_dates(heading_line: str) -> tuple[str, str, str, str]:
     # that span across '|' (e.g. "**Role** | Company | *Date*") are removed
     # before we split the columns.
     line = _strip_inline(heading_line.strip())
-    # Split trailing date range like "2020 -- Present" / "2020-2021"
+    # Split trailing date range like "2020 -- Present" / "2020-2021", or a
+    # month-to-month range with no leading year ("Aug – Sep 2026").
     dates = ""
     m = _DATE_RANGE_RE.search(line)
+    if not m:
+        m = _MONTH_RANGE_RE.search(line)
     left = line
     if m:
         left = line[:m.start()].strip().rstrip('|').strip()
@@ -447,6 +468,25 @@ def _split_header_and_dates(heading_line: str) -> tuple[str, str, str, str]:
     # "Role | Company" or "Role | Company | Location" or "Degree | University | Location"
     if '|' in left:
         parts = [p.strip() for p in left.split('|') if p.strip()]
+
+        def _pop_standalone_date(segments: list[str]) -> tuple[list[str], str]:
+            """When no inline date was captured, a WHOLE trailing segment that
+            is itself just a date ("Aug – Sep 2026") is the date column, not
+            a fourth field. 4-field project/role headers otherwise dropped
+            their date (live run 868e406d)."""
+            nonlocal dates
+            if dates:
+                return segments, dates
+            for idx in (len(segments) - 1, len(segments) - 2):
+                if 0 <= idx < len(segments):
+                    seg = _clean_field(segments[idx])
+                    if seg and _STANDALONE_DATE_RE.match(seg):
+                        tail = segments.copy()
+                        del tail[idx]
+                        return tail, seg
+            return segments, dates
+
+        parts, dates = _pop_standalone_date(parts)
         if len(parts) >= 3:
             p0, p1, p2 = parts[0], parts[1], parts[2]
             inst_kw = ('university', 'college', 'school', 'institute', 'academy')
@@ -910,6 +950,15 @@ def _extract_project_links_and_title(
 
     # Strip formatting and stray pipe/dash/colon separators
     clean_title = _strip_inline(clean_title)
+    # Bare link labels the model emitted WITHOUT a target ("**Title** Live
+    # Demo | GitHub | …"): the URL is unknown, so no link can be rendered
+    # (anti-fabrication rule), and a trailing "Live Demo"/"GitHub" glued to
+    # the title is presentation leakage, not title text. Drop TRAILING
+    # labels only - a title just containing those words elsewhere stays.
+    clean_title = re.sub(
+        r'\s*[|\-–—:,.]?\s*\b(?:live\s+demo|demo|github|git\s+repo(?:sitory)?|'
+        r'repo(?:sitory)?|portfolio|website|web\s+app|playground|url|link)\b\.?\s*$',
+        '', clean_title, count=0, flags=re.IGNORECASE)
     clean_title = re.sub(r'\s*[\|—–\-:]\s*$', '', clean_title).strip()
     clean_title = re.sub(r'^\s*[\|—–\-:]\s*', '', clean_title).strip()
 
@@ -1157,27 +1206,31 @@ _COMPACT_OVERRIDES = r"""
 \addtolength{\evensidemargin}{-.05in}
 \addtolength{\textwidth}{.1in}
 % Trim the inter-entry breathing room
-\renewcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-3pt}}}}
+% (Run 868e406d, Nov 6 2026: the earlier -9pt spacer after the header
+% tabulars pulled the following bullet lists and the next heading's own
+% rows ONTO the header/tech lines - measured header->bullet baseline gap
+% collapsed to 2.8pt. -4pt keeps the density win without glyph collisions.)
+\renewcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-2pt}}}}
 \renewcommand{\resumeSubheading}[4]{
-  \vspace{-3pt}\item
+  \vspace{-1pt}\item
     \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
       \textbf{#1} & #2 \\
       \textit{\small#3} & \textit{\small #4} \\
-    \end{tabular*}\vspace{-9pt}
+    \end{tabular*}\vspace{-4pt}
 }
 \renewcommand{\resumeSubSubheading}[2]{
     \item
     \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
       \textit{\small#1} & \textit{\small #2} \\
-    \end{tabular*}\vspace{-9pt}
+    \end{tabular*}\vspace{-4pt}
 }
 \renewcommand{\resumeProjectHeading}[2]{
     \item
     \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
       \small#1 & #2 \\
-    \end{tabular*}\vspace{-9pt}
+    \end{tabular*}\vspace{-4pt}
 }
-\renewcommand{\resumeItemListEnd}{\end{itemize}\vspace{-8pt}}
+\renewcommand{\resumeItemListEnd}{\end{itemize}\vspace{-4pt}}
 % ---------------- end auto-compact pass ----------------
 """
 

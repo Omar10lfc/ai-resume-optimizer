@@ -485,7 +485,11 @@ class SeqCreativeLLM:
 def _run_with_drafts(drafts, monkeypatch, reviewer_score=60, feedback="Add metrics."):
     """Reviewer 60 keeps the composite under the 80 threshold so the loop
     actually runs a second iteration under the new default cap. Generic
-    feedback keeps the rewriter grounded (improver embeds it as guidance)."""
+    feedback keeps the rewriter grounded (improver embeds it as guidance).
+    The evidence text mirrors the fixture drafts' skills: since the
+    deterministic fabrication scrubber (runs a32f30fc/868e406d) removes
+    gap-chip echoes the evidence lacks, these routing-only tests would lose
+    their fixture content otherwise."""
 
     class FixedReviewer(FakeStrictLLM):
         def with_structured_output(self, schema):
@@ -497,7 +501,9 @@ def _run_with_drafts(drafts, monkeypatch, reviewer_score=60, feedback="Add metri
     monkeypatch.setattr(agent.llms, "llm_strict", FixedReviewer())
     seq = SeqCreativeLLM(drafts)
     monkeypatch.setattr(agent.llms, "llm_creative", seq)
-    return agent.full_app.invoke(_base_inputs()), seq
+    inputs = _base_inputs()
+    inputs["original_resume"] = "Python developer experienced with Docker and Kubernetes."
+    return agent.full_app.invoke(inputs), seq
 
 
 def test_iteration_two_can_never_regress_below_draft_one(fake_llms, monkeypatch):
@@ -595,6 +601,17 @@ def test_find_unevidenced_metric_matches_spacing_variants():
     assert agent.find_unevidenced_metric_claims(optimized, evidence) == ["3x"]
 
 
+def test_find_unevidenced_metric_matches_exotic_spaces():
+    """Run 868e406d: the draft spelled real WER numbers as '42.69 %' with a
+    U+202F narrow no-break space while the source resume has plain '42.69%'.
+    Only-ASCII-space compaction flagged the user's REAL numbers. Compaction
+    must strip every whitespace class from the token."""
+    evidence = "WER on Common Voice Arabic (WER 42.69%\u219220.61%,\u221251.7%)"
+    optimized = ("\u202f42.69\u202f%\u202f \u2192 20.61\u202f%, reduced WER by 51.7\u202f%. "
+                 "Invented 36% gain.")
+    assert agent.find_unevidenced_metric_claims(optimized, evidence) == ["36%"]
+
+
 def test_find_unevidenced_metric_ignores_years_and_versions():
     """Plain numerals without a metric unit (GPT-4, Python 3.12, years) are
     not metric claims and must never trigger a warning."""
@@ -608,9 +625,11 @@ def test_find_unevidenced_metric_empty_inputs():
     assert agent.find_unevidenced_metric_claims("Cut by 55%", "") == ["55%"]
 
 
-def test_improver_stamps_guardrail_warnings_into_state(monkeypatch):
-    """The improver keeps the draft intact (detection only) but surfaces the
-    flagged numbers via guardrail_warnings, which the server relays as a
+def test_improver_scrubs_and_reports_via_guardrail_warnings(monkeypatch):
+    """Runs 14751ff9/a32f30fc/868e406d made 'detect only' insufficient: the
+    reviewer's removal feedback was ignored twice. The improver now removes
+    the unsupported content itself and reports what it removed (plus any
+    metric leftovers) via guardrail_warnings, which the server relays as a
     warning SSE event before the result."""
     from agent.nodes.improver import improver_node
 
@@ -627,14 +646,162 @@ def test_improver_stamps_guardrail_warnings_into_state(monkeypatch):
     class InventingLLM:
         def invoke(self, messages):
             return AIMessage(content="# Omar\n## Experience\n"
-                                     "Cut latency by 40%. Cut manual ingestion effort by 55%.")
+                                     "- Wrote Kubernetes operators for nightly jobs.\n"
+                                     "- Cut latency by 40%.\n"
+                                     "- Cut manual ingestion effort by 55%.")
 
     monkeypatch.setattr(agent.llms, "llm_creative", InventingLLM())
     out = improver_node(state)
     assert out["iteration"] == 1
-    assert out["guardrail_warnings"] == ["55%"]
-    assert "55%" in out["optimized_resume"]          # draft NOT silently altered
-    assert "40%" in out["optimized_resume"]
+    joined = "; ".join(out["guardrail_warnings"])
+    # the fabricated Kubernetes echo bullet and the 55% claim are REMOVED
+    assert "kubernetes" in joined.lower()
+    assert "55%" in joined
+    assert "Kubernetes" not in out["optimized_resume"]
+    assert "55%" not in out["optimized_resume"]
+    assert "40%" in out["optimized_resume"]          # evidenced number stays
+
+
+def test_improver_never_ships_fully_scrubbed_empty_draft(monkeypatch):
+    """Pipeline continuity: when every removal would empty the draft, the
+    pre-scrub draft is kept and the user is warned (never silently dropped,
+    never silently shipped as clean)."""
+    from agent.nodes.improver import improver_node
+
+    state = {
+        "iteration": 0,
+        "optimized_resume": "",
+        "resume_text": "# Omar\n## Experience",
+        "job_text": "ML platform engineer role.",
+        "human_notes": "",
+        "missing_skills": "- Kubernetes",
+        "feedback": None,
+    }
+
+    class FullyFabricatedLLM:
+        def invoke(self, messages):
+            return AIMessage(content="# Omar\n## Experience\n"
+                                     "- Cut manual ingestion effort by 55%.")
+
+    monkeypatch.setattr(agent.llms, "llm_creative", FullyFabricatedLLM())
+    out = improver_node(state)
+    assert out["optimized_resume"].strip()
+    assert any("40%" in w or "55%" in w or "kept draft" in w
+               for w in out["guardrail_warnings"])
+
+
+# ==========================================
+# Deterministic fabrication scrubber
+# ==========================================
+
+def test_scrubber_drops_unevidenced_chip_echo_bullets():
+    """Run 868e406d: kept chips composed under pasted project text became
+    fake Aegis bullets. Bullets whose chip terms the evidence lacks go."""
+    draft = (
+        "## Projects\n"
+        "**Aegis** | FastAPI | Aug - Sep 2026\n"
+        "- Engineered a FastAPI service around a 4-node LangGraph agent.\n"
+        "- Gained experience with n8n (or similar workflow automation platform).\n"
+        "- Hands-on work using Claude Code, Cursor, and Codex for building AI agents and demos.\n"
+    )
+    scrubbed, removals = agent.scrub_unsupported_content(
+        draft, resume_text="A FastAPI + LangGraph service.", human_notes="",
+        missing_skills_text="- Experience with n8n (or similar workflow automation platform)\n"
+                            "- Hands-on work with Claude Code, Cursor, or Codex for building AI agents and demos")
+    assert "n8n" not in scrubbed
+    assert "Claude Code" not in scrubbed
+    assert "FastAPI service around a 4-node LangGraph agent" in scrubbed
+    assert any("n8n" in r for r in removals)
+
+
+def test_scrubber_removes_chip_claims_from_skills_rows_and_prose():
+    """Skills rows lose only the offending ITEM; prose loses the offending
+    SENTENCE; '(or similar)' hedges never survive."""
+    row = "**Automation & Workflow**: n8n (or similar), Webhooks, JSON-based API integrations"
+    scrubbed, removals = agent.scrub_unsupported_content(
+        row, resume_text="Python, SQL, webhooks.", human_notes="",
+        missing_skills_text="- Experience with n8n (or similar workflow automation platform)")
+    assert "n8n" not in scrubbed
+    assert "(or similar)" not in scrubbed
+    assert "Webhooks" in scrubbed and "JSON-based API integrations" in scrubbed
+    assert any("skills item" in r for r in removals)
+
+    prose = "AI engineer with FastAPI experience. Acquired production proficiency with n8n."
+    scrubbed2, removals2 = agent.scrub_unsupported_content(
+        prose, resume_text="FastAPI services.", human_notes="", missing_skills_text="- n8n")
+    assert "Acquired production proficiency" not in scrubbed2
+    assert "FastAPI experience" in scrubbed2
+    assert any("prose" in r for r in removals2)
+
+
+def test_scrubber_clauses_out_unevidenced_numbers_but_keeps_evidence():
+    """Run 14751ff9: 'cut manual data-ingestion effort by 40%' with an empty
+    context. Parenthesized and comma-segment claims are excised without
+    losing the surrounding evidenced text; unexcisable bullets go whole."""
+    bullet_paren = ("- Implemented a pre-LLM injection filter (< 15 ms), achieving "
+                    "189 passing tests.\n")
+    scrubbed, _ = agent.scrub_unsupported_content(
+        bullet_paren, resume_text="189 tests passing in CI.", human_notes="",
+        missing_skills_text="")
+    assert "< 15 ms" not in scrubbed
+    assert "injection filter" in scrubbed and "189 passing tests" in scrubbed
+
+    bullet_whole = "- Cut manual data-ingestion effort by 40%.\n"
+    scrubbed2, removals2 = agent.scrub_unsupported_content(
+        bullet_whole, resume_text="", human_notes="", missing_skills_text="")
+    assert "40%" not in scrubbed2
+    assert any("40%" in r for r in removals2)
+
+
+def test_scrubber_honors_do_not_feature_and_evidenced_chips():
+    """Removed chips die even when evidenced; kept chips survive exactly
+    when the evidence demonstrates them."""
+    removed_chip = "Do NOT feature: Docker."
+    dropped, removals = agent.scrub_unsupported_content(
+        "- Deployed Docker containers for the demo.\n",
+        resume_text="Deployed Docker containers for the demo.",
+        human_notes="", missing_skills_text=removed_chip)
+    assert "Docker" not in dropped
+    assert removals  # the user's explicit suppression is reported
+
+    kept_evidenced = "- Experience demonstrated with FastAPI service work.\n"
+    kept, removals2 = agent.scrub_unsupported_content(
+        kept_evidenced, resume_text="", human_notes="Used FastAPI for two services.",
+        missing_skills_text="- Experience with FastAPI (or similar)")
+    assert "FastAPI" in kept
+    assert not removals2
+
+
+def test_scrubber_keeps_evidenced_numbers():
+    """Narrow-space copies of real numbers (run 868e406d: '42.69 %' vs the
+    resume's '42.69%') must survive."""
+    draft = "- WER on Common Voice Arabic improved from 42.69 % to 20.61 %.\n"
+    scrubbed, removals = agent.scrub_unsupported_content(
+        draft, resume_text="WER on Common Voice Arabic: 42.69%->20.61%",
+        human_notes="", missing_skills_text="")
+    assert "42.69" in scrubbed and "20.61" in scrubbed
+    assert not removals
+
+
+def test_scrubber_removes_fully_fabricated_draft():
+    """A draft made ONLY of an unsupported claim comes back empty, with the
+    removal reported."""
+    scrubbed, removals = agent.scrub_unsupported_content(
+        "- Cut ingestion effort by 40%.\n", resume_text="", human_notes="",
+        missing_skills_text="")
+    assert "40%" not in scrubbed
+    assert any("40%" in r for r in removals)
+
+
+def test_scrubber_dedups_blanks_and_reports_cap():
+    many = ("- Built real FastAPI endpoints.\n"
+            + "".join(f"- Gained experience with n8n item{i}.\n" for i in range(12)))
+    scrubbed, removals = agent.scrub_unsupported_content(
+        many, resume_text="- Built real FastAPI endpoints.", human_notes="",
+        missing_skills_text="- Experience with n8n (or similar)")
+    assert "Built real FastAPI endpoints" in scrubbed
+    assert "\n\n\n" not in scrubbed
+    assert len(removals) <= 11
 
 
 # ==========================================

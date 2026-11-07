@@ -2,7 +2,8 @@
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
 from ..helpers import (_safe_print, _strip_code_fences, _filter_hallucinated_sections,
-                       _tame_unicode_bullets, find_unevidenced_metric_claims)
+                       _tame_unicode_bullets, find_unevidenced_metric_claims,
+                       scrub_unsupported_content)
 from langchain_core.messages import HumanMessage, SystemMessage
 
 
@@ -86,13 +87,39 @@ def improver_node(state: AgentState):
     optimized = _strip_code_fences(response.content)
     optimized = _filter_hallucinated_sections(optimized, state['resume_text'])
 
+    # Deterministic fabrication scrubber (runs 14751ff9 / a32f30fc /
+    # 868e406d): the model ignored the reviewer's "remove the unverified
+    # claims" feedback twice, so unsupported gap-echo bullets, removed-chip
+    # echoes and unevidenced numbers are removed from the artifact here -
+    # detection alone demonstrably cannot clean the draft. The polisher node
+    # shares this code path, so polish passes are scrubbed identically.
+    scrubbed, removals = scrub_unsupported_content(
+        optimized, state.get('resume_text') or '',
+        state.get('human_notes') or '', state.get('missing_skills') or '')
+    guardrail: list[str] = []
+    if scrubbed.strip() and scrubbed != optimized:
+        _safe_print(f"   [Scrub] Removed {len(removals)} unsupported "
+                    f"region(s) deterministically")
+        optimized = scrubbed
+        guardrail.extend(removals)
+    elif removals:
+        # Pathological draft: every removal would have emptied it, so the
+        # unscrubbed draft is kept and the flagged content is surfaced.
+        guardrail.append("integrity scrub kept draft (all removals would "
+                         "empty it); review flagged items below")
+
     # Evidence tripwire: metric-shaped numbers the source resume and user
     # notes do not contain are flagged for the user (server warning event)
-    # instead of shipping silently. Detection only - the draft stays intact.
+    # instead of shipping silently. Remaining findings are post-scrub, i.e.
+    # claims the scrubber could not excise cleanly.
     evidence = f"{state.get('resume_text') or ''}\n{state.get('human_notes') or ''}"
     warnings = find_unevidenced_metric_claims(optimized, evidence)
     if warnings:
         _safe_print(f"   [Integrity] Unevidenced metric claims in draft: {', '.join(warnings)}")
 
+    # Removal notes surface alongside metric findings so the user sees what
+    # was deterministically removed before the result landed.
+    guardrail += [f"unevidenced number left in draft: {w}" for w in warnings]
+
     return {"optimized_resume": optimized, "iteration": current_iter,
-            "guardrail_warnings": warnings}
+            "guardrail_warnings": guardrail}

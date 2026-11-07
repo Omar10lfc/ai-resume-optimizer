@@ -3,6 +3,7 @@ import logging
 import re
 import unicodedata
 from pathlib import Path
+from typing import Optional
 
 import markdown
 from bs4 import BeautifulSoup
@@ -270,19 +271,31 @@ def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
     empty user context still produced "cut manual data-ingestion effort by
     40%"). This check turns the violation into an explicit, user-visible
     warning instead of silently shipping invented metrics.
+
+    Matching is whitespace-insensitive in BOTH directions: the token's
+    whitespace is stripped entirely (LLM drafts carry U+202F/NBSP spaces the
+    source PDF lacks - live run 868e406d: optimized "42.69 %" vs source
+    "42.69%" flagged the user's REAL number), and the evidence is compacted
+    per line so an spaced variant of a source metric never reads as a
+    cross-line coincidence.
     """
     if not optimized_text:
         return []
     src = re.sub(r"\s+", " ", (evidence_text or "").lower())
+    src_lines_compact = [
+        re.sub(r"\s+", "", (line or "").lower())
+        for line in (evidence_text or "").splitlines()
+    ]
     claims: list[str] = []
     seen: set[str] = set()
     for match in _METRIC_TOKEN_RE.finditer(optimized_text):
         token = match.group(1)
         key = token.lower()
-        compact = key.replace(" ", "")
+        compact = re.sub(r"\s+", "", key)
         if key in seen:
             continue
-        if key in src or compact in src:
+        if key in src or compact in src \
+                or any(compact in lc for lc in src_lines_compact):
             seen.add(key)
             continue
         seen.add(key)
@@ -290,6 +303,306 @@ def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
         if len(claims) >= max_claims:
             break
     return claims
+
+
+# ============================================================
+# Deterministic fabrication scrubber
+# ============================================================
+# Live-run evidence (request 14751ff9 and runs a32f30fc / 868e406d, Nov 6
+# 2026): the reviewer's "remove the unverified claims" feedback was ignored
+# twice by the model - detection-only tripwires cannot clean the artifact.
+# These scrubbers deterministically remove unsupported content the gap
+# channel can produce; the metric tripwire then reports whatever still
+# survived.
+
+# Words carrying no distinguishing signal inside a gap chip ("Experience
+# with n8n (or similar workflow automation platform)" - the CLAIM is n8n).
+_CHIP_STOPWORDS = frozenset("""
+a an and any are as at based build building by demo demos direct experience
+for from gained hands hands-on having in into knowledge of on or practical
+similar server servers such the this that to tool tools work working with
+skill skills technology technologies concepts
+workflow automation platform workflows
+including include includes involved involving
+""".split())
+
+# Word chars for term extraction: '+', '#', '.', '-' stay INSIDE tokens
+# (c++, .net, gpt-4, node.js) - everything else splits.
+_WORD_SPLIT_RE = re.compile(r"[^0-9a-zA-Z+#._-]+")
+
+_BULLET_MARKER_RE = re.compile(r"^[-*+•]\s")
+_OR_SIMILAR_PAREN_RE = re.compile(
+    r"\s*\([^()]*\bor\s+similar\b[^()]*\)", re.IGNORECASE)
+# Draft skills row: "**Category**: item, item" / "Category: item, item"
+_SKILL_ROW_RE = re.compile(
+    r"^\s*\*{0,2}[^:*#@<>]{1,42}\*{0,2}:\s*\S")
+
+
+def _significant_terms(text: str) -> list[str]:
+    """Distinctive words of a chip/label: lowercased, stopwords dropped."""
+    terms: list[str] = []
+    for w in _WORD_SPLIT_RE.split((text or "").lower()):
+        if len(w) < 3 or w in _CHIP_STOPWORDS:
+            continue
+        if w not in terms:
+            terms.append(w)
+    return terms
+
+
+def _compact_all(s: str) -> str:
+    """Lowercase + strip EVERY whitespace class (incl. U+202F/NBSP)."""
+    return re.sub(r"\s+", "", (s or "").lower())
+
+
+def _contains_term(term: str, haystack_compact: str) -> bool:
+    """Containment of `term` inside whitespace-stripped text."""
+    if not term or not haystack_compact:
+        return False
+    return _compact_all(term) in haystack_compact
+
+
+def _term_in_text(term: str, text: str) -> bool:
+    """Boundary-aware containment of a chip term in raw text.
+
+    Compact substring matching would create false friends ("code" matches
+    "codebase"); whole-word matching on the raw line is what a fabricated
+    chip echo actually looks like ("Claude Code" hits "claude"). '.' stays
+    in the leading class ("code" won't fire inside "node.js") but not in
+    the trailing one - a sentence-final period is a word boundary.
+    """
+    if not term or not text:
+        return False
+    pattern = re.compile(
+        r"(?<![a-z0-9+#._])" + re.escape(term.strip().lower()) +
+        r"(?![a-z0-9+#-])", re.IGNORECASE)
+    return bool(pattern.search(text))
+
+
+def parse_gap_chips(missing_skills_text: str) -> tuple[list[str], list[str]]:
+    """Splits the gap channel (stamped `missing_skills`) into kept chips and
+    'Do NOT feature' removal labels, both as raw text."""
+    kept: list[str] = []
+    removed_labels: list[str] = []
+    for line in (missing_skills_text or "").splitlines():
+        s = (line or "").strip()
+        if not s:
+            continue
+        s = re.sub(r"^[-*+•]\s+", "", s)
+        lc = s.lower()
+        for marker in ("do not feature", "don't feature", "dont feature"):
+            if lc.startswith(marker):
+                body = s[len(marker):].lstrip(": ").rstrip(". ")
+                removed_labels.extend(
+                    p.strip() for p in body.split(",") if p.strip())
+                break
+        else:
+            kept.append(s)
+    return kept, removed_labels
+
+
+def _tidy_removal_residue(line: str) -> str:
+    """Cleans the punctuation/space residue a removal can leave in a line:
+    empty parens, doubled spaces, ' , ' chains, dangling separators."""
+    t = re.sub(r"\(\s*\)", " ", line)
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    t = re.sub(r"\s+,", ",", t)
+    t = re.sub(r",\s*,", ",", t)
+    t = re.sub(r"\(\s*,\s*", "(", t)
+    t = re.sub(r",\s*\)", ")", t)
+    t = re.sub(r"\s*,\s*(?=[;.)])", "", t)
+    t = re.sub(r"\s*,\s*$", "", t)
+    t = t.replace(" .", ".").replace(" ;", ";")
+    t = re.sub(r"^[,\s;]+", "", t)
+    return t.strip()
+
+
+def _unevidenced_metric_tokens(line: str, ev_lines: list[str]) -> list[str]:
+    """Compact forms of the metric tokens in `line` that the evidence
+    (whitespace-insensitively, per line) does not contain."""
+    out: list[str] = []
+    for match in _METRIC_TOKEN_RE.finditer(line):
+        compact = _compact_all(match.group(1))
+        if not compact or compact in out:
+            continue
+        if not any(compact in cl for cl in ev_lines):
+            out.append(compact)
+    return out
+
+
+def _drop_smallest_span(line: str, token_compact: str) -> Optional[str]:
+    """Removes the smallest region of `line` holding the token:
+    1. a parenthetical group,
+    2. else a comma/semicolon segment (unless it is the only one).
+    Returns None when the token cannot be excised cleanly."""
+    for pm in re.finditer(r"\([^()]*\)", line):
+        g = _compact_all(pm.group(0))
+        if g and token_compact in g:
+            return line[:pm.start()] + " " + line[pm.end():]
+    parts = re.split(r"(?<=[,;])\s*", line)
+    if len(parts) > 1:
+        kept = [p for p in parts if token_compact not in _compact_all(p)]
+        if kept and len(kept) < len(parts):
+            return " ".join(kept)
+    return None
+
+
+def _scrub_metric_claims(line: str, ev_lines: list[str]) -> Optional[str]:
+    """Removes unevidenced metric claims ('run 14751ff9: cut ... by 40%'):
+    parenthetical, else comma segment, else None (caller drops the region).
+    """
+    tokens = _unevidenced_metric_tokens(line, ev_lines)
+    if not tokens:
+        return line
+    work = line
+    for tok in tokens:
+        if tok not in _compact_all(work):
+            continue
+        work = _drop_smallest_span(work, tok)
+        if work is None or tok in _compact_all(work):
+            return None
+    return _tidy_removal_residue(work)
+
+
+def _suppressed_terms(kept_chips: list[str], removed_labels: list[str],
+                      ev_lines: list[str]) -> list[str]:
+    """Chip terms whose presence in the draft is unsupported:
+    - every term of a REMOVED chip (the user said do not feature it),
+    - terms of a KEPT chip absent from the evidence (resume + user notes).
+    """
+    suppressed: list[str] = []
+
+    def add(ts: list[str]) -> None:
+        for t in ts:
+            if t not in suppressed:
+                suppressed.append(t)
+
+    for label in removed_labels:
+        add(_significant_terms(label))
+    for chip in kept_chips:
+        add([t for t in _significant_terms(chip)
+             if not any(_term_in_text(t, cl) for cl in ev_lines)])
+    return suppressed
+
+
+def _scrub_skill_row_line(stripped: str, suppressed: list[str],
+                          removals: list[str]) -> Optional[str]:
+    """Item-level scrub of a skills row: drops '(or similar)' hedges and
+    items echoing suppressed chip terms. Returns the rebuilt row, or None
+    when every item is gone."""
+    m = re.match(r"^\s*([^:]{1,45}):(\s*.*)$", stripped)
+    label, value = m.group(1), m.group(2)
+    value, _ = _OR_SIMILAR_PAREN_RE.subn("", value)
+
+    kept_items: list[str] = []
+    for item in value.split(","):
+        if not item.strip():
+            continue
+        if any(_term_in_text(t, item) for t in suppressed):
+            removals.append("skills item removed: " + item.strip()[:44])
+            continue
+        kept_items.append(item.strip())
+    if kept_items:
+        return _tidy_removal_residue(label + ": " + ", ".join(kept_items))
+    return None
+
+
+def scrub_unsupported_content(optimized_text: str, resume_text: str,
+                              human_notes: str, missing_skills_text: str,
+                              ) -> tuple[str, list[str]]:
+    """Deterministically removes fabricated content the gap channel can
+    produce, and returns (scrubbed_text, removal_notes).
+
+    Removals, each grounded in agent state instead of model judgment:
+      1. Bullets echoing a gap chip whose claim the evidence (source resume
+         + user notes) does not demonstrate (run 868e406d: kept chips
+         composed under pasted project text became fake Aegis bullets
+         "Gained experience with n8n (or similar …)").
+      2. Bullets echoing REMOVED chips ("Do NOT feature: X") even when the
+         evidence shows them - the user explicitly suppressed that claim.
+      3. Unevidenced metric claims (run 14751ff9: "cut ... effort by 40%"):
+         parenthetical, else comma segment, else the whole bullet/sentence.
+    Skills rows lose the offending ITEMS (and "(or similar)" hedges) rather
+    than being dropped wholesale, so evidenced siblings stay.
+    """
+    if not optimized_text:
+        return optimized_text, []
+
+    ev_text = f"{resume_text or ''}\n{human_notes or ''}"
+    ev_lines = [_compact_all(ln) for ln in ev_text.splitlines() if ln.strip()]
+    kept_chips, removed_labels = parse_gap_chips(missing_skills_text)
+    suppressed = _suppressed_terms(kept_chips, removed_labels,
+                                   [ln for ln in ev_text.splitlines()
+                                    if ln.strip()])
+    removals: list[str] = []
+
+    out_lines: list[str] = []
+    for line in optimized_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            out_lines.append(line)
+            continue
+        hits = [t for t in suppressed if _term_in_text(t, stripped)]
+
+        if _BULLET_MARKER_RE.match(re.sub(r"\*+", "", stripped)):
+            # A gap chip is ONE claim: a bullet built on it is fabricated as
+            # a unit, so the whole bullet goes.
+            if hits:
+                removals.append("gap-echo bullet removed ("
+                                + ", ".join(sorted(set(hits))) + ")")
+                out_lines.append("")
+                continue
+            scrubbed = _scrub_metric_claims(stripped, ev_lines)
+            if scrubbed is None:
+                tokens = _unevidenced_metric_tokens(stripped, ev_lines)
+                removals.append("bullet removed (unevidenced number: "
+                                + ", ".join(tokens) + ")")
+                out_lines.append("")
+            else:
+                out_lines.append(scrubbed if scrubbed != stripped else line)
+            continue
+
+        if _SKILL_ROW_RE.match(stripped):
+            rebuilt = _scrub_skill_row_line(stripped, suppressed, removals)
+            if rebuilt is None:
+                removals.append("skills row removed: " + stripped[:40])
+                out_lines.append("")
+            else:
+                out_lines.append(rebuilt)
+            continue
+
+        # Prose (summary etc.; contact/entry header lines carry ' | ').
+        if " | " not in line:
+            sentences = re.split(r"(?<=[.!?;])\s+", stripped)
+            kept_sentences: list[str] = []
+            for s in sentences:
+                if any(_term_in_text(t, s) for t in suppressed):
+                    hit_terms = sorted({t for t in suppressed
+                                        if _term_in_text(t, s)})
+                    removals.append(
+                        "unevidenced chip claim removed from prose ("
+                        + ", ".join(hit_terms) + ")")
+                    continue
+                s2 = _scrub_metric_claims(s, ev_lines)
+                if s2 is None:
+                    tokens = _unevidenced_metric_tokens(s, ev_lines)
+                    removals.append(
+                        "sentence removed (unevidenced number: "
+                        + ", ".join(tokens) + ")")
+                    continue
+                kept_sentences.append(s2)
+            rebuilt_prose = " ".join(kept_sentences)
+            if rebuilt_prose.strip():
+                out_lines.append(_tidy_removal_residue(rebuilt_prose))
+            else:
+                out_lines.append("")
+            continue
+
+        out_lines.append(line)
+
+    text = re.sub(r"\n\s*\n(?:\s*\n)+", "\n\n", "\n".join(out_lines))
+    if len(removals) > 10:
+        removals = removals[:10] + [f"...and {len(removals) - 10} more removals"]
+    return _tame_unicode_bullets(text), removals
 
 
 def _sanitize_html_for_pdf(html: str) -> str:

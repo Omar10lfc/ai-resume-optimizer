@@ -331,6 +331,83 @@ def test_step2_resumes_interrupted_session_from_step1(client, fake_llms, clean_n
     assert snapshot.values.get("human_notes") == "I used k8s at work"
 
 
+# ==========================================
+# Composed-notes split (runs a32f30fc / 868e406d)
+# ==========================================
+# The frontend composes ONE string: typed free text, then kept chip lines,
+# then "Do NOT feature: ...". Stamping that whole string into BOTH
+# human_notes and missing_skills made the model fold kept chips under the
+# pasted project text into fake "user-confirmed" bullets ("Gained
+# experience with n8n (or similar ...)").
+
+def test_split_composed_notes_separates_chips_and_typed_evidence():
+    composed = (
+        "Aegis: built a 4-node LangGraph agent with FastAPI and OpenRouter.\n"
+        "- Experience with n8n (or similar workflow automation platform)\n"
+        "- Hands-on work with Claude Code, Cursor, or Codex\n"
+        "- Direct experience working with MCP servers (FortyGuard Temperature MCP)\n"
+        "Do NOT feature: Terraform, Airflow.\n"
+    )
+    pristine = (
+        "- Experience with n8n (or similar workflow automation platform)\n"
+        "- Hands-on work with Claude Code, Cursor, or Codex\n"
+        "- Direct experience working with MCP servers (FortyGuard Temperature MCP)\n"
+        "- Terraform\nAirflow\n"
+    )
+    gaps, evidence = runners._split_composed_notes(composed, pristine)
+
+    # GAP channel: chips (kept as annotated) + the removal directive
+    assert "Experience with n8n (or similar workflow automation platform)" in gaps
+    assert "Hands-on work with Claude Code, Cursor, or Codex" in gaps
+    assert "Direct experience working with MCP servers (FortyGuard Temperature MCP)" in gaps
+    assert "Do NOT feature: Terraform, Airflow." in gaps
+
+    # EVIDENCE channel: ONLY the typed project text
+    assert evidence == "Aegis: built a 4-node LangGraph agent with FastAPI and OpenRouter."
+
+    # chips must never leak into the evidence channel again
+    assert "n8n" not in evidence and "Claude Code" not in evidence
+
+
+def test_split_composed_notes_renamed_chip_counts_as_typed_evidence():
+    """A chip the user renamed diverges from the scanner text on purpose -
+    like the rest of the free text, it routes to the evidence channel rather
+    than silently forcing the raw chip back into the gap channel."""
+    gaps, evidence = runners._split_composed_notes(
+        "Context.\n- Container basics on a home lab", "- Docker\n")
+    assert gaps == ""
+    assert evidence == "Context.\n- Container basics on a home lab"
+
+
+def test_split_composed_notes_tolerates_chip_annotations_and_blank_lines():
+    """'- Docker: ran containers in coursework' matches the pristine chip by
+    its LABEL (text before the first colon)."""
+    composed = "My project text about CI.\n\n- Docker: ran containers in coursework\n"
+    pristine = "- Docker\n"
+    gaps, evidence = runners._split_composed_notes(composed, pristine)
+    assert gaps == "- Docker: ran containers in coursework"
+    assert evidence == "My project text about CI."
+
+
+def test_split_composed_notes_without_pristine_keeps_all_as_evidence():
+    """No step-1 snapshot (fresh step-2 entry): the whole composed string is
+    the user's typed context, so nothing may silently vanish."""
+    composed = "Built dashboards with Grafana.\n- Experience with n8n\n"
+    gaps, evidence = runners._split_composed_notes(composed, "")
+    assert gaps == ""
+    assert evidence == "Built dashboards with Grafana.\n- Experience with n8n"
+
+
+def test_split_composed_notes_bullet_marker_equivalence():
+    """Pristine chips may come with or without '- ' bullets; labels match
+    either way (front-end compose always uses '- ')."""
+    gaps, evidence = runners._split_composed_notes(
+        "Typed context line.\n- Kubernetes basics",
+        "Kubernetes basics\nTerraform")
+    assert gaps == "- Kubernetes basics"
+    assert evidence == "Typed context line."
+
+
 def test_step2_reuses_completed_session_by_starting_fresh(client, fake_llms, monkeypatch):
     _spy_feedback(monkeypatch)
     r1 = client.post("/api/v1/step2",
