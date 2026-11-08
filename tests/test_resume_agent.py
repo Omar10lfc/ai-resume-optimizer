@@ -153,6 +153,39 @@ def test_extract_keywords_stops_timeline_and_logistics_noise():
     assert leaked == []
 
 
+def test_extract_keywords_drops_posting_header_fields():
+    """Nov 7 2026 run pair (FortyGuard AI Automation Intern post, traces
+    01a1b4cb/09cf51fc): a tiny scraped JD carried a plain-text header block
+    ('Location: Remote / Duration: 3-6 months / Type: Paid internship')
+    plus prose verbs - 5 of the 20 weighted keywords were words NO resume
+    can contain, which depresses every honest match. Header fields and
+    prose verbs are stopped; real gap terms ('mcp', 'temperature') stay."""
+    jd = ("We're hiring an AI Automation Intern at FortyGuard!\n\n"
+          "Start: January 2027\nLocation: Remote\nDuration: 3\u20136 months\n"
+          "Type: Paid internship\n\n"
+          "You'll work with the FortyGuard Temperature MCP, which enables AI agents "
+          "to interact with our temperature data.\n\n"
+          "What you'll be building:\n\n"
+          "\u2022 AI agents, workflows, and demos using tools like Claude Code, "
+          "Cursor, and Codex.\n\n"
+          "\u2022 n8n automations that help our internal team work more efficiently.\n\n"
+          "Who we're looking for:\n\n"
+          "Someone who has built projects using LLM tools, AI agents, or "
+          "workflow automation.\n\n"
+          "You should understand APIs, webhooks, and JSON, and have experience "
+          "using n8n or a similar automation platform.\n\n"
+          "Experience working with MCP servers is a plus.")
+    kws = agent._extract_keywords(jd, top_n=20)
+    junk = [k for k in ("location", "months", "paid", "type", "interact",
+                        "understand", "someone", "built", "efficiently",
+                        "internal", "help") if k in kws]
+    assert junk == []
+    assert "mcp" in kws
+    assert "temperature" in kws
+    assert "claude" in kws
+    assert "cursor" in kws
+
+
 def test_extract_keywords_strips_camelcase_brand_but_keeps_tech():
     jd = ("FortyGuard builds temperature-data agents. Requirements: Python "
           "and OpenCV. We also use MySQL.")
@@ -625,6 +658,18 @@ def test_find_unevidenced_metric_empty_inputs():
     assert agent.find_unevidenced_metric_claims("Cut by 55%", "") == ["55%"]
 
 
+def test_find_unevidenced_metric_catches_fraction_pass_rates():
+    """Nov 7 run pair (1d3e1550): '150/150 benchmark passes' is a claim a
+    model can coin without a %/x/ms unit - it must be flagged when the
+    evidence lacks it, and must stay quiet when the evidence carries it."""
+    idle = ("- Implemented a scope filter achieving 150/150 benchmark passes. "
+            "We ranked 5/47 overall.")
+    assert agent.find_unevidenced_metric_claims(idle, "") == ["150/150"]
+    evidenced = "- Achieved 150/150 benchmark passes across 189 tests."
+    assert agent.find_unevidenced_metric_claims(
+        evidenced, "user context: achieved 150/150 benchmark passes") == []
+
+
 def test_improver_scrubs_and_reports_via_guardrail_warnings(monkeypatch):
     """Runs 14751ff9/a32f30fc/868e406d made 'detect only' insufficient: the
     reviewer's removal feedback was ignored twice. The improver now removes
@@ -802,6 +847,67 @@ def test_scrubber_dedups_blanks_and_reports_cap():
     assert "Built real FastAPI endpoints" in scrubbed
     assert "\n\n\n" not in scrubbed
     assert len(removals) <= 11
+
+
+# ==========================================
+# Chip-term precision (Nov 7 run pair d8756ddf/a9da3660)
+# ==========================================
+# The Nov 7 run pair's real scanner chips carried plain-word filler ('using',
+# 'agent', 'development', 'workflow-automation', 'environments') that the
+# old term heuristic turned into removal triggers: run 09cf51fc culled a
+# draft bullet on the term 'using' alone. Chip terms are now TECHNOLOGY
+# NAMES - capitalized or digit-bearing tokens; consecutive names inside one
+# segment join into a single multi-word term ('Claude Code') so pieces like
+# 'code' cannot hit innocent bullets ("code coverage").
+
+def test_chip_terms_extract_technology_names_from_real_run_chips():
+    import agent.helpers as helpers
+    a1 = "- Experience with n8n (or similar workflow-automation platform) and building n8n automations"
+    a2 = ("- Hands-on work using Claude Code, Cursor, Codex, or comparable "
+          "LLM-code generation tools for AI agent development")
+    b3 = ("- Direct experience working with MCP servers (FortyGuard Temperature MCP) "
+          "or similar server environments\u200b")
+    assert helpers._significant_terms(a1) == ["n8n"]
+    assert helpers._significant_terms(a2) == ["claude code", "cursor", "codex", "llm-code"]
+    assert helpers._significant_terms(b3) == ["mcp", "fortyguard temperature mcp"]
+    # 'apis' is effectively generic; 'JSON' is a name.
+    assert helpers._significant_terms(
+        "- Practical experience with APIs, webhooks, and JSON data handling") == ["json"]
+    # lowercase-only chips yield no terms (missing a cull beats a wrong one)
+    assert helpers._significant_terms("- docker and kubernetes experience") == []
+
+
+def test_scrubber_spares_innocent_bullets_on_chip_filler_terms():
+    """Run 09cf51fc dropped a draft bullet on the term 'using'. Bullets that
+    merely say 'using X' or read like chip filler must survive."""
+    chips = ("- Hands-on work using Claude Code, Cursor, Codex, or comparable "
+             "LLM-code generation tools for AI agent development\n"
+             "- Experience with n8n (or similar workflow-automation platform) "
+             "and building n8n automations")
+    innocent = ("- Reduced manual payroll export effort using OR-Tools scheduling.\n"
+                "- Increased code coverage on the ingest pipeline.\n")
+    scrubbed, removals = agent.scrub_unsupported_content(
+        innocent, resume_text="OR-Tools scheduling and coverage analysis.",
+        human_notes="", missing_skills_text=chips)
+    assert "OR-Tools scheduling" in scrubbed
+    assert "code coverage" in scrubbed
+    assert not removals
+
+
+def test_scrubber_still_culls_true_multiname_chip_echoes():
+    chips = ("- Hands-on work using Claude Code, Cursor, Codex, or comparable "
+             "LLM-code generation tools for AI agent development\n"
+             "- Direct experience working with MCP servers (FortyGuard "
+             "Temperature MCP) or similar server environments")
+    guilty = ("- Integrated FortyGuard Temperature MCP into the nightly automation.\n"
+              "- Practiced MCP server responses against mock data.\n"
+              "- Used Claude Code to scaffold the CLI agent.\n")
+    scrubbed, removals = agent.scrub_unsupported_content(
+        guilty, resume_text="", human_notes="", missing_skills_text=chips)
+    assert "FortyGuard" not in scrubbed
+    assert "MCP" not in scrubbed
+    assert "Claude Code" not in scrubbed
+    assert len(removals) >= 2
 
 
 # ==========================================
@@ -1767,6 +1873,11 @@ def test_reviewer_grades_flattened_text_with_anchors(monkeypatch):
     # Run 14751ff9 guard: fabrication is graded, not just style.
     assert "TRUTHFULNESS GATE" in prompt
     assert "ORIGINAL RESUME" in prompt          # evidence block between JD and draft
+    # Nov 7 run pair (d8756ddf/a9da3660): salvaged prose advised adding n8n /
+    # Claude Code / MCP experience - advice only fabrication can follow, and
+    # it fed the polish loop straight into the scrubber's removals.
+    assert "FEEDBACK SCOPE" in prompt
+    assert "Never recommend adding" in prompt
 
 
 def test_ats_contact_line_links_still_visible_as_labels():

@@ -256,8 +256,13 @@ def _tame_unicode_bullets(text: str) -> str:
 # Metric-shaped numerals: percentages, X-factors ("3x"), and millisecond
 # rates ("1.7 ms"). Plain years/version numbers (GPT-4, Python 3.12) have no
 # unit and are deliberately NOT matched - they are not metric claims.
+# Fraction pass-rates ("150/150 benchmark passes" - Nov 7 run pair 1d3e1550)
+# only count when a benchmark/test/pass/case/check word follows, so bare
+# scores ("top 5/47") stay exempt.
 _METRIC_TOKEN_RE = re.compile(
-    r"(?<![\w.])(\d+(?:[.,]\d+)?(?:\s?(?:%|x(?![a-zA-Z])|ms\b|mm\b)))"
+    r"(?<![\w.])(\d+(?:[.,]\d+)?(?:\s?(?:%|x(?![a-zA-Z])|ms\b|mm\b))"
+    r"|\d+(?:[.,]\d+)?\s*/\s*\d+(?:[.,]\d+)?(?=\s*(?:benchmark|test|pass|"
+    r"case|check)s?\b))"
 )
 
 
@@ -330,6 +335,16 @@ including include includes involved involving
 # (c++, .net, gpt-4, node.js) - everything else splits.
 _WORD_SPLIT_RE = re.compile(r"[^0-9a-zA-Z+#._-]+")
 
+# Chip text splits into segments on punctuation that separates tool names
+# inside a chip ("Claude Code, Cursor, Codex ...", "Hands-on work with
+# n8n: used in production"): within a segment, connected capital/digit
+# tokens belong to ONE tool name.
+_SEGMENT_SPLIT_RE = re.compile(r"[,;:.()|]+")
+
+# Single-capitalized acronyms that appear in EVERY AI-era gap chip but
+# carry no distinctive signal ("AI agents and demos") - never a claim.
+_GENERIC_SHORT = frozenset("ai ml api apis sdk".split())
+
 _BULLET_MARKER_RE = re.compile(r"^[-*+•]\s")
 _OR_SIMILAR_PAREN_RE = re.compile(
     r"\s*\([^()]*\bor\s+similar\b[^()]*\)", re.IGNORECASE)
@@ -339,13 +354,50 @@ _SKILL_ROW_RE = re.compile(
 
 
 def _significant_terms(text: str) -> list[str]:
-    """Distinctive words of a chip/label: lowercased, stopwords dropped."""
+    """TECHNOLOGY NAMES of a chip/label, precision-first.
+
+    Live-run evidence (requests 09cf51fc / 1d3e1550, Nov 7 2026): plain-word
+    terms ('using', 'agent', 'development', 'workflow-automation') culled
+    innocent draft bullets that merely said 'using X' or 'development'.
+    The failing heuristic - every non-stopword word is a potential claim -
+    turned chip DESCRIPTIONS into removal triggers.
+
+    A token becomes a term only when it looks like a NAME: capitalized
+    ('Claude', 'MCP', 'FortyGuard') or digit-bearing ('n8n'). Generic
+    filler is lowercased in scanner chips, so it drops automatically.
+    Consecutive name tokens inside one comma/colon segment form ONE
+    multi-word term ('Claude Code', 'FortyGuard Temperature MCP') so
+    pieces like 'code' cannot hit innocent bullets ("code coverage").
+
+    False negatives are preferred over false positives: a lowercase-only
+    chip yields no terms at all, and unremoved bullying is safer than a
+    removed truthful bullet.
+    """
     terms: list[str] = []
-    for w in _WORD_SPLIT_RE.split((text or "").lower()):
-        if len(w) < 3 or w in _CHIP_STOPWORDS:
-            continue
-        if w not in terms:
-            terms.append(w)
+
+    def flush(run: list[str]) -> None:
+        if not run:
+            return
+        term = " ".join(run) if len(run) >= 2 else run[0]
+        if term not in terms:
+            terms.append(term)
+
+    for segment in _SEGMENT_SPLIT_RE.split(text or ""):
+        run: list[str] = []
+        for token in _WORD_SPLIT_RE.split(segment):
+            lw = token.lower()
+            if lw in _CHIP_STOPWORDS or lw in _GENERIC_SHORT or len(lw) < 2:
+                flush(run)
+                run = []
+                continue
+            if any(ch.isupper() for ch in token) \
+                    or any(ch.isdigit() for ch in token):
+                run.append(lw)
+            else:
+                # lowercase filler breaks any capital run it interrupts
+                flush(run)
+                run = []
+        flush(run)
     return terms
 
 
@@ -369,12 +421,15 @@ def _term_in_text(term: str, text: str) -> bool:
     chip echo actually looks like ("Claude Code" hits "claude"). '.' stays
     in the leading class ("code" won't fire inside "node.js") but not in
     the trailing one - a sentence-final period is a word boundary.
+    Multi-word terms match across any whitespace run ("Claude  Code").
     """
     if not term or not text:
         return False
+    t = " ".join((term or "").strip().lower().split())
+    parts = [re.escape(p) for p in t.split(" ")]
     pattern = re.compile(
-        r"(?<![a-z0-9+#._])" + re.escape(term.strip().lower()) +
-        r"(?![a-z0-9+#-])", re.IGNORECASE)
+        r"(?<![a-z0-9+#._])" + r"\s+".join(parts) + r"(?![a-z0-9+#])",
+        re.IGNORECASE)
     return bool(pattern.search(text))
 
 

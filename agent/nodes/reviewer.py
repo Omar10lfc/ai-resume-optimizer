@@ -163,6 +163,19 @@ def reviewer_node(state: AgentState):
     the invented claims in the feedback. Do not reward good style for
     invented content.
 
+    FEEDBACK SCOPE (live-run evidence Nov 7 2026, requests d8756ddf /
+    a9da3660: salvaged reviewer prose told the writer to "explicitly mention
+    experience with n8n / Claude Code / MCP" - advice that can only be
+    followed by inventing experience, which the pipeline then scrubs at
+    wasted cost): grade PRESENTATION QUALITY ONLY. Never recommend adding
+    tools, technologies, employers, projects, or metrics the candidate's
+    evidence does not show - missing technologies are surfaced separately
+    as keyword gaps, and a truthful resume cannot add them. Direct feedback
+    at what can be improved WITHOUT new unverifiable claims: stronger
+    action-verb openers, sharper quantified phrasing for existing true
+    achievements, tighter structure, role-aligned wording of existing
+    experience.
+
     Calibration anchors - anchor the combined score to these reference points:
     - 85-100: Every bullet opens with a strong action verb and carries a true,
       verifiable metric (numbers, percentages, or scale); the summary names the

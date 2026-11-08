@@ -53,6 +53,18 @@ _STOPWORDS = {
     "concepts", "trends", "productivity", "tooling", "documentation",
     "major", "graduation", "grads", "emerging", "current", "senior",
     # Action verbs and verb forms (not skills)
+    # Live-run evidence (Nov 7 2026, FortyGuard AI Automation Intern post):
+    # 'interact', 'understand', 'built', 'efficiently', 'internal',
+    # 'someone' fed the top-20 from prose. None can be resume keywords.
+    "interact", "interacts", "interacting", "interaction", "interactions",
+    "understand", "understands", "understood", "realize", "realize",
+    "learn", "learning", "loves", "love",
+    "help", "helps", "helping", "sounds",
+    "efficient", "efficiently", "efficiency",
+    "someone", "anyone", "everyone", "internal", "minimum",
+    "minute", "minutes", "short", "shorter", "form",
+    "built", "building", "builds", "sound", "sounding",
+    "similar", "hear", "hearing", "heard",
     "translate", "translating", "translates", "translation",
     "prepare", "preparing", "prepared", "preparation",
     "present", "presenting", "presents", "presentation", "presentations",
@@ -110,6 +122,16 @@ _STOPWORDS = {
     "eligible", "eligibility", "relocate", "relocation", "relocating",
     "visa", "sponsorship", "stipend", "salary", "compensation", "benefits",
     "perks", "weekday", "weekdays", "weekly", "monthly", "hours",
+    # Posting-header fields. Live-run evidence (Nov 7 2026, traces
+    # 01a1b4cb/09cf51fc, FortyGuard AI Automation Intern post): a tiny
+    # scraped JD carried a plain-text header block ("Location: Remote /
+    # Duration: 3-6 months / Type: Paid internship / which enables ...") -
+    # 5 of the 20 weighted keywords became words no resume can contain.
+    "location", "locations", "month", "months", "paid", "unpaid",
+    "type", "types", "enable", "enables", "enabling", "empower",
+    "empowers", "empowering", "responsibilities", "requirements",
+    "requirement", "qualifications", "qualification", "expectations",
+    "discipline", "disciplines",
     # Generic qualifier/noise adjectives carrying no signal
     "basic", "basics", "general", "generally", "typical", "typically",
     "various", "certain", "relevant", "respective", "powered", "focused",
@@ -123,6 +145,7 @@ _LOW_SIGNAL_TERMS = {
     "assistants", "pipelines", "code", "design", "engineers",
     "integrations", "configurations", "environments", "ides",
     "scheduling", "planning", "tracking",
+    "platform", "servers",
 }
 
 
