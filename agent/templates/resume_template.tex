@@ -103,7 +103,13 @@
 \newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
 \newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
 \newcommand{\resumeItemListStart}{\begin{itemize}}
-\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+% Base-mode boundary spacer: a negative spacer here crams every next
+% entry's bold title onto the preceding list's last (wrapped) line at
+% ~7pt baseline distance - 10pt descenders print through the title
+% (live render, request 539f7c1d, Nov 8 2026). -1pt keeps entries tight
+% without collisions; the auto-compact override uses +1pt for ~12pt
+% wrapped-line parity.
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-1pt}}
 
 <!--COMPACT_BLOCK-->
 

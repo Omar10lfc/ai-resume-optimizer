@@ -1230,7 +1230,15 @@ _COMPACT_OVERRIDES = r"""
       \small#1 & #2 \\
     \end{tabular*}\vspace{-4pt}
 }
-\renewcommand{\resumeItemListEnd}{\end{itemize}\vspace{-4pt}}
+% Entry-boundary repair (live request 539f7c1d, Nov 8 2026): after the
+% itemize's own -2pt item tails, a negative end-of-list spacer collapsed
+% the bullet-to-(next-entry)-title baseline distance to 7.0pt - normal
+% wrapped lines sit 12.0-12.2pt apart, so 10pt-font descenders ("pipeline.",
+% "service.") printed straight through the next entry's bold titles
+% ("Smart Lecture Assistant", "AI Resume Optimizer Agent"). A small
+% POSITIVE spacer restores ~12pt parity with wrapped-line spacing while
+% keeping the density win everywhere else.
+\renewcommand{\resumeItemListEnd}{\end{itemize}\vspace{1pt}}
 % ---------------- end auto-compact pass ----------------
 """
 

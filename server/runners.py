@@ -219,6 +219,24 @@ def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
     evidence and goes to human_notes (live run 868e406d: the chips were
     stamped into the evidence channel under the pasted project text, which
     made the model emit them as user-confirmed Aegis bullets).
+
+    Stale-chip hardening (live request 539f7c1d, Nov 8 2026): the composed
+    string can carry chip lines from a PREVIOUS session whose stale wording
+    no longer matches the current scanner snapshot. They then fell into
+    evidence_lines unchanged - the writer read those GAP descriptions
+    ("Experience with n8n", "MCP servers") as user-confirmed evidence and
+    shipped them verbatim into Summary + Technical Skills; the scrubber
+    (which treats user context as evidence) found nothing to remove, ATS
+    matched the JD's own vocabulary at 100%, and the reviewer capped
+    quality at ~38 - the run-868e406d laundering mechanism re-armed by
+    stale data. Any line the extension serialized as an ASCII bullet
+    therefore stays a GAP line ("research topic, never claim") when it
+    does not match the snapshot either: misclassifying a genuine typed
+    note as a gap topic is the safe failure direction (the writer merely
+    omits it), while classifying a gap chip as evidence is fabrication
+    laundering. Real typed evidence in this app uses "•" bullets or prose
+    paragraphs - the pasted Aegis block of the same run proves the
+    distinction.
     """
     chip_keys: set[str] = set()
     for line in (pristine_missing or "").splitlines():
@@ -244,6 +262,11 @@ def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
             gap_lines.append(s)
             continue
         if n in chip_keys or n.split(":", 1)[0].strip() in chip_keys:
+            gap_lines.append(s)
+            continue
+        if s.startswith("- ") or s.startswith("* "):
+            # ASCII bullets are the extension's chip serialization; they are
+            # gap topics whatever the snapshot says (stale-session chips).
             gap_lines.append(s)
             continue
         evidence_lines.append(s)

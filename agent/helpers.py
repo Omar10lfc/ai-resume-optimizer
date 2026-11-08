@@ -582,7 +582,17 @@ def scrub_unsupported_content(optimized_text: str, resume_text: str,
     if not optimized_text:
         return optimized_text, []
 
-    ev_text = f"{resume_text or ''}\n{human_notes or ''}"
+    # Chip-shaped hardening (live request 539f7c1d, Nov 8 2026): stale gap
+    # chips can leak into the human_notes channel when a session reuse
+    # carries them under typed evidence. The notes are EVIDENCE to this
+    # scrubber by contract, so an unresolved chip line becomes "verified"
+    # by definition and the fabricated echo survives. ASCII-bullet lines
+    # are the extension's chip serialization (typed evidence in this app
+    # uses "•" bullets or prose), so they must never count as evidence.
+    notes_evidence = "\n".join(
+        ln for ln in (human_notes or "").splitlines()
+        if not ln.strip().startswith(("- ", "* ")))
+    ev_text = f"{resume_text or ''}\n{notes_evidence}"
     ev_lines = [_compact_all(ln) for ln in ev_text.splitlines() if ln.strip()]
     kept_chips, removed_labels = parse_gap_chips(missing_skills_text)
     suppressed = _suppressed_terms(kept_chips, removed_labels,

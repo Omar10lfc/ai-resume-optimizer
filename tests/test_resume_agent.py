@@ -817,6 +817,52 @@ def test_scrubber_honors_do_not_feature_and_evidenced_chips():
     assert not removals2
 
 
+def test_scrubber_stale_chip_lines_in_notes_are_not_evidence():
+    """Request 539f7c1d, Nov 8 2026: stale chips from a PREVIOUS session were
+    stamped into human_notes under the pasted Aegis evidence. Notes are
+    EVIDENCE to this scrubber by contract, so the unresolved '- '-bulleted
+    chip lines 'verified' their own fabricated echoes -> shipped verbatim
+    (ATS then matched the JD's own vocabulary at 100%). Belt-and-braces:
+    the notes-evidence corpus drops ASCII-bullet lines (the extension's
+    chip serialization; typed evidence uses '•' bullets or prose), so the
+    poisoned notes behave exactly like clean ones."""
+    chips = ("- Experience with n8n (or similar workflow automation platform)\n"
+             "- Hands-on work with Claude Code, Cursor, or Codex for building AI agents and demos\n"
+             "- Experience working with MCP servers (FortyGuard Temperature MCP)\n")
+    stale = ("- Experience with n8n (or similar workflow-automation platform) and building automations using it\n"
+             "- Hands-on work with Claude Code, Cursor, Codex or comparable LLM-code generation tools\n"
+             "- Direct experience working with MCP servers (FortyGuard Temperature MCP) or similar server environments\n")
+    typed = ("here is a project that i built:\n"
+             "Aegis: Autonomous Heat-Risk Operations Agent Aug-Sep 2026\n"
+             "• Engineered a FastAPI service with bounded LLM timeouts.\n")
+    draft = (
+        "# Jane Doe\n"
+        "## Technical Skills\n"
+        "- n8n (workflow automation), Webhooks\n"
+        "- Claude Code, Cursor, Codex\n"
+        "- MCP servers (FortyGuard Temperature MCP)\n"
+        "- Built real FastAPI services.\n"
+    )
+    poisoned = agent.scrub_unsupported_content(
+        draft, resume_text="Built real FastAPI services.",
+        human_notes=typed + stale,
+        missing_skills_text=chips)
+    clean = agent.scrub_unsupported_content(
+        draft, resume_text="Built real FastAPI services.",
+        human_notes=typed,
+        missing_skills_text=chips)
+    for scrubbed, removals, label in ((poisoned[0], poisoned[1], "poisoned"),
+                                      (clean[0], clean[1], "clean")):
+        assert "n8n" not in scrubbed, label
+        assert "Claude Code" not in scrubbed, label
+        assert "FortyGuard" not in scrubbed, label
+        assert "Built real FastAPI services." in scrubbed, label
+        assert removals, f"{label}: expected removals"
+    # the poisoned notes must NOT make the fabricated echoes look evidenced:
+    # same outcome as clean notes (chip lines in notes = no protective power)
+    assert sorted(poisoned[1]) == sorted(clean[1])
+
+
 def test_scrubber_keeps_evidenced_numbers():
     """Narrow-space copies of real numbers (run 868e406d: '42.69 %' vs the
     resume's '42.69%') must survive."""

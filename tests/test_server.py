@@ -369,14 +369,49 @@ def test_split_composed_notes_separates_chips_and_typed_evidence():
     assert "n8n" not in evidence and "Claude Code" not in evidence
 
 
-def test_split_composed_notes_renamed_chip_counts_as_typed_evidence():
-    """A chip the user renamed diverges from the scanner text on purpose -
-    like the rest of the free text, it routes to the evidence channel rather
-    than silently forcing the raw chip back into the gap channel."""
-    gaps, evidence = runners._split_composed_notes(
-        "Context.\n- Container basics on a home lab", "- Docker\n")
-    assert gaps == ""
-    assert evidence == "Context.\n- Container basics on a home lab"
+def test_split_composed_notes_ascii_chip_without_snapshot_routes_to_gap():
+    """Stale-chip hardening (request 539f7c1d, Nov 8 2026): without a step-1
+    snapshot AND with one, an ASCII-bullet line is chip serialization, not
+    typed evidence - routing it to the gap channel means the writer merely
+    omits that topic (safe), while routing it to evidence launders stale
+    gap chips into user-confirmed claims (the 75/100% incident). Prose and
+    '•'-bulleted lines are still typed evidence even without a snapshot."""
+    composed = "Built dashboards with Grafana.\n- Experience with n8n\n"
+    gaps, evidence = runners._split_composed_notes(composed, "")
+    assert gaps == "- Experience with n8n"
+    assert evidence == "Built dashboards with Grafana."
+
+
+def test_split_composed_notes_stale_chips_under_pasted_evidence():
+    """The exact 539f7c1d composition: the user pasted Aegis evidence with
+    '•' bullets, then STALE chip lines from the previous session (wording
+    drifted from the fresh scanner snapshot). None of the chip lines match
+    the pristine chips, yet every ASCII-bullet line must land in the GAP
+    channel while the '•'-bulleted project evidence stays in human_notes."""
+    composed = (
+        "here is a project that i built:\n"
+        "Aegis: Autonomous Heat-Risk Operations Agent Aug-Sep 2026\n"
+        "• Engineered a FastAPI service around a 4-node LangGraph agent\n"
+        "  with bounded LLM timeouts and deterministic fallbacks.\n"
+        "- Experience with n8n (or similar workflow-automation platform) and building automations using it\n"
+        "- Hands-on work with Claude Code, Cursor, Codex or comparable LLM-code generation tools\n"
+        "- Direct experience working with MCP servers (FortyGuard Temperature MCP)\n"
+    )
+    # TODAY's snapshot wording (deliberately different from the stale lines)
+    pristine = (
+        "- Experience with n8n (or similar workflow automation platform)\n"
+        "- Hands-on work with Claude Code, Cursor, or Codex for building AI agents and demos\n"
+        "- Experience working with MCP servers (FortyGuard Temperature MCP)\n"
+    )
+    gaps, evidence = runners._split_composed_notes(composed, pristine)
+    assert gaps.count("n8n") == 1 and gaps.count("FortyGuard") == 1
+    assert "workflow-automation" in gaps          # stale wording kept verbatim
+    assert "here is a project that i built:" in evidence
+    assert "Aegis: Autonomous Heat-Risk Operations Agent" in evidence
+    assert "• Engineered a FastAPI service around a 4-node LangGraph agent" in evidence
+    # nothing chip-shaped leaks into the evidence channel
+    for tool in ("n8n", "Claude Code", "Codex", "MCP"):
+        assert tool not in evidence
 
 
 def test_split_composed_notes_tolerates_chip_annotations_and_blank_lines():
@@ -389,13 +424,19 @@ def test_split_composed_notes_tolerates_chip_annotations_and_blank_lines():
     assert evidence == "My project text about CI."
 
 
-def test_split_composed_notes_without_pristine_keeps_all_as_evidence():
-    """No step-1 snapshot (fresh step-2 entry): the whole composed string is
-    the user's typed context, so nothing may silently vanish."""
-    composed = "Built dashboards with Grafana.\n- Experience with n8n\n"
+def test_split_composed_notes_without_pristine_typed_evidence_survives():
+    """No step-1 snapshot (fresh step-2 entry): prose and '•'-bulleted
+    context must still survive verbatim - the no-vanish spirit of the old
+    fallback now applies to typed evidence only, while ASCII-bullet lines
+    (the extension's chip serialization) still route to the gap channel
+    regardless of the snapshot (stale-chip hardening, request 539f7c1d)."""
+    composed = ("Refactored the deploy pipeline on a home lab.\n"
+                "• Ran container basics on a home lab cluster\n"
+                "- Docker\n")
     gaps, evidence = runners._split_composed_notes(composed, "")
-    assert gaps == ""
-    assert evidence == "Built dashboards with Grafana.\n- Experience with n8n"
+    assert gaps == "- Docker"
+    assert evidence == ("Refactored the deploy pipeline on a home lab.\n"
+                        "• Ran container basics on a home lab cluster")
 
 
 def test_split_composed_notes_bullet_marker_equivalence():

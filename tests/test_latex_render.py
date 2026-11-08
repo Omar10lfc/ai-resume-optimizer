@@ -613,9 +613,13 @@ def test_experience_rendering_company_beside_position():
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
-def test_realistic_dense_resume_compiles_single_page(tmp_path):
+def test_realistic_dense_resume_ships_one_page(tmp_path):
     """A realistic dense technical resume (4 projects, 2 jobs, full education, 9 skills,
-    summary, and all 4 certifications) must compile to exactly 1 page with no cutoff."""
+    summary, and all 4 certifications) must SHIP to exactly 1 page with no cutoff,
+    mirroring pdf_exporter_node: plain render first, auto-compact pass when it
+    overflows. (Boundary repair, request 539f7c1d Nov 8 2026: the base spacer no
+    longer crams this resume onto one page by printing descenders through bold
+    titles - the compact pass ships the 1-page PDF instead.)"""
     from pypdf import PdfReader
     dense_md = """# Omar Mashaly
 Alexandria, Egypt | +20 100 170 1821 | omarmashaly86@gmail.com | linkedin.com/in/omar-mashaly | github.com/Omar10lfc
@@ -671,17 +675,36 @@ Generative AI Summer Code Camp - ITI & NVIDIA DLI (Sep 2025)
 McKinsey Forward Program (Dec 2024)
 """
     data = parse_markdown_resume(dense_md)
-    tex = render_resume_tex(data)
-    pdf_path = latex_to_pdf(tex, tmp_path, "dense_resume.pdf")
-    assert pdf_path is not None
-    assert Path(pdf_path).exists()
-    reader = PdfReader(pdf_path)
+    base_pdf = latex_to_pdf(render_resume_tex(data), tmp_path, "dense_resume.pdf")
+    assert base_pdf is not None and Path(base_pdf).exists()
+    base_pages = pdf_page_count(base_pdf)
+    assert base_pages and base_pages >= 1
+
+    if base_pages == 1:
+        shipped_pdf = base_pdf
+    else:
+        # exporter fallback: the spacing-only compact pass reclaims the overflow
+        shipped_pdf = latex_to_pdf(render_resume_tex(data, compact=True),
+                                   tmp_path, "dense_resume_compact.pdf")
+        assert shipped_pdf is not None and Path(shipped_pdf).exists()
+
+    reader = PdfReader(shipped_pdf)
     assert len(reader.pages) == 1
     page_text = reader.pages[0].extract_text()
     assert "AWS Future AI Engineer" in page_text
     assert "Natural Language Processing" in page_text
     assert "Generative AI Summer Code Camp" in page_text
     assert "McKinsey Forward Program" in page_text
+
+    # and the shipped page keeps the entry-boundary floor (>=10pt): no
+    # bold project title is printed through by the preceding wrapped line
+    dense_title_rx = re.compile(
+        r"Alexandria Port Digital Twin|Fil-RAG-Goal|Smart Lecture Assistant|AI Resume Optimizer Agent")
+    bounds = [g for g, _above, line, _p in _baseline_gaps(shipped_pdf)
+              if dense_title_rx.search(line)]
+    assert len(bounds) >= 4, "expected all four project titles in the shipped PDF"
+    assert min(bounds) >= 10.0, (
+        f"shipped-page entry boundary collapsed to {min(bounds):.1f}pt")
 
 
 def test_bold_label_lines_with_nested_bold_not_parsed_as_sections():
@@ -843,14 +866,17 @@ Python, Docker, Kubernetes
 
 
 def _overflow_resume_markdown() -> str:
-    """Dense fixture that reliably exceeds one page in plain spacing."""
+    """Moderately-overflowing fixture: reliably exceeds one page in plain
+    spacing, and the compact pass reclaims it back to a single page with
+    the SAFE entry-boundary spacers (two bullets per project - the 3-bullet
+    variant became a 2-page compact render after the boundary repair of
+    request 539f7c1d, i.e. it is no longer moderate overflow)."""
     projects = []
     for i in range(1, 7):
         projects.append(
             f"**Project {i} - Data Processing Platform {i}** [GitHub](https://github.com/user/project-{i}) | Python, Kafka, Docker, AWS | Jan 2025 - Mar 2025\n"
             f"- Architected event-driven pipeline processing {i}0K events per second with sub-second latency\n"
-            f"- Implemented fault-tolerant checkpointing reducing data loss from {i}% to 0 incidents\n"
-            f"- Deployed to production via CI/CD pipeline with canary releases and monitoring dashboards\n\n")
+            f"- Implemented fault-tolerant checkpointing reducing data loss from {i}% to 0 incidents\n\n")
     return (
         "# Jane Doe\n"
         "jane@example.com | github.com/janedoe | linkedin.com/in/janedoe\n\n"
@@ -900,6 +926,31 @@ def test_pdf_page_count_reads_compiled_pdf(tmp_path):
     assert two_page_tex and pdf_page_count(two_page_tex) == 2
 
 
+_OVERFLOW_TITLE_RX = re.compile(r"Project \d+ - Data Processing Platform \d+")
+
+
+def _baseline_gaps(pdf):
+    """(gap, line_above, line, page) for consecutive text baselines on every
+    page - the same pypdf visitor_text measurement used for the live-run
+    PDF forensics (request 539f7c1d)."""
+    from pypdf import PdfReader
+    out = []
+    for pno, page in enumerate(PdfReader(str(pdf)).pages):
+        merged = {}
+
+        def visit(text, cm, tm, fd, fs, _m=merged):
+            t = (text or "").strip()
+            if t:
+                y = round(tm[5], 1)
+                _m[y] = (_m.get(y, "") + " " + t).strip()
+
+        page.extract_text(visitor_text=visit)
+        ys = sorted(merged, reverse=True)
+        for i in range(1, len(ys)):
+            out.append((ys[i - 1] - ys[i], merged[ys[i - 1]], merged[ys[i]], pno))
+    return out
+
+
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
 def test_compact_render_pulls_overflow_back_to_one_page(tmp_path):
     """Enforced 1-page containment (audit): the exporter must not ship an
@@ -914,6 +965,20 @@ def test_compact_render_pulls_overflow_back_to_one_page(tmp_path):
 
     compact_pdf = latex_to_pdf(render_resume_tex(data, compact=True), tmp_path, "compact.pdf")
     assert compact_pdf and pdf_page_count(compact_pdf) == 1
+
+    # Entry-boundary repair (request 539f7c1d, Nov 8 2026): with the -4pt
+    # end-of-list spacer, the last wrapped bullet line printed straight
+    # through the NEXT entry's bold title - measured baseline distance 7.0pt
+    # vs 12.0-12.2pt for wrapped lines (visible descender overprint). Every
+    # into-title boundary must stay >= 10pt in BOTH render modes.
+    for pdf_name, mode in (("base.pdf", "base"), ("compact.pdf", "compact")):
+        boundary_gaps = [g for g, _above, line, _p in _baseline_gaps(tmp_path / pdf_name)
+                         if _OVERFLOW_TITLE_RX.search(line)]
+        assert boundary_gaps, f"{mode}: fixture project titles not found in PDF extraction"
+        worst = min(boundary_gaps)
+        assert worst >= 10.0, (
+            f"{mode}: entry boundary collapsed to {worst:.1f}pt "
+            "(<10pt means descender overprint onto the bold title)")
 
 
 def test_contact_block_does_not_swallow_custom_section_headings():
