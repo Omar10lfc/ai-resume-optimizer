@@ -141,6 +141,22 @@ Driven by the next back-to-back pair on the fixed pipeline — same FortyGuard A
 
 ---
 
+## Agent core + PDF pipeline — Nov 8 2026 (run `539f7c1d`: stale-chip laundering closed + entry-boundary overprint fix) ✅ LANDED (this session's two commits)
+
+Driven by the newest run — request `539f7c1d-9962…` (roots `01a1baec`+`f56c84aa`, 111.9s, **score 75 = ATS 100.0 / quality 38 / iter 2**, same FortyGuard JD, 771 chars). Verdicts: the score is the WORST outcome — the user's pasted step-2 context carried the PREVIOUS session's gap-chip lines verbatim under the Aegis evidence, `_split_composed_notes`'s no-vanish fallback kept them in `human_notes`, the writer shipped them as user-confirmed content (Summary + 3 Skills rows), the scrubber (notes = evidence by contract) found nothing, ATS matched the JD's own vocabulary at 100%, and the reviewer capped quality ~38; controlled replay proves code-vs-inputs: repo scrubber on the run's draft with clean chips → **6 removals**, with the EXACT runtime args (stale chips inside the 802-ch notes) → **0** (inputs poisoned, code fine). The user's "spaces between text" complaint is a second real defect: compact-pass entry boundaries measured **7.0pt** baseline distance (vs 12.0–12.2pt wrapped lines), 10pt descenders printed through bold titles ("Smart Lecture Assistant", "AI Resume Optimizer Agent") — confirmed with a PyMuPDF render. 111.9s is pure LLM latency (no salvage); the `Tool choice is required` 400 flake migrated to the ats_check semantic verifier, caught by its try/except (~2.9s lost).
+
+| # | Item | Outcome | Detail |
+|---|------|---------|--------|
+| A28 | Stale-chip gap-channel hardening (`server/runners.py` `_split_composed_notes`) | Any ASCII-bullet line (`- `/`* `) in composed notes routes to the GAP channel even when it matches no snapshot line; typed evidence keeps `•` bullets/prose | Run `539f7c1d`: stale chips stamped into the evidence channel laundered into user-confirmed fabrications shipped verbatim in Summary + Skills; safe failure direction documented (a typed `- ` note is merely omitted by the writer; classifying a chip as evidence is fabrication laundering) |
+| A29 | Scrubber notes-evidence filter (`agent/helpers.py` `scrub_unsupported_content`) | ASCII-bullet lines stripped from `human_notes` before the evidence corpus is built | Belt-and-braces under A28: chips that reach the evidence channel can no longer verify their own echoes — poisoned notes produce exactly the removals clean notes do |
+| A30 | PDF entry-boundary repair (`agent/latex_render.py` compact `\resumeItemListEnd` −4pt → +1pt; `agent/templates/resume_template.tex` base −5pt → −1pt) | Compact into-title boundaries 11.9–12.8pt (was 7.0pt), base 18.9–20.8pt; the run's own polished resume still renders 1 page compact; min gap 7.5pt = visually-clean subtitle→bullet pairs | The screenshot complaint: real glyph overprint, not styling preference — the compact end-of-list spacer collapsed bullet→next-title baselines below the 10pt-font descender clearance |
+| A31 | Suite 234 → 236 | Splitter: exact `539f7c1d` composition fixture + hardened no-snapshot contract (×3 new/updated); scrubber: notes-poisoning equivalence test (×1); LaTeX: ≥10pt into-title boundary floor in both modes + the overflow fixture rebalanced to moderate + the realistic-dense test now mirrors the exporter's base→compact shipping contract | Full suite green via `venv\Scripts\python.exe -m pytest tests -q` |
+
+**⚠️ Hazardous artifacts now**: the Nov 6 directories (`a32f30fc…` / `868e406d…`) + `Optimized_Resume (10).pdf`, AND this run's directory `%TEMP%\resume_optimizer_output\539f7c1d-9962-41bf-8612-ee3bb8482805\` (PDF/DOCX/TEX/Cover_Letter all carry the fabricated n8n/MCP/Claude-Code Summary + Skills content) — **do not send either**. The Nov 7 pair (`d8756ddf…` / `a9da3660…`) remains truthful. This round's fixes need a **FastAPI backend restart** to load; frontend/extension untouched (bundle stays `index-ejUvToFN.js`).
+
+
+---
+
 ## Phase 3 — Feature roadmap 🔲 OPEN (priority order)
 
 ### 11 🔶 Before/After diff view — extension side SHIPPED (paste mode), web/server side open
