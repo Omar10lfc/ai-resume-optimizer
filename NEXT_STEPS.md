@@ -124,6 +124,23 @@ Driven by TWO back-to-back live runs with scraped JD context with/without user n
 
 ---
 
+## Agent core — Nov 7 2026 (second run pair: honest ATS + precision fixes) ✅ LANDED (this session's two commits)
+
+Driven by the next back-to-back pair on the fixed pipeline — same FortyGuard AI Automation Intern JD (826 chars): no-context request `d8756ddf…` (roots `01a1b4cb`+`09cf51fc`, 94.9s, score 52 / ATS 33.3 / quality 80), with-context request `a9da3660…` (roots `01a1b4d1`+`1d3e1550`, 84.7s, score 54 / ATS 38.1 / quality 78). Verdicts: the score drop vs Nov 6 is NOT a regression (67/61 were fabrication-inflated — fabricated n8n/MCP bullets matched the JD's own vocabulary; honest drafts score ATS ~33–38% against an automation JD the ML/CV resume genuinely lacks, quality 80/78); the slower wall-clock is NOT the review interrupt (it adds no LLM time — the ~40s polish call is the Nov 5 best-of-2 loop, and the reviewer structured-output flake `BadRequestError 400 "Tool choice is required"` burned 41.7s/27.4s, salvaged both times by the `failed_generation` prose parser); the screenshot PDF (run B) is clean — 1 page, no overprint, every number verbatim from the user's pasted Aegis context, and both final PDFs contain zero n8n/Claude-Code/MCP (scrubber live on real runs: A removed 1 gap-echo bullet, B removed 5 bits).
+
+| # | Item | Outcome | Detail |
+|---|------|---------|--------|
+| A23 | Scrubber chip-term precision (`agent/helpers.py`) | `_significant_terms` extracts TECHNOLOGY NAMES only: capitalized or digit-bearing tokens; consecutive names in one punctuation segment join into ONE multi-word term (`claude code`, `fortyguard temperature mcp`); lowercase-only chips yield no terms | Run `09cf51fc` culled an innocent draft bullet on the chip-filler term "using" — the old every-non-stopword heuristic turned chip descriptions ('agent', 'development', 'workflows-automation', 'environments') into removal triggers; `_term_in_text` now matches multi-word terms across whitespace runs so `code` can never hit "code coverage" |
+| A24 | ATS posting-header + prose-verb stoplist (`agent/ats.py`) | Header fields (`location/months/paid/type/enables` …) and prose verbs (`interact/understand/built/internal/someone/efficiently` …) stopped; `platform`/`servers` low-signal | The tiny scraped JD's plain-text header block put 5 of the 20 weighted keywords into words NO resume can contain, depressing every honest match; the real JD now extracts 19 real keywords leading with `apis/ai/agents/temperature/mcp/claude/cursor/codex` |
+| A25 | Reviewer FEEDBACK SCOPE clause (`agent/nodes/reviewer.py`) | Grade PRESENTATION QUALITY only; never recommend adding tools/employers/metrics the evidence lacks | Salvaged reviewer prose in BOTH runs advised "explicitly mention experience with n8n / Claude Code / MCP" — advice only fabrication can follow, feeding the polish loop straight into the scrubber's removals |
+| A26 | Tripwire fraction pass-rates (`agent/helpers.py` `_METRIC_TOKEN_RE`) | `N/N` fractions flagged only when followed by benchmark/test/pass/case/check words | `150/150 benchmark passes` is metric-shaped with no %/x/ms unit — could have escaped the unevidenced-metric tripwire if the model coined it; bare "top 5/47" stays exempt, the evidenced "150/150" stays quiet |
+| A27 | Suite 229 → 234 | Chip-term shapes ×1, innocent-bullet survival ×1, multi-name true culls ×1, posting-header stoplist ×1 (literal FortyGuard JD fixture), fraction pass-rate ×1, plus anchors-test FEEDBACK SCOPE assertions | Full suite green via `venv\Scripts\python.exe -m pytest tests -q` |
+
+**⚠️ Only the Nov 6 artifacts remain hazardous** (`a32f30fc…` / `868e406d…` directories + `Optimized_Resume (10).pdf`) — the fabricated-bullet residue. This pair's artifacts (`d8756ddf…` / `a9da3660…`) are truthful-by-construction once the user re-verifies their own pasted claims. The new agent code needs a **backend server restart** to load; the extension bundle is unchanged this round (no `chrome://extensions` reload needed).
+
+
+---
+
 ## Phase 3 — Feature roadmap 🔲 OPEN (priority order)
 
 ### 11 🔶 Before/After diff view — extension side SHIPPED (paste mode), web/server side open
