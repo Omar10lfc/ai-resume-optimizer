@@ -2046,17 +2046,19 @@ def test_groq_models_status_success_reports_models(monkeypatch):
         def read(self):
             return json.dumps({"data": [
                 {"id": agent.llms._PRIMARY_MODEL},
-                {"id": "llama-3.1-8b-instant"},
+                {"id": agent.llms._FALLBACK_MODEL},
+                {"id": agent.llms._EMERGENCY_MODEL},
             ]}).encode()
 
     monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=None: FakeResponse())
     ok, message = agent.llms._groq_models_status("gsk_ok")
     assert ok is True
     assert "API reachable" in message
+    assert "missing from this account's catalog" not in message
 
 
-def test_groq_models_status_flags_unavailable_primary_model(monkeypatch):
-    """A 200 whose model list lacks the configured primary model is actionable."""
+def test_groq_models_status_flags_missing_catalog_tiers(monkeypatch):
+    """A 200 lacking any configured tier (here: all three) names each with its env override."""
     import json
 
     class FakeResponse:
@@ -2075,7 +2077,67 @@ def test_groq_models_status_flags_unavailable_primary_model(monkeypatch):
     ok, message = agent.llms._groq_models_status("gsk_ok")
     assert ok is True
     assert agent.llms._PRIMARY_MODEL in message
-    assert "not among them" in message
+    assert agent.llms._FALLBACK_MODEL in message
+    assert agent.llms._EMERGENCY_MODEL in message
+    assert "missing from this account's catalog" in message
+    assert "PRIMARY_MODEL" in message
+    assert "EMERGENCY_MODEL" in message
+
+
+def test_groq_models_status_missing_emergency_only_warns(monkeypatch):
+    """Regression (Nov 10 2026 404 incident): only the emergency tier missing.
+
+    The catalog holds the primary and fallback models but the emergency default
+    was decommissioned - the warning must name it at startup instead of letting
+    a run 404 after falling through two tiers.
+    """
+    import json
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"data": [
+                {"id": agent.llms._PRIMARY_MODEL},
+                {"id": agent.llms._FALLBACK_MODEL},
+            ]}).encode()
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=None: FakeResponse())
+    ok, message = agent.llms._groq_models_status("gsk_ok")
+    assert ok is True
+    assert "missing from this account's catalog" in message
+    assert agent.llms._EMERGENCY_MODEL in message
+    assert "EMERGENCY_MODEL" in message
+    assert agent.llms._PRIMARY_MODEL not in message
+
+
+def test_create_llm_fast_fallback_carries_api_key():
+    """Regression: the fast chain's emergency fallback honors a pinned BYO key.
+
+    Without the passthrough, a client key forced the first two tiers to bill the
+    client but silently dropped back onto the server's own key on emergency.
+    """
+    byo_key = "gsk_byo_client_key"
+    chain = agent.llms._create_llm_fast(temperature=0.3, api_key=byo_key)
+
+    def _secret(model):
+        key = getattr(model, "groq_api_key", None)
+        return getattr(key, "get_secret_value", lambda: key)()
+
+    fallbacks = getattr(chain, "fallbacks", [])
+    assert fallbacks, "expected an emergency fallback attached to the fast chain"
+
+    fast, fallback = chain, fallbacks[-1]
+    assert _secret(fast) == byo_key
+    assert _secret(fallback) == byo_key
+    fallback_model = getattr(fallback, "model_name", None) or getattr(fallback, "model", "")
+    assert fallback_model == agent.llms._EMERGENCY_MODEL
 
 
 # ==========================================

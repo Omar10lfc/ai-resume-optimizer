@@ -12,6 +12,33 @@ from .config import _PRIMARY_MODEL, _FALLBACK_MODEL, _EMERGENCY_MODEL
 logger = logging.getLogger(__name__)
 
 
+def _catalog_gap_warning(ids: list[str]) -> str | None:
+    """Soft warning listing every configured tier absent from the live catalog.
+
+    All three tiers are validated, not just the primary: the emergency tier is
+    only reached after two upstream failures, so a decommissioned emergency
+    model used to surface as a mid-run 404 instead of this actionable startup
+    message (Nov 10 2026 incident: 'llama-3.1-8b-instant' was pulled from the
+    catalog while still the EMERGENCY default).
+    """
+    if not ids:
+        return None
+    missing = [
+        f"{label} '{model}' (set {env_name})"
+        for label, env_name, model in (
+            ("primary", "PRIMARY_MODEL", _PRIMARY_MODEL),
+            ("fallback", "FALLBACK_MODEL", _FALLBACK_MODEL),
+            ("emergency", "EMERGENCY_MODEL", _EMERGENCY_MODEL),
+        )
+        if model not in ids
+    ]
+    if not missing:
+        return None
+    return (f"API reachable ({len(ids)} models), but missing from this account's "
+            f"catalog: {', '.join(missing)}. Update the *_MODEL overrides in .env "
+            f"to models the account can access.")
+
+
 def _groq_models_status(key: str, timeout_seconds: float = 8.0) -> tuple[bool, str]:
     """One cheap REST call (GET /models) - no generation tokens are spent.
 
@@ -35,10 +62,9 @@ def _groq_models_status(key: str, timeout_seconds: float = 8.0) -> tuple[bool, s
             with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 if response.status == 200:
                     ids = [m.get("id", "") for m in json.load(response).get("data", [])]
-                    if ids and _PRIMARY_MODEL not in ids:
-                        return True, (f"API reachable ({len(ids)} models), but primary model "
-                                      f"'{_PRIMARY_MODEL}' is not among them - set PRIMARY_MODEL "
-                                      f"to a model your account can access.")
+                    gap = _catalog_gap_warning(ids)
+                    if gap:
+                        return True, gap
                     return True, f"API reachable ({len(ids)} models)."
                 return True, f"API reachable (HTTP {response.status})."
         except urllib.error.HTTPError as e:
@@ -64,10 +90,9 @@ def _groq_models_status(key: str, timeout_seconds: float = 8.0) -> tuple[bool, s
             if resp.status_code == 200:
                 data = resp.json()
                 ids = [m.get("id", "") for m in data.get("data", [])]
-                if ids and _PRIMARY_MODEL not in ids:
-                    return True, (f"API reachable ({len(ids)} models), but primary model "
-                                  f"'{_PRIMARY_MODEL}' is not among them - set PRIMARY_MODEL "
-                                  f"to a model your account can access.")
+                gap = _catalog_gap_warning(ids)
+                if gap:
+                    return True, gap
                 return True, f"API reachable ({len(ids)} models)."
             if resp.status_code in (401, 403):
                 return False, f"GROQ_API_KEY rejected by the API (HTTP {resp.status_code}) - check the key in .env."
@@ -130,7 +155,13 @@ def _create_llm_fast(temperature: float, api_key: str | None = None):
     if api_key:
         fast_kwargs["groq_api_key"] = api_key
     fast = ChatGroq(**fast_kwargs)
-    fallback = ChatGroq(model=_EMERGENCY_MODEL, temperature=temperature, max_retries=2)
+    # Same BYO-key passthrough as _create_llm's emergency tier: without it a
+    # pinned client key would silently launder fallback spend onto the server
+    # key.
+    fallback_kwargs = dict(model=_EMERGENCY_MODEL, temperature=temperature, max_retries=2)
+    if api_key:
+        fallback_kwargs["groq_api_key"] = api_key
+    fallback = ChatGroq(**fallback_kwargs)
     return fast.with_fallbacks([fallback], exceptions_to_handle=_RETRYABLE_EXCEPTIONS)
 
 

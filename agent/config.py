@@ -11,7 +11,10 @@ load_dotenv()
 # --- Model Configuration (env-overridable) ---
 _PRIMARY_MODEL = os.environ.get("PRIMARY_MODEL", "openai/gpt-oss-120b")
 _FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "openai/gpt-oss-20b")
-_EMERGENCY_MODEL = os.environ.get("EMERGENCY_MODEL", "llama-3.1-8b-instant")
+# 'llama-3.1-8b-instant' was decommissioned from the Groq catalog (Nov 10 2026 -
+# live 404 'model_not_found' once a run fell through primary+fallback).
+# Verified present on the live catalog: 'qwen/qwen3.8-27b'.
+_EMERGENCY_MODEL = os.environ.get("EMERGENCY_MODEL", "qwen/qwen3.8-27b")
 
 # --- Output Directories & Persistence ---
 OUTPUT_ROOT = Path(tempfile.gettempdir()) / "resume_optimizer_output"
