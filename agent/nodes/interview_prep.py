@@ -5,6 +5,9 @@ from ..ats import _job_brief
 from ..helpers import _safe_print, _strip_code_fences
 from langchain_core.messages import HumanMessage, SystemMessage
 
+# Bump when the interview-prep prompt changes materially.
+INTERVIEW_PREP_PROMPT_VERSION = "interview-prep@1"
+
 
 def interview_prep_node(state: AgentState):
     _safe_print(f"\n--- NODE 6: GENERATING INTERVIEW PREP QUESTIONS ---")
@@ -60,4 +63,5 @@ def interview_prep_node(state: AgentState):
     ])
     _safe_print(f"   Generated interview prep content")
 
-    return {"interview_questions": _strip_code_fences(response.content)}
+    return {"interview_questions": _strip_code_fences(response.content),
+            "prompt_versions": {"interview-prep": INTERVIEW_PREP_PROMPT_VERSION}}

@@ -509,6 +509,42 @@ def test_step2_emits_integrity_warning_before_result(client, fake_llms, monkeypa
     assert kinds.index("warning") == len(kinds) - 2      # directly precedes result
 
 
+def test_step2_result_payload_carries_integrity_and_versions(client, fake_llms, monkeypatch):
+    """QW1/QW2/QW3: the final result payload carries the forensic prompt
+    stamps, the scrubber's removal list, and the writer's declined requests
+    (the ResultsDashboard renders them as the Integrity tab)."""
+    from agent.nodes.improver import IMPROVER_PROMPT_VERSION
+    from agent.nodes.cover_letter import COVER_LETTER_PROMPT_VERSION
+    from agent.nodes.interview_prep import INTERVIEW_PREP_PROMPT_VERSION
+
+    class InventingDecliningLLM(FakeCreativeLLM):
+        def invoke(self, messages):
+            return AIMessage(content="## Skills\nPython, Docker\n## Experience\n"
+                                     "Built ML pipelines. Cut manual data-ingestion effort by 40%.\n\n"
+                                     "DECLINED: Experience with n8n")
+
+    monkeypatch.setattr(agent.llms, "llm_creative", InventingDecliningLLM())
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": "- I used k8s at work"})
+    events = parse_sse(r.text)
+    assert events[-1][0] == "result"
+    payload = events[-1][1]
+
+    assert payload["declined_requests"] == ["Experience with n8n"]
+    # The fabricated 40% was deterministically scrubbed -> it lands in the
+    # removals list ("what we removed & why"), not silently in the resume.
+    assert any("40%" in m for m in payload["removals"])
+    assert "40%" not in payload["optimized_resume"]
+
+    pv = payload["prompt_versions"]
+    assert pv["improver"] == IMPROVER_PROMPT_VERSION
+    assert pv["cover-letter"] == COVER_LETTER_PROMPT_VERSION
+    assert pv["interview-prep"] == INTERVIEW_PREP_PROMPT_VERSION
+    # Both fan-out siblings ship their own stamp (reducer merge, not clobber).
+    assert pv["polisher"]
+
+
 # ==========================================
 # Queue semantics (Gradio queue port)
 # ==========================================

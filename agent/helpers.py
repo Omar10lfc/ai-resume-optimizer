@@ -670,6 +670,140 @@ def scrub_unsupported_content(optimized_text: str, resume_text: str,
     return _tame_unicode_bullets(text), removals
 
 
+# ==========================================
+# Section utilities (MR1 section-targeted polish) + QW2 decline protocol
+# ==========================================
+
+# Reviewer feedback section vocabulary -> canonical draft headers of the
+# improver template. Anything outside this map ("formatting", "structure",
+# "overall tone") cannot be merged surgically, so the polisher falls back
+# to its full-rewrite mode instead.
+SECTION_ALIASES: dict[str, str] = {
+    "summary": "Professional Summary",
+    "professional summary": "Professional Summary",
+    "profile": "Professional Summary",
+    "skills": "Technical Skills",
+    "technical skills": "Technical Skills",
+    "experience": "Experience",
+    "work experience": "Experience",
+    "employment": "Experience",
+    "projects": "Projects",
+    "project": "Projects",
+    "education": "Education",
+    "certifications": "Certifications",
+    "certificates": "Certifications",
+    "licenses": "Certifications",
+}
+
+
+def canonical_feedback_section(name: str) -> Optional[str]:
+    """Maps a reviewer's feedback-section name to the canonical draft
+    header ('Professional Summary' ... 'Certifications'), or None when the
+    target is cross-cutting/unknown and cannot be addressed surgically."""
+    key = " ".join(str(name or "").strip().lower().split())
+    if not key:
+        return None
+    return SECTION_ALIASES.get(key)
+
+
+def split_markdown_sections(md: str) -> list[tuple[Optional[str], str, str]]:
+    """Splits a resume draft into (canonical_name, header_line, body) blocks
+    in document order. canonical_name is None for headers outside the known
+    vocabulary. Content BEFORE the first '## ' header (the candidate identity
+    block) is never returned - the section polish leaves it untouched."""
+    blocks: list[tuple[Optional[str], str, str]] = []
+    header_line: Optional[str] = None
+    canonical: Optional[str] = None
+    body: list[str] = []
+    for line in md.splitlines():
+        if line.startswith("## "):
+            if header_line is not None:
+                blocks.append((canonical, header_line, "\n".join(body).strip("\n")))
+            header_line = line.rstrip()
+            canonical = canonical_feedback_section(line[3:])
+            body = []
+        elif header_line is not None:
+            body.append(line)
+    if header_line is not None:
+        blocks.append((canonical, header_line, "\n".join(body).strip("\n")))
+    return blocks
+
+
+def merge_rewritten_sections(md: str, rewrites: dict[str, str]) -> tuple[str, list[str]]:
+    """Deterministically merges section rewrites (canonical name -> new body,
+    header line EXCLUDED) into the draft: each targeted section keeps its
+    ORIGINAL header line (project title/link lines must survive byte-identical)
+    and every other byte of the document is preserved exactly.
+
+    Returns (merged_text, replaced_names). When a rewrite does not find
+    exactly one matching block (unknown name, duplicate section, ...), the
+    merge is refused outright -> (md, []) - the caller falls back to the
+    full-rewrite pass rather than shipping a partial merge.
+    """
+    if not rewrites:
+        return md, []
+    hits = list(re.finditer(r"(?m)^##[ \t].*$", md))
+    if not hits:
+        return md, []
+    pending = dict(rewrites)
+    replaced: list[str] = []
+    pieces: list[str] = [md[: hits[0].start()]]
+    for i, m in enumerate(hits):
+        end = hits[i + 1].start() if i + 1 < len(hits) else len(md)
+        raw = md[m.start():end]
+        parts = raw.split("\n", 1)
+        header_line = parts[0].rstrip()
+        canonical = canonical_feedback_section(
+            re.sub(r"^##[ \t]+", "", header_line))
+        if canonical in pending:
+            separator = raw[len(parts[0]) + 1:]
+            body_sep = separator[len(separator.rstrip()):]  # blank lines before the next header
+            pieces.append(header_line + "\n" + pending.pop(canonical).strip() + body_sep)
+            replaced.append(canonical)
+        else:
+            pieces.append(raw)
+    if len(replaced) != len(rewrites) or pending:
+        # Partial match would ship an inconsistent mix - refuse wholesale.
+        return md, []
+    return "".join(pieces), replaced
+
+
+# QW2 decline protocol: the writer's own admission that a requested item is
+# unsupported. Lines are stripped from the draft before any consumer (ATS,
+# LaTeX, PDF) can see them; the list surfaces to the user via the results UI.
+_DECLINED_LINE_RE = re.compile(r"[ \t]*DECLINED:[ \t]*(.+?)[ \t]*$", re.IGNORECASE)
+
+
+def extract_declined_requests(text: str) -> tuple[str, list[str]]:
+    """Removes the writer's DECLINED: lines from a draft and returns them as
+    (clean_text, declined_requests) - order-preserving, deduplicated.
+    A draft with no DECLINED: lines is returned untouched (byte-identical)."""
+    declined: list[str] = []
+    if not text or "DECLINED:" not in text:
+        return text, []
+    kept_lines: list[str] = []
+    for line in text.splitlines():
+        m = _DECLINED_LINE_RE.match(line)
+        if not m:
+            kept_lines.append(line)
+            continue
+        item = m.group(1).strip().rstrip("*_")
+        if item and item not in declined:
+            declined.append(item)
+    if not declined:
+        return text, []
+    return "\n".join(kept_lines), declined
+
+
+def accumulate_unique(existing: Optional[list], added: Optional[list]) -> list:
+    """Order-preserving accumulation of state list values across passes."""
+    out = list(existing or [])
+    for item in (added or []):
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
 def _sanitize_html_for_pdf(html: str) -> str:
     """Strip dangerous tags and attributes from HTML before passing to xhtml2pdf.
 

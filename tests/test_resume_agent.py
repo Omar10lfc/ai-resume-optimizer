@@ -515,20 +515,28 @@ class SeqCreativeLLM:
         return AIMessage(content=self._contents[idx])
 
 
-def _run_with_drafts(drafts, monkeypatch, reviewer_score=60, feedback="Add metrics."):
+def _run_with_drafts(drafts, monkeypatch, reviewer_score=60, feedback="Add metrics.",
+                     sections=()):
     """Reviewer 60 keeps the composite under the 80 threshold so the loop
     actually runs a second iteration under the new default cap. Generic
     feedback keeps the rewriter grounded (improver embeds it as guidance).
     The evidence text mirrors the fixture drafts' skills: since the
     deterministic fabrication scrubber (runs a32f30fc/868e406d) removes
     gap-chip echoes the evidence lacks, these routing-only tests would lose
-    their fixture content otherwise."""
+    their fixture content otherwise.
+
+    sections (optional) feeds the reviewer's structured section targeting
+    (MR1): the polisher picks its section-targeted or full-rewrite mode
+    from it.
+    """
 
     class FixedReviewer(FakeStrictLLM):
         def with_structured_output(self, schema):
             class Structured:
                 def invoke(self, messages):
-                    return agent.ReviewOutput(score=reviewer_score, feedback=feedback)
+                    return agent.ReviewOutput(score=reviewer_score,
+                                              feedback=feedback,
+                                              sections=list(sections))
             return Structured()
 
     monkeypatch.setattr(agent.llms, "llm_strict", FixedReviewer())
@@ -612,6 +620,174 @@ def test_polish_pass_cannot_regress_below_first_draft(fake_llms, monkeypatch):
 
     assert seq.calls == 2
     assert result["optimized_resume"] == good
+
+
+# ==========================================
+# QW1: prompt version stamps
+# ==========================================
+
+def test_prompt_versions_stamped_across_full_graph(fake_llms):
+    """Every LLM node contributes exactly one stamp (QW1), merged through
+    the reducer channel: 'which prompt produced this run' is one lookup."""
+    from agent.nodes.improver import IMPROVER_PROMPT_VERSION
+    from agent.nodes.polisher import POLISHER_FULL_VERSION
+    from agent.nodes.reviewer import REVIEWER_PROMPT_VERSION
+    from agent.nodes.scanner import SCANNER_PROMPT_VERSION
+    from agent.nodes.ats_check import ATS_SEMANTIC_PROMPT_VERSION
+    from agent.nodes.cover_letter import COVER_LETTER_PROMPT_VERSION
+    from agent.nodes.interview_prep import INTERVIEW_PREP_PROMPT_VERSION
+
+    # The interactive graph carries the scanner; step 1 interrupts before
+    # the improver, so the reviewer feedback drives the polish from there.
+    config = {"configurable": {"thread_id": "pv-stamps-1"}}
+    agent.agent_app.invoke(_base_inputs(), config=config)
+    agent.agent_app.update_state(config, {"human_notes": "used k8s at work",
+                                          "missing_skills": "- Kubernetes"})
+    result = agent.agent_app.invoke(None, config=config)
+    pv = result["prompt_versions"]
+    assert pv["scanner"] == SCANNER_PROMPT_VERSION
+    assert pv["improver"] == IMPROVER_PROMPT_VERSION
+    assert pv["reviewer"] == REVIEWER_PROMPT_VERSION
+    # The fake reviewer's feedback triggers exactly one polish pass; without
+    # structured section targets the polisher runs its full-rewrite mode.
+    assert pv["polisher"] == POLISHER_FULL_VERSION
+    assert pv["ats-semantic"] == ATS_SEMANTIC_PROMPT_VERSION
+    # Fan-out siblings must BOTH survive the concurrent writes.
+    assert pv["cover-letter"] == COVER_LETTER_PROMPT_VERSION
+    assert pv["interview-prep"] == INTERVIEW_PREP_PROMPT_VERSION
+
+
+# ==========================================
+# MR1: section utilities + section-targeted polish
+# ==========================================
+
+def test_split_markdown_sections_returns_canonical_blocks():
+    md = ("# Sam\nCity | 555 | x@c.io\n\n"
+          "## Professional Summary\nGeneric text.\n"
+          "## Experience\nBuilt pipelines with Python.")
+    blocks = agent.split_markdown_sections(md)
+    assert [b[0] for b in blocks] == ["Professional Summary", "Experience"]
+    assert blocks[0][1] == "## Professional Summary"
+    assert blocks[0][2] == "Generic text."
+    assert blocks[1][2] == "Built pipelines with Python."
+
+
+def test_split_markdown_sections_flags_unknown_headers_and_skips_preamble():
+    md = "## Projects\nDemo for ML.\n## Something Obscure\nKept as-is."
+    blocks = agent.split_markdown_sections(md)
+    assert [b[0] for b in blocks] == ["Projects", None]
+
+
+def test_canonical_feedback_section_maps_aliases_and_rejects_crosscutting():
+    assert agent.canonical_feedback_section(" Summary ") == "Professional Summary"
+    assert agent.canonical_feedback_section("work experience") == "Experience"
+    assert agent.canonical_feedback_section("Technical Skills") == "Technical Skills"
+    assert agent.canonical_feedback_section("certificates") == "Certifications"
+    assert agent.canonical_feedback_section("Formatting") is None
+    assert agent.canonical_feedback_section("overall tone") is None
+    assert agent.canonical_feedback_section("") is None
+
+
+def test_merge_rewritten_sections_keeps_rest_byte_identical():
+    md = ("# Sam\nCity | 555 | x@c.io\n"
+          "## Professional Summary\nGeneric text.\n\n"
+          "## Experience\nBuilt pipelines with Python.\n\n"
+          "## Education\nUni | Degree.\n")
+    summary = "Machine Learning engineer shipping Python services with Docker."
+    merged, replaced = agent.merge_rewritten_sections(md, {"Professional Summary": summary})
+    assert replaced == ["Professional Summary"]
+    # The identity block, untouched sections and their separators survive
+    # byte-identical; only the summary body changed.
+    assert merged == (md.replace("Generic text.", summary))
+    # Original header line survives (project title/link consistency).
+    assert "## Professional Summary" in merged
+
+
+def test_merge_rewritten_sections_preserves_header_and_separator():
+    md = "## Projects\n**Demo** [Live Demo](https://x) | Tech | 2024\nBody bullet."
+    merged, replaced = agent.merge_rewritten_sections(
+        md, {"Projects": "Rewritten body only."})
+    assert replaced == ["Projects"]
+    # The merge keeps the ORIGINAL "## Projects" header line (byte-identical)
+    # and swaps only the body; the caller owns what the new body contains.
+    assert merged == "## Projects\nRewritten body only."
+    assert "[Live Demo](https://x)" not in merged   # old body is gone with the rewrite
+
+
+def test_polisher_section_gate_rejects_rewrites_that_drop_links():
+    from agent.nodes.polisher import _rewrite_kept_links
+    old = "**Demo** [Live Demo](https://x) [GitHub](https://g) | Tech\n- Bullet"
+    assert _rewrite_kept_links(old, old)          # identity passes
+    assert _rewrite_kept_links(
+        old, "**Demo** [Live Demo](https://x) [GitHub](https://g) | Tech\n- Sharper phrasing")
+    assert not _rewrite_kept_links(old, "Plain bullet with no links at all.")
+    assert _rewrite_kept_links("", "New [link](https://n)")   # vacuous on empty original
+
+
+def test_merge_rewritten_sections_refuses_partial_match():
+    md = "## Skills\nPython.\n## Experience\nWork."
+    merged, replaced = agent.merge_rewritten_sections(md, {"Education": "Uni."})
+    assert merged == md
+    assert replaced == []
+
+
+def test_polisher_targets_reviewer_sections_and_merges_deterministically(fake_llms, monkeypatch):
+    """Reviewer targets 'Summary' -> the polisher makes ONE small section
+    call and code merges it; every other byte of the draft is unchanged."""
+    draft = ("# Sam\nCity | x@c.io\n"
+             "## Professional Summary\nGeneric summary text.\n"
+             "## Experience\nBuilt Python services on Kubernetes with Docker.")
+    reworked_summary = ("## Professional Summary\n"
+                        "Machine Learning engineer shipping Python services "
+                        "with Docker and Kubernetes.")
+    result, seq = _run_with_drafts(
+        [draft, reworked_summary], monkeypatch, reviewer_score=85,
+        sections=["Summary"])
+
+    assert seq.calls == 2                          # draft 1 + one section call
+    assert result["optimized_resume"].startswith("# Sam\nCity | x@c.io\n")
+    assert "Machine Learning engineer shipping Python services" in result["optimized_resume"]
+    # Untouched section survives byte-identical.
+    assert "## Experience\nBuilt Python services on Kubernetes with Docker." \
+        in result["optimized_resume"]
+    assert result["polish_sections_targeted"] == ["Professional Summary"]
+
+
+def test_polisher_falls_back_to_full_rewrite_without_addressable_sections(fake_llms, monkeypatch):
+    """Cross-cutting reviewer feedback ('Formatting') cannot be merged
+    surgically -> the polisher reuses the improver's full-rewrite chain."""
+    good = ("## Professional Summary\nFine.\n## Skills\nPython, Docker, Kubernetes\n"
+            "## Experience\nBuilt Python services on Kubernetes with Docker.")
+    polished = ("## Professional Summary\nSharper.\n## Skills\nPython, Docker, Kubernetes\n"
+                "## Experience\nRebuilt Python services on Kubernetes with Docker.")
+    result, seq = _run_with_drafts(
+        [good, polished], monkeypatch, reviewer_score=85, sections=["Formatting"])
+
+    assert seq.calls == 2                          # full rewrite, not a section call
+    assert result["optimized_resume"] == polished
+
+
+def test_polisher_full_rewrite_mode_is_stamped(fake_llms, monkeypatch):
+    good = "## Skills\nPython\n## Experience\nBuilt Python services with Kubernetes."
+    result, seq = _run_with_drafts(
+        [good, "## Skills\nPython, Docker\n## Experience\nBuilt Python services with Docker."],
+        monkeypatch)
+    assert seq.calls == 2
+    assert result["prompt_versions"]["polisher"] == "polisher-full@1"
+
+
+def test_polisher_refused_merge_falls_back_to_full_rewrite(fake_llms, monkeypatch):
+    """An unusable section answer (blank) refuses the merge; the pass is
+    then completed by a full rewrite instead of being lost."""
+    draft = "# Sam\n## Professional Summary\nGeneric.\n## Skills\nPython."
+    polished = "# Sam\n## Professional Summary\nSharper.\n## Skills\nPython."
+    result, seq = _run_with_drafts(
+        [draft, "   ", polished], monkeypatch, reviewer_score=85,
+        sections=["Summary"])
+
+    assert seq.calls == 3                          # draft + failed target + full rewrite
+    assert result["optimized_resume"] == polished
+    assert result["prompt_versions"]["polisher"] == "polisher-full@1"
 
 
 # ==========================================
@@ -733,6 +909,54 @@ def test_improver_never_ships_fully_scrubbed_empty_draft(monkeypatch):
     assert out["optimized_resume"].strip()
     assert any("40%" in w or "55%" in w or "kept draft" in w
                for w in out["guardrail_warnings"])
+
+
+def test_improver_decline_protocol_records_and_strips(monkeypatch):
+    """QW2: the writer answers unsupported requests with DECLINED: lines that
+    are stripped from the draft and surfaced as declined_requests, so an
+    omission is never silent (and never fabricated)."""
+    from agent.nodes.improver import improver_node, IMPROVER_PROMPT_VERSION
+
+    state = {
+        "iteration": 0,
+        "optimized_resume": "",
+        "resume_text": "# Omar\n## Experience\nBuilt pipelines, cutting latency by 40%.",
+        "job_text": "ML platform engineer role.",
+        "human_notes": "",
+        "missing_skills": "- Kubernetes",
+        "feedback": None,
+    }
+
+    class DecliningLLM:
+        def invoke(self, messages):
+            prompt = messages[-1].content
+            assert "DECLINE PROTOCOL" in prompt     # the clause ships with the prompt
+            return AIMessage(content="# Omar\n## Experience\n"
+                                     "- Built pipelines, cutting latency by 40%.\n\n"
+                                     "DECLINED: Experience with n8n\n"
+                                     "DECLINED: 3x throughput claims\n")
+
+    monkeypatch.setattr(agent.llms, "llm_creative", DecliningLLM())
+    out = improver_node(state)
+    assert "DECLINED" not in out["optimized_resume"]
+    assert "40%" in out["optimized_resume"]
+    assert out["declined_requests"] == ["Experience with n8n", "3x throughput claims"]
+    assert out["prompt_versions"] == {"improver": IMPROVER_PROMPT_VERSION}
+
+
+def test_extract_declined_requests_variants():
+    text, declined = agent.extract_declined_requests(
+        "# Name\n## Skills\nPython\n\nDECLINED: Terraform basics\nDECLINED: Terraform basics")
+    assert declined == ["Terraform basics"]          # deduplicated
+    assert text.strip() == "# Name\n## Skills\nPython"
+    untouched, empty = agent.extract_declined_requests("# Name\n## Skills\nPython")
+    assert empty == [] and untouched == "# Name\n## Skills\nPython"
+
+def test_extract_declined_requests_strips_mid_document_lines():
+    cleaned, declined = agent.extract_declined_requests(
+        "## Experience\n- Job one.\nDECLINED: Docker certification\n- Job two.")
+    assert declined == ["Docker certification"]
+    assert cleaned == "## Experience\n- Job one.\n- Job two."
 
 
 # ==========================================

@@ -188,6 +188,13 @@ def _extract_results(final_state: dict) -> dict:
         or "No interview questions generated.",
         "ats_percentage": ats_pct,
         "artifacts": artifacts,
+        # QW3: the integrity channels the results UI renders as a dedicated
+        # view (the SSE "integrity check" warning stays as the live banner);
+        # QW1/QW2: forensic prompt stamps + the writer's declined requests.
+        "removals": final_state.get("scrub_removals") or [],
+        "unevidenced_metrics": final_state.get("unevidenced_metrics") or [],
+        "declined_requests": final_state.get("declined_requests") or [],
+        "prompt_versions": final_state.get("prompt_versions") or {},
         "weights": {
             "ats": agent_config.ATS_SCORE_WEIGHT,
             "llm": agent_config.LLM_SCORE_WEIGHT,
@@ -352,8 +359,17 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
             yield {"type": "error", "message": f"Optimization failed: {e}"}
             return
 
+        # Reducer channels (prompt_versions) merge across concurrent node
+        # writes - the in-loop delta accumulation above is last-writer-wins,
+        # so those keys must be pulled from the authoritative final snapshot
+        # or the parallel cover_letter / interview_prep stamps would clobber
+        # each other (and the reviewer/improver entries).
+        snapshot = agent_app.get_state(config)
+        merged_versions = (snapshot.values or {}).get("prompt_versions")
+        if merged_versions:
+            final_state["prompt_versions"] = merged_versions
+
         if not final_state:
-            snapshot = agent_app.get_state(config)
             final_state = snapshot.values or {}
 
         # Score + failure feedback on the pinned trace root. Degraded runs become

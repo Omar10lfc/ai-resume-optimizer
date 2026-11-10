@@ -6,6 +6,9 @@ from ..ats import compute_ats_match, apply_semantic_matches
 from ..helpers import _safe_print, _safe_truncate
 from langchain_core.messages import HumanMessage, SystemMessage
 
+# Bump when the semantic-verification prompt or policy changes materially.
+ATS_SEMANTIC_PROMPT_VERSION = "ats-semantic@1"
+
 
 def _semantic_verify_missing(resume_text: str, missing_keywords: list[str],
                              max_keywords: int = 8) -> set[str]:
@@ -81,6 +84,7 @@ def ats_check_node(state: AgentState):
             "optimized_resume": best["optimized_resume"],
             "llm_quality_score": best["llm_quality_score"],
             "best_result": best,
+            "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
         }
 
     return {
@@ -88,4 +92,5 @@ def ats_check_node(state: AgentState):
         "ats_percentage": result["percentage"],
         "score": composite,
         "best_result": best,
+        "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
     }

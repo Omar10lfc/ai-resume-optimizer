@@ -2,6 +2,7 @@
 from .loader import loader_node
 from .scanner import scanner_node
 from .improver import improver_node
+from .polisher import polisher_node
 from .reviewer import reviewer_node
 from .ats_check import ats_check_node
 from .cover_letter import cover_letter_node
@@ -12,6 +13,7 @@ __all__ = [
     "loader_node",
     "scanner_node",
     "improver_node",
+    "polisher_node",
     "reviewer_node",
     "ats_check_node",
     "cover_letter_node",

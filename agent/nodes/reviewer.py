@@ -6,6 +6,11 @@ from .. import llms as _llms
 from ..helpers import _safe_print, _safe_truncate, _strip_markdown_for_review
 from langchain_core.messages import HumanMessage, SystemMessage
 
+# Bump when the review prompt or its output schema changes materially.
+# review@2: adds the structured "sections" answer for the polisher's
+# section-targeted mode (MR1).
+REVIEWER_PROMPT_VERSION = "reviewer@2"
+
 # Trace evidence (Oct 2026, export runs-all-20261021): the Reviewer's structured
 # output folds with a "Tool choice is required, but model did not call a tool"
 # BadRequestError (code tool_use_failed). Trace 01a15f6d proved the failure is
@@ -194,6 +199,14 @@ def reviewer_node(state: AgentState):
     {_untrusted('RESUME (flattened plain-text view of the rendered document)', _strip_markdown_for_review(state['optimized_resume']))}
 
     Provide the combined weighted quality score and one specific sentence of feedback to improve it.
+
+    SECTION TARGETING (mechanical follow-up, code assembles the document): in
+    "sections", list which resume sections your feedback addresses, choosing
+    ONLY from this fixed vocabulary (as many as apply):
+    Professional Summary, Technical Skills, Experience, Projects, Education,
+    Certifications. Return nothing when the feedback is general, about
+    formatting/length, or spans every section - the code then rewrites the
+    whole document, and names outside the vocabulary have the same effect.
     """
 
     messages = [
@@ -209,8 +222,12 @@ def reviewer_node(state: AgentState):
             _safe_print(f"-> Feedback: {result.feedback}")
             if attempt > 1:
                 _safe_print(f"-> (recovered on attempt {attempt}/{_REVIEW_ATTEMPTS})")
+            if result.sections:
+                _safe_print(f"-> Feedback targets: {', '.join(result.sections)}")
             return {"llm_quality_score": result.score, "feedback": result.feedback,
-                    "review_failed": False}
+                    "feedback_sections": [str(s) for s in result.sections],
+                    "review_failed": False,
+                    "prompt_versions": {"reviewer": REVIEWER_PROMPT_VERSION}}
         except Exception as e:
             last_error = e
             # Content-shaped failure (tool call folded, prose exists): salvage
@@ -220,7 +237,9 @@ def reviewer_node(state: AgentState):
             if salvaged is not None:
                 _safe_print(f"-> Salvaged score from failed generation: {salvaged.score}/100")
                 return {"llm_quality_score": salvaged.score, "feedback": salvaged.feedback,
-                        "review_failed": False}
+                        "feedback_sections": [],
+                        "review_failed": False,
+                        "prompt_versions": {"reviewer": REVIEWER_PROMPT_VERSION}}
             _safe_print(f"   [Warning] Structured output attempt {attempt}/{_REVIEW_ATTEMPTS} failed: {e}")
 
     _safe_print(f"   [Warning] Review failed after {_REVIEW_ATTEMPTS} attempts. Flagging review as failed.")

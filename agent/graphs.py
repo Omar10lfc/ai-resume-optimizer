@@ -6,7 +6,7 @@ from .config import SCORE_THRESHOLD, MAX_ITERATIONS, CHECKPOINTER_DB_PATH
 from .state import AgentState
 from .tracing import TRACE_CALLBACKS
 from .nodes import (
-    loader_node, scanner_node, improver_node, reviewer_node,
+    loader_node, scanner_node, improver_node, polisher_node, reviewer_node,
     ats_check_node, cover_letter_node, interview_prep_node,
     pdf_exporter_node,
 )
@@ -50,7 +50,11 @@ def should_continue(state: AgentState) -> str | list[str]:
 def _add_optimization_core(g: StateGraph):
     """Shared improver -> reviewer -> ats_check loop + fan-out + export wiring."""
     g.add_node("improver", improver_node)
-    g.add_node("polisher", improver_node)
+    # The polisher is deliberately a DIFFERENT function with the same read/
+    # write contract as the improver (best-of guard + tests depend on the
+    # state keys). MR1: it defaults to section-targeted rewrites merged
+    # deterministically, falling back to the improver's full-rewrite chain.
+    g.add_node("polisher", polisher_node)
     g.add_node("reviewer", reviewer_node)
     g.add_node("ats_check", ats_check_node)
     g.add_node("cover_letter", cover_letter_node)

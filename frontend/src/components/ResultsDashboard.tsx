@@ -12,6 +12,8 @@ import {
   Sparkle,
   Lightbulb,
   ArrowsLeftRight,
+  ShieldWarning,
+  Prohibit,
 } from "@phosphor-icons/react";
 import type { OptimizationResult } from "../types";
 import { resolveArtifactUrl } from "../api";
@@ -19,7 +21,7 @@ import { ScoreGauge } from "./ScoreGauge";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 
-type TabId = "resume" | "cover" | "ats" | "interview";
+type TabId = "resume" | "cover" | "ats" | "interview" | "integrity";
 
 interface ResultsDashboardProps {
   result: OptimizationResult;
@@ -68,6 +70,17 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   const { copied, copy } = useCopyFeedback();
   const tabRefs = useRef(new Map<TabId, HTMLButtonElement | null>());
 
+  // The Integrity tab only exists when this run actually has integrity
+  // content (QW2/QW3): removals, declined requests, or metric findings.
+  const integrityList = [
+    ...(result.removals ?? []),
+    ...(result.declined_requests ?? []),
+    ...(result.unevidenced_metrics ?? []),
+  ];
+  const effectiveTabs = integrityList.length > 0
+    ? [...TABS, { id: "integrity" as TabId, label: "Integrity", icon: ShieldWarning }]
+    : TABS;
+
   // Artifact URLs resolve against the configured backend base. Resolution is
   // a string build (no network), so links may point at the raw relative path
   // immediately and are replaced in place — no skeletons needed, no shift.
@@ -88,10 +101,10 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
 
   // ARIA tablist: roving tabindex with arrow keys, Home/End support.
   const onTablistKeyDown = (e: React.KeyboardEvent) => {
-    const idx = TABS.findIndex((t) => t.id === activeTab);
+    const idx = effectiveTabs.findIndex((t) => t.id === activeTab);
     const move = (dir: number) => {
       e.preventDefault();
-      const next = TABS[(idx + dir + TABS.length) % TABS.length];
+      const next = effectiveTabs[(idx + dir + effectiveTabs.length) % effectiveTabs.length];
       setActiveTab(next.id);
       tabRefs.current.get(next.id)?.focus();
     };
@@ -99,11 +112,11 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
     else if (e.key === "ArrowLeft") move(-1);
     else if (e.key === "Home") {
       e.preventDefault();
-      setActiveTab(TABS[0].id);
-      tabRefs.current.get(TABS[0].id)?.focus();
+      setActiveTab(effectiveTabs[0].id);
+      tabRefs.current.get(effectiveTabs[0].id)?.focus();
     } else if (e.key === "End") {
       e.preventDefault();
-      const last = TABS[TABS.length - 1];
+      const last = effectiveTabs[effectiveTabs.length - 1];
       setActiveTab(last.id);
       tabRefs.current.get(last.id)?.focus();
     }
@@ -184,7 +197,7 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
         onKeyDown={onTablistKeyDown}
         className="flex items-center gap-1 p-1 rounded-md2 bg-inset border border-line mb-3 overflow-x-auto"
       >
-        {TABS.map((tab) => (
+        {effectiveTabs.map((tab) => (
           <button
             key={tab.id}
             ref={(el) => {
@@ -278,6 +291,72 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
               {renderCopyRow("interview", result.interview_questions)}
             </div>
             <Markdown>{result.interview_questions}</Markdown>
+          </div>
+        )}
+
+        {activeTab === "integrity" && (
+          <div id="panel-integrity" role="tabpanel" aria-labelledby="tab-integrity" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
+            <div className="mb-4">
+              <div className="flex items-center gap-1.5 mb-1">
+                <ShieldWarning weight="bold" className="w-3.5 h-3.5 text-warn" />
+                <span className="text-2xs font-semibold uppercase tracking-wide text-ink-2">Integrity report</span>
+              </div>
+              <p className="text-2xs text-ink-3 leading-relaxed">
+                What was checked against your evidence (original resume + your notes) before this result shipped.
+              </p>
+            </div>
+
+            {(result.removals?.length ?? 0) > 0 && (
+              <div className="mb-4">
+                <h4 className="text-2xs font-semibold text-ink mb-1.5">Removed deterministically</h4>
+                <ul className="space-y-1">
+                  {result.removals!.map((item, i) => (
+                    <li key={`rm-${i}`} className="flex items-start gap-2 text-2xs text-warn leading-relaxed">
+                      <span className="mt-[5px] w-1 h-1 rounded-full bg-warn shrink-0" aria-hidden="true" />
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {(result.declined_requests?.length ?? 0) > 0 && (
+              <div className="mb-4">
+                <h4 className="text-2xs font-semibold text-ink mb-1.5 flex items-center gap-1.5">
+                  <Prohibit weight="bold" className="w-3 h-3 text-ink-3" />
+                  Requests the writer declined
+                </h4>
+                <p className="text-2xs text-ink-3 mb-1.5">Your notes or the gap list asked for these; the evidence does not show them, so they were left out instead of invented:</p>
+                <ul className="space-y-1">
+                  {result.declined_requests!.map((item, i) => (
+                    <li key={`dc-${i}`} className="flex items-start gap-2 text-2xs text-ink-2 leading-relaxed">
+                      <span className="mt-[5px] w-1 h-1 rounded-full bg-ink-3 shrink-0" aria-hidden="true" />
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {(result.unevidenced_metrics?.length ?? 0) > 0 && (
+              <div className="mb-4">
+                <h4 className="text-2xs font-semibold text-ink mb-1.5">Numbers to verify</h4>
+                <p className="text-2xs text-ink-3 mb-1.5">Still in the resume; the scrubber could not tie them to your evidence:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {result.unevidenced_metrics!.map((item, i) => (
+                    <span key={`um-${i}`} className="px-2 py-0.5 rounded-sm2 bg-warn-tint border border-warn/25 text-2xs text-warn font-mono">{item}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {Object.keys(result.prompt_versions ?? {}).length > 0 && (
+              <div className="pt-3 border-t border-line">
+                <span className="text-2xs text-ink-3 font-mono leading-relaxed break-all">
+                  prompts: {Object.values(result.prompt_versions ?? {}).join(" · ")}
+                </span>
+              </div>
+            )}
           </div>
         )}
       </div>

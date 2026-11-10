@@ -4,6 +4,10 @@ from .. import llms as _llms
 from ..helpers import _safe_print, _safe_truncate, _tame_unicode_bullets
 from langchain_core.messages import HumanMessage, SystemMessage
 
+# Bump when the gap-scan prompt changes materially (QW1 fingerprints every
+# LLM call's prompt in the result payload).
+SCANNER_PROMPT_VERSION = "scanner@1"
+
 
 def scanner_node(state: AgentState):
     _safe_print(f"\n--- NODE 1: SCANNING FOR GAPS ---")
@@ -27,4 +31,5 @@ def scanner_node(state: AgentState):
     # Live-run evidence (Nov 6 2026): "Claude\u202fCode" / "Hands\u2011on".
     missing = _tame_unicode_bullets(str(response.content))
     _safe_print(f"   Identified Gaps:\n{missing}")
-    return {"missing_skills": missing, "iteration": 0}
+    return {"missing_skills": missing, "iteration": 0,
+            "prompt_versions": {"scanner": SCANNER_PROMPT_VERSION}}

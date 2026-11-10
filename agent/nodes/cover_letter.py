@@ -5,6 +5,9 @@ from ..ats import _job_brief
 from ..helpers import _safe_print, _strip_code_fences
 from langchain_core.messages import HumanMessage, SystemMessage
 
+# Bump when the cover-letter prompt changes materially.
+COVER_LETTER_PROMPT_VERSION = "cover-letter@1"
+
 
 def cover_letter_node(state: AgentState):
     _safe_print(f"\n--- NODE 5: GENERATING COVER LETTER ---")
@@ -49,4 +52,5 @@ def cover_letter_node(state: AgentState):
         SystemMessage(content=SYSTEM_GUARDRAIL),
         HumanMessage(content=prompt),
     ])
-    return {"cover_letter": _strip_code_fences(response.content)}
+    return {"cover_letter": _strip_code_fences(response.content),
+            "prompt_versions": {"cover-letter": COVER_LETTER_PROMPT_VERSION}}
