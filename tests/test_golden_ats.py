@@ -75,6 +75,31 @@ def test_golden_hard_requirements_count_matched():
     assert not lost, f"skills the resume demonstrably has, scored missing: {lost}"
 
 
+def test_golden_requirement_table_floors():
+    """MR2: the deterministic requirement fit table reads the golden JD like a
+    human does (bullet/skill-line cards classified in code). A resume that
+    demonstrably covers the posting must keep clearing the coverage floors."""
+    rows = agent.compute_requirement_match_table(JD_REAL, FIXTURE["synthetic_resume"])
+    covered = sum(1 for row in rows if row["status"] == "covered")
+    assert len(rows) >= FIXTURE["minimum_total_requirements"], (
+        f"requirement segmentation collapsed: {len(rows)} rows")
+    assert covered >= FIXTURE["minimum_covered_requirements"], (
+        f"requirement coverage collapsed below floor: {covered}/{len(rows)} covered")
+    keys = {"requirement", "status", "evidence", "missing", "reason"}
+    assert all(set(row) == keys for row in rows)
+    assert all(row["status"] in ("covered", "partial", "gap") for row in rows)
+    assert all(row["reason"] for row in rows)
+
+
+def test_golden_requirement_table_escaped_newlines_equivalent():
+    """The escaped-\\n incident contract extends to the MR2 table: literal
+    escape payloads must classify byte-identically to real newlines."""
+    real = agent.compute_requirement_match_table(JD_REAL, FIXTURE["synthetic_resume"])
+    escaped = agent.compute_requirement_match_table(
+        _escaped(JD_REAL), FIXTURE["synthetic_resume"])
+    assert real and real == escaped
+
+
 def test_golden_corporate_filler_and_verbs_never_keywords():
     """Verifies that non-skills (translate, stakeholders, datasets, fresh, graduate,
     decisions, organizations, business, solutions) are never extracted as keywords,

@@ -81,6 +81,12 @@ class AgentState(TypedDict):
     feedback_sections: NotRequired[list[str]]
     # MR1 observability: which sections the last polish pass merged.
     polish_sections_targeted: NotRequired[list[str]]
+    # MR2 requirement-level match record: deterministic covered/partial/gap
+    # rows per requirement line, with evidence terms and human reasons.
+    # Recomputed per ATS pass; follows the best-of guard (ats_check keeps the
+    # table of the draft that actually ships) so the payload never describes a
+    # regressed draft.
+    requirement_matches: NotRequired[list]
     # QW1 forensics: one stamp per node, e.g. {"improver": "improver@2"}.
     # Reducer merge so the concurrent cover_letter / interview_prep
     # fan-out (both writing this key in one superstep) keeps BOTH entries

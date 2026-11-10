@@ -154,7 +154,11 @@ def _extract_company_names(text: str) -> set[str]:
     patterns = [
         r'(?:[Jj]oin|[Aa]t|[Aa]bout)\s+([A-Z][a-zA-Z]+)',
         r'([A-Z][a-zA-Z]+)\s+is an? ',
-        r'([A-Z][a-zA-Z]+)\s+(?:values?|welcomes?|offers?|develops?|builds?)',
+        # Trailing \b: without it 'develops?' prefix-matched 'development!'
+        # ("3+ years of Python development experience" -> 'python' captured as
+        # a company name and dropped from the whole ATS vocabulary; probe
+        # evidence Nov 10 2026, surfaced via the MR2 requirement table).
+        r'([A-Z][a-zA-Z]+)\s+(?:values?|welcomes?|offers?|develops?|builds?)\b',
     ]
     for pat in patterns:
         for match in re.findall(pat, text):

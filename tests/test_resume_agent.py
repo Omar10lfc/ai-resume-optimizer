@@ -196,6 +196,18 @@ def test_extract_keywords_strips_camelcase_brand_but_keeps_tech():
     assert "mysql" in kws    # CamelCase tech term protected via allowlist
 
 
+def test_company_filter_never_eats_skill_before_suffix_verb():
+    """Nov 10 2026 probe: the company heuristic 'X develops/builds...' had no
+    trailing word boundary, so 'develop' prefix-matched 'development' in
+    "3+ years of Python development experience" - 'python' was captured as a
+    company name and left the entire ATS vocabulary (surfaced by the MR2
+    requirement table, which lost its Python requirement card)."""
+    jd = "TechCorp builds data platforms. 3+ years of Python development experience."
+    kws = agent._extract_keywords(jd, top_n=20)
+    assert "python" in kws
+    assert "techcorp" not in kws
+
+
 def test_camelcase_brand_filter_never_eats_devsecops():
     """Golden JD regression (Nov 5 2026): the camelCase brand filter matched
     Dev|Sec|Ops and dropped the required 'devsecops' keyword because it is
@@ -2138,6 +2150,156 @@ def test_create_llm_fast_fallback_carries_api_key():
     assert _secret(fallback) == byo_key
     fallback_model = getattr(fallback, "model_name", None) or getattr(fallback, "model", "")
     assert fallback_model == agent.llms._EMERGENCY_MODEL
+
+
+# ==========================================
+# MR2: deterministic requirement match table (agent/match.py)
+# ==========================================
+
+MR2_JD = (
+    "TechCorp builds data platforms.\n"
+    "## Requirements\n"
+    "- 3+ years of Python development experience\n"
+    "- Production experience with Docker and Kubernetes\n"
+    "- Hands-on work with Apache Kafka for event streaming\n"
+    "## What we offer\n"
+    "- Free meals, gym membership, relocation support\n"
+)
+MR2_RESUME = "## Skills\nPython\n## Experience\nUsed Docker for local builds."
+
+
+def test_requirement_table_classifies_covered_partial_gap():
+    """The one-table answer to 'which stated requirements does this resume
+    cover': classified in code with human reasons, sharing the ATS matcher's
+    semantics - the calibrated ATS percentage is never touched by it."""
+    rows = agent.compute_requirement_match_table(MR2_JD, MR2_RESUME)
+    assert [row["status"] for row in rows] == ["covered", "partial", "gap"]
+    assert rows[0]["requirement"] == "3+ years of Python development experience"
+    assert rows[0]["evidence"] == ["python"]
+    assert rows[0]["missing"] == []
+    assert rows[0]["reason"] == "Covers all key terms (python)."
+    assert rows[1]["requirement"] == "Production experience with Docker and Kubernetes"
+    assert rows[1]["evidence"] == ["docker"]
+    assert rows[1]["missing"] == ["kubernetes"]
+    assert rows[1]["reason"] == "Covers docker; missing kubernetes."
+    assert rows[2]["requirement"] == "Hands-on work with Apache Kafka for event streaming"
+    assert rows[2]["evidence"] == []
+    assert rows[2]["missing"] == ["kafka"]
+    assert rows[2]["reason"] == "Missing from the resume: kafka."
+    keys = {"requirement", "status", "evidence", "missing", "reason"}
+    assert all(set(row) == keys for row in rows)
+
+
+def test_requirement_table_role_filler_never_evidence():
+    """'engineer'/'developer' name the role, not something a resume can carry
+    evidence for (Nov 10 probe: they otherwise dominated reasons and told the
+    user to 'add engineer')."""
+    rows = agent.compute_requirement_match_table(
+        "Python engineer with Docker and Kubernetes experience.", MR2_RESUME)
+    assert len(rows) == 1
+    assert rows[0]["missing"] == ["kubernetes"]
+    joined = " ".join(term for row in rows for term in row["evidence"] + row["missing"])
+    assert "engineer" not in joined and "developer" not in joined
+
+
+def test_requirement_table_synonyms_and_semantic_matches_count():
+    """Same expression-in-different-words semantics as the ATS score: 'k8s on
+    containers' reads as docker/kubernetes, and the semantic verifier's
+    reclassification set upgrades rows without a second LLM call."""
+    rows = agent.compute_requirement_match_table(
+        MR2_JD, "## Skills\nk8s on containers\n## Experience\n")
+    docker_row = next(row for row in rows if "Docker" in row["requirement"])
+    assert docker_row["status"] == "covered"
+    assert "kubernetes" in docker_row["evidence"]
+    assert not docker_row["missing"]
+
+    rows = agent.compute_requirement_match_table(MR2_JD, MR2_RESUME, ["Kafka"])
+    kafka_row = next(row for row in rows if "Kafka" in row["requirement"])
+    assert kafka_row["status"] == "covered"
+    assert kafka_row["evidence"] == ["kafka"]
+    assert kafka_row["reason"] == "Covers all key terms (kafka)."
+
+
+def test_requirement_table_skips_prose_and_perk_sections():
+    """Marketing prose without Tool/Concept terms and perk strips never become
+    rows: a front-page 'TechCorp builds data platforms' cannot pose as a
+    requirement, and empty or no-vocabulary JDs yield zero rows."""
+    rows = agent.compute_requirement_match_table(MR2_JD, MR2_RESUME)
+    assert not any("TechCorp" in row["requirement"] for row in rows)
+    assert not any("meals" in row["requirement"] or "gym" in row["requirement"]
+                   for row in rows)
+    assert agent.compute_requirement_match_table(
+        "We value passion and teamwork and grow together.", "Python, Docker") == []
+    assert agent.compute_requirement_match_table("", MR2_RESUME) == []
+
+
+def test_requirement_table_caps_at_twelve_in_jd_order():
+    """Requirement-dense postings truncate by first appearance (top-of-posting
+    requirements lead any JD) and keep the JD's own order."""
+    tools = ["redis", "nginx", "react", "vue", "tensorflow", "pytorch",
+             "airflow", "spark", "hive", "presto", "kafka", "docker",
+             "s3", "git"]
+    jd = "## Requirements\n" + "\n".join(
+        f"- Python experience with {tool}" for tool in tools) + "\n"
+    rows = agent.compute_requirement_match_table(jd, "## Skills\nPython")
+    assert len(rows) == 12
+    assert [row["requirement"] for row in rows] == [
+        f"Python experience with {tool}" for tool in tools[:12]]
+    assert all(row["status"] == "partial" for row in rows)
+
+
+def test_requirement_table_dedupes_repeated_lines():
+    jd = ("## Requirements\n"
+          "- Python services with Docker\n"
+          "- Python services with Docker\n")
+    rows = agent.compute_requirement_match_table(jd, "## Skills\nPython")
+    assert len(rows) == 1
+
+
+def test_requirement_table_segmentation_bullets_numbers_and_lines():
+    """Segmentation contract: bullets and numbered items are single cards,
+    heading markers never are, and plain non-bulleted skill lines don't bleed
+    into their neighbors (golden-JD live evidence)."""
+    jd = ("Requirements:\n"
+          "- Python services with Docker\n"
+          "1. Kubernetes operations and platform reliability\n"
+          "## Duties\n"
+          "Support data workflows and agent teams\n")
+    rows = agent.compute_requirement_match_table(jd, "## Skills\nPython")
+    requirements = [row["requirement"] for row in rows]
+    assert "Python services with Docker" in requirements
+    assert "Kubernetes operations and platform reliability" in requirements
+    assert not any(row.startswith("Requirements") or row.startswith("Duties")
+                   for row in requirements)
+    assert not any("Support data workflows" in row for row in requirements)
+
+
+def test_requirement_table_normalizes_literal_escaped_newlines():
+    """The Sep 2026 escaped-\\n incident contract extends to the table:
+    literal escape payloads classify identically to real newlines."""
+    real = agent.compute_requirement_match_table(MR2_JD, MR2_RESUME)
+    escaped = agent.compute_requirement_match_table(
+        MR2_JD.replace("\n", "\\n"), MR2_RESUME)
+    assert real and real == escaped
+
+
+def test_graph_writes_requirement_match_table(fake_llms, monkeypatch):
+    """MR2 wiring: ats_check computes the table every pass and the best-of
+    guard keeps the WINNER's table - the shipped state always describes the
+    shipped resume (a regressed second pass cannot ship a 'kubernetes missing'
+    table for the good first draft)."""
+    good = "## Skills\nPython, Docker, Kubernetes\n## Experience\nBuilt Python services on Kubernetes with Docker."
+    worse = "## Skills\nPython\n## Experience\nWrote some scripts."
+    result, seq = _run_with_drafts([good, worse], monkeypatch)
+
+    rows = result.get("requirement_matches")
+    assert isinstance(rows, list) and len(rows) == 1
+    row = rows[0]
+    assert row["requirement"] == "Python engineer with Docker and Kubernetes experience."
+    assert row["evidence"] == ["python", "docker", "kubernetes"]
+    assert row["missing"] == []
+    assert row["status"] == "covered"
+    assert row["reason"] == "Covers all key terms (python, docker, kubernetes)."
 
 
 # ==========================================

@@ -195,6 +195,9 @@ def _extract_results(final_state: dict) -> dict:
         "unevidenced_metrics": final_state.get("unevidenced_metrics") or [],
         "declined_requests": final_state.get("declined_requests") or [],
         "prompt_versions": final_state.get("prompt_versions") or {},
+        # MR2: deterministic requirement-level fit table (covered/partial/gap
+        # rows with evidence terms and human reasons).
+        "requirement_matches": final_state.get("requirement_matches") or [],
         "weights": {
             "ats": agent_config.ATS_SCORE_WEIGHT,
             "llm": agent_config.LLM_SCORE_WEIGHT,

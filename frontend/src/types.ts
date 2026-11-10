@@ -4,6 +4,15 @@ export interface Artifact {
   url: string;
 }
 
+/** MR2: one row of the deterministic requirement fit table (explained in code, never by a model). */
+export interface RequirementMatch {
+  requirement: string;
+  status: "covered" | "partial" | "gap";
+  evidence: string[];
+  missing: string[];
+  reason: string;
+}
+
 export interface OptimizationResult {
   session: string;
   optimized_resume: string;
@@ -28,6 +37,8 @@ export interface OptimizationResult {
   declined_requests?: string[];
   /** QW1: per-node prompt fingerprints (e.g. { improver: "improver@2" }). */
   prompt_versions?: Record<string, string>;
+  /** MR2: deterministic requirement fit rows (covered/partial/gap + reasons). */
+  requirement_matches?: RequirementMatch[];
 }
 
 export type PipelineStage =

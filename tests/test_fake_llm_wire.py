@@ -275,6 +275,17 @@ def test_step2_over_the_wire_end_to_end(client, wire_llms, monkeypatch):
     # The seven prompt-version stamps survive the concurrent fan-out merge.
     assert result["prompt_versions"] == EXPECTED_PROMPT_VERSIONS
 
+    # MR2 rides the same payload: the deterministic requirement-fit table for
+    # the FAKE_RESUME draft (no semantic rescues in the wire fake) - classified
+    # in code, so 'kubernetes' honestly stays missing here.
+    assert result["requirement_matches"] == [{
+        "requirement": "Python engineer with Docker and Kubernetes experience.",
+        "status": "partial",
+        "evidence": ["python", "docker"],
+        "missing": ["kubernetes"],
+        "reason": "Covers python, docker; missing kubernetes.",
+    }]
+
     # Wire call sequence: exact until the concurrent fan-out tail, whose order
     # is decided by the two sibling threads.
     keys = wire_llms.request_keys()

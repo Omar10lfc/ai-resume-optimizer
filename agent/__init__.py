@@ -6,6 +6,7 @@ from .helpers import (_force_ascii, _strip_emoji_for_pdf, _strip_emoji_from_html
                       split_markdown_sections, canonical_feedback_section,
                       merge_rewritten_sections, extract_declined_requests)
 from .ats import _extract_keywords, _simple_stem, _keyword_found_in_text, compute_ats_match, apply_semantic_matches, _job_brief, _boundary_contains, freq_ok
+from .match import compute_requirement_match_table
 from .url_fetch import _validate_job_url, _is_public_host, _fetch_job_description, _load_resume_pdf, _load_resume_docx, MAX_RESUME_FILE_BYTES
 from .latex_render import (
     parse_markdown_resume, render_resume_tex, latex_to_pdf, latex_to_docx,
@@ -42,6 +43,8 @@ __all__ = [
     # ATS engine
     "_extract_keywords", "_simple_stem", "compute_ats_match", "apply_semantic_matches", "_job_brief",
     "_boundary_contains", "freq_ok",
+    # MR2 requirement match table
+    "compute_requirement_match_table",
     # Config
     "SCORE_THRESHOLD", "MAX_ITERATIONS", "MAX_PDF_PAGES", "MAX_RESUME_CHARS",
     "MAX_JOB_CHARS", "MAX_PDF_BYTES", "ATS_SCORE_WEIGHT", "LLM_SCORE_WEIGHT",

@@ -545,6 +545,27 @@ def test_step2_result_payload_carries_integrity_and_versions(client, fake_llms, 
     assert pv["polisher"]
 
 
+def test_step2_result_payload_carries_requirement_table(client, fake_llms):
+    """MR2: the SSE result payload ships the deterministic requirement-fit
+    table (covered/partial/gap rows with evidence terms and human reasons),
+    which the ResultsDashboard renders as its Fit tab."""
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": ""})
+    events = parse_sse(r.text)
+    assert events[-1][0] == "result"
+    payload = events[-1][1]
+
+    rows = payload["requirement_matches"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["requirement"] == "Python engineer with Docker and Kubernetes experience."
+    assert row["status"] == "partial"
+    assert row["evidence"] == ["python", "docker"]
+    assert row["missing"] == ["kubernetes"]
+    assert row["reason"] == "Covers python, docker; missing kubernetes."
+
+
 # ==========================================
 # Queue semantics (Gradio queue port)
 # ==========================================

@@ -14,14 +14,16 @@ import {
   ArrowsLeftRight,
   ShieldWarning,
   Prohibit,
+  Target,
+  X,
 } from "@phosphor-icons/react";
-import type { OptimizationResult } from "../types";
+import type { OptimizationResult, RequirementMatch } from "../types";
 import { resolveArtifactUrl } from "../api";
 import { ScoreGauge } from "./ScoreGauge";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 
-type TabId = "resume" | "cover" | "ats" | "interview" | "integrity";
+type TabId = "resume" | "cover" | "ats" | "fit" | "interview" | "integrity";
 
 interface ResultsDashboardProps {
   result: OptimizationResult;
@@ -77,9 +79,18 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
     ...(result.declined_requests ?? []),
     ...(result.unevidenced_metrics ?? []),
   ];
-  const effectiveTabs = integrityList.length > 0
-    ? [...TABS, { id: "integrity" as TabId, label: "Integrity", icon: ShieldWarning }]
-    : TABS;
+  // Tabs beyond the core four exist only when this run has their content:
+  // Fit (MR2 requirement table) and Integrity (QW2/QW3 channels).
+  const fitRows = (result.requirement_matches ?? []) as RequirementMatch[];
+  const effectiveTabs: Array<{ id: TabId; label: string; icon: React.ElementType }> = [
+    ...TABS,
+  ];
+  if (fitRows.length > 0) {
+    effectiveTabs.splice(3, 0, { id: "fit" as TabId, label: "Fit", icon: Target });
+  }
+  if (integrityList.length > 0) {
+    effectiveTabs.push({ id: "integrity" as TabId, label: "Integrity", icon: ShieldWarning });
+  }
 
   // Artifact URLs resolve against the configured backend base. Resolution is
   // a string build (no network), so links may point at the raw relative path
@@ -123,6 +134,18 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   };
 
   const canDiff = Boolean(originalResume && originalResume.trim().length > 40);
+
+  const fitCounts = fitRows.length
+    ? [
+        fitRows.filter((r) => r.status === "covered").length,
+        fitRows.filter((r) => r.status === "partial").length,
+        fitRows.filter((r) => r.status === "gap").length,
+      ]
+    : null;
+  const fitCopy = fitRows.length
+    ? `Requirement fit (${fitCounts![0]}/${fitRows.length} fully covered):\n` +
+      fitRows.map((r) => `[${r.status.toUpperCase()}] ${r.requirement} — ${r.reason}`).join("\n")
+    : "";
 
   const renderCopyRow = (label: string, text: string) => (
     <button type="button" onClick={() => copy(text, label)} className="btn btn-secondary btn-sm">
@@ -281,6 +304,64 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
               {renderCopyRow("ats", result.ats_result)}
             </div>
             <Markdown className="font-mono">{result.ats_result}</Markdown>
+          </div>
+        )}
+
+        {activeTab === "fit" && (
+          <div id="panel-fit" role="tabpanel" aria-labelledby="tab-fit" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
+            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-line">
+              <span className="text-2xs text-ink-3 font-mono">Requirement fit — classified in code, never by a model</span>
+              {renderCopyRow("fit", fitCopy)}
+            </div>
+
+            <p className="text-2xs text-ink-3 leading-relaxed mb-3">
+              Each requirement the posting states, judged in code against the shipped resume.
+              Read it next to the ATS percentage: a high keyword score missing whole requirements shows up here as gap rows.
+            </p>
+            {fitCounts && (
+              <div className="flex items-center gap-2 mb-3">
+                <span className="px-2 py-0.5 rounded-sm2 bg-ok-tint border border-ok/25 text-2xs text-ok font-semibold">{fitCounts[0]} covered</span>
+                <span className="px-2 py-0.5 rounded-sm2 bg-warn-tint border border-warn/25 text-2xs text-warn font-semibold">{fitCounts[1]} partial</span>
+                <span className="px-2 py-0.5 rounded-sm2 bg-danger-tint border border-danger/25 text-2xs text-danger font-semibold">{fitCounts[2]} gap</span>
+              </div>
+            )}
+            <ul className="space-y-2">
+              {fitRows.map((row, i) => (
+                <li key={`fit-${i}`} className="rounded-md2 bg-surface border border-line p-2.5">
+                  <div className="flex items-start gap-2">
+                    <span
+                      aria-label={row.status}
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-sm2 border text-2xs font-semibold uppercase tracking-wide shrink-0 ${
+                        row.status === "covered"
+                          ? "bg-ok-tint border-ok/25 text-ok"
+                          : row.status === "partial"
+                            ? "bg-warn-tint border-warn/25 text-warn"
+                            : "bg-danger-tint border-danger/25 text-danger"
+                      }`}
+                    >
+                      {row.status === "covered"
+                        ? <Check weight="bold" className="w-3 h-3" />
+                        : row.status === "partial"
+                          ? <Prohibit weight="bold" className="w-3 h-3" />
+                          : <X weight="bold" className="w-3 h-3" />}
+                      {row.status}
+                    </span>
+                    <span className="flex-1 min-w-0 text-2xs text-ink leading-relaxed">{row.requirement}</span>
+                  </div>
+                  {row.reason && (
+                    <p className="mt-1.5 text-2xs text-ink-2 leading-relaxed">{row.reason}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+
+            {Object.keys(result.prompt_versions ?? {}).length > 0 && (
+              <div className="pt-3 mt-3 border-t border-line">
+                <span className="text-2xs text-ink-3 font-mono leading-relaxed break-all">
+                  prompts: {Object.values(result.prompt_versions ?? {}).join(" · ")}
+                </span>
+              </div>
+            )}
           </div>
         )}
 

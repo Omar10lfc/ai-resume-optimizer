@@ -8,5 +8,7 @@
   },
   "synthetic_resume": "# Junior AI Engineer\n## Experience\nBuilt agentic workflows with LangGraph and MCP tool integrations.\nDeployed RAG pipelines on Kubernetes using Docker, Git, and CI/CD automation.\nWrote Python scripts for DevOps instrumentation and LLM-based tests.\nUsed GitHub Copilot daily; operated Cursor and Claude Code for pair programming.\n## Skills\nPython, LangGraph, RAG, MCP, CI/CD, Git, Docker, Kubernetes, DevOps, GitHub Copilot, Cursor, Claude",
   "resume_keywords_that_must_count": ["langgraph", "mcp", "rag", "ci/cd", "git", "cursor", "claude", "docker", "kubernetes", "devops", "github", "agentic", "copilot"],
-  "minimum_ats_percentage": 30.0
+  "minimum_ats_percentage": 30.0,
+  "minimum_total_requirements": 8,
+  "minimum_covered_requirements": 6
 }

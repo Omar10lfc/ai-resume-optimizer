@@ -4,6 +4,7 @@ from .. import llms as _llms
 from ..config import ATS_SCORE_WEIGHT, LLM_SCORE_WEIGHT
 from ..ats import compute_ats_match, apply_semantic_matches
 from ..helpers import _safe_print, _safe_truncate
+from ..match import compute_requirement_match_table
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Bump when the semantic-verification prompt or policy changes materially.
@@ -54,6 +55,13 @@ def ats_check_node(state: AgentState):
     if semantic:
         result = apply_semantic_matches(result, semantic)
 
+    # MR2: deterministic requirement table for THIS draft (reuses this pass's
+    # semantic reclassification set; no extra LLM call). The best-of guard
+    # snapshots the winner's table, so a regresssed polish pass keeps the
+    # table that describes the resume that actually ships.
+    requirement_table = compute_requirement_match_table(
+        state['job_text'], state['optimized_resume'], semantic)
+
     llm_quality = state.get('llm_quality_score', 0)
     composite = round(
         ATS_SCORE_WEIGHT * result['percentage'] + LLM_SCORE_WEIGHT * llm_quality
@@ -74,6 +82,9 @@ def ats_check_node(state: AgentState):
             "ats_result": result["formatted"],
             "ats_percentage": result["percentage"],
             "llm_quality_score": llm_quality,
+            # MR2: the table travels with the winning draft, so later,
+            # worse passes keep a table that matches the shipped resume.
+            "requirement_matches": requirement_table,
         }
     if composite < best_score:
         _safe_print(f"-> Draft {state.get('iteration', 0)} regressed ({composite} < {best_score}); keeping the best draft.")
@@ -84,6 +95,7 @@ def ats_check_node(state: AgentState):
             "optimized_resume": best["optimized_resume"],
             "llm_quality_score": best["llm_quality_score"],
             "best_result": best,
+            "requirement_matches": list(best.get("requirement_matches") or []),
             "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
         }
 
@@ -92,5 +104,6 @@ def ats_check_node(state: AgentState):
         "ats_percentage": result["percentage"],
         "score": composite,
         "best_result": best,
+        "requirement_matches": requirement_table,
         "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
     }
