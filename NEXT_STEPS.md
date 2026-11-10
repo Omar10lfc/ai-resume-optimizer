@@ -1,6 +1,6 @@
 # Next Steps — Job Application Optimizer
 
-Last updated: **Nov 10 2026** · Snapshot: 252 tests passing (~2:15) · coverage 85% (CI gate 84% over agent+app+server) · langgraph stack 1.2.16 · FastAPI `server/` + Vite React `frontend/` shipped & live-probed · **Chrome extension MVP + UI redesign committed · Nov 8: `539f7c1d` stale-chip laundering closed + PDF entry-boundary fix · Nov 10: Dossier-study round landed (QW1 prompt stamps / QW2 decline protocol / QW3 integrity UI / MR1 section-targeted polish), suite 252**
+Last updated: **Nov 10 2026** · Snapshot: 254 tests passing (~2:20) · coverage 85% (CI gate 84% over agent+app+server) · langgraph stack 1.2.16 · FastAPI `server/` + Vite React `frontend/` shipped & live-probed · **Chrome extension MVP + UI redesign committed · Nov 8: `539f7c1d` stale-chip laundering closed + PDF entry-boundary fix · Nov 10: Dossier-study round landed (QW1 prompt stamps / QW2 decline protocol / QW3 integrity UI / MR1 section-targeted polish) + durable fix (`c7dd521`: emergency model → `qwen/qwen3.8-27b`, all-tiers catalog validation, fast-fallback BYO key), suite 254**
 
 This is the living roadmap. The public, permanent record of *what was done and why* lives in [README.md](README.md) ("Changelog & Design Decisions" → "Session — Oct 21 2026"); this file tracks **what's next** and the current state. Legend: ✅ done this cycle · 🔲 planned · 🔶 optional.
 
@@ -169,6 +169,19 @@ Driven by the repo study of AienTech/dossier — license verdict **AGPL-3.0** (n
 | A36 | Suite 236 → 252 | 15 agent tests + 1 server test | Splitter/canonical/merge (×6), DECLINED variants (×3 incl. improver integration), graph-level version stamps (×1), polisher targeted/full/refused/stamp/gate (×5), server result payload integrity+versions (×1). `_run_with_drafts` gained a `sections=` knob; existing best-of-2 tests pass unchanged (empty sections → full-rewrite path) |
 
 **⚠️ Still hazardous**: the Nov 6 directories + `Optimized_Resume (10).pdf`, and the Nov 8 run directory `539f7c1d…` — do not send either. This round needs BOTH a **FastAPI backend restart** and an **extension reload in `chrome://extensions`** (shared ResultsDashboard source changed). Suggested live validation when the user is ready: rerun the same FortyGuard JD + Aegis context and confirm the Integrity tab shows the declined n8n/MCP requests plus the polisher's targeted section list.
+
+
+---
+
+## Provider hardening — Nov 10 2026 (durable fix for the live 404, own commit `c7dd521`) ✅ LANDED
+
+The live "Optimization failed" run's root cause: a retryable-failure fallthrough (primary → fallback → emergency) landed on `llama-3.1-8b-instant`, which Groq had decommissioned from the catalog. 404 `model_not_found` is not in `_RETRYABLE_EXCEPTIONS`, so it aborted the run — and the startup health check only ever validated the primary tier, so the dead emergency default had sailed through. Durable fix shipped as its own small commit; short-term the same failure is avoided by the `.env` `EMERGENCY_MODEL` override suggested in the incident write-up (not present in `.env`, so the new repo default governs).
+
+| # | Item | Outcome | Detail |
+|---|------|---------|--------|
+| A37 | Emergency model recommissioned + all-tiers catalog validation + fast-fallback BYO key | `agent/config.py` `_EMERGENCY_MODEL` default → `qwen/qwen3.8-27b` (verified on the live catalog via the account key's zero-token `GET /models`); `agent/llms.py` `_groq_models_status` gains `_catalog_gap_warning` — validates ALL three tiers (urllib + httpx branches) and names each missing tier with its `*_MODEL` override; `_create_llm_fast`'s emergency fallback now carries the pinned BYO `api_key` like `_create_llm` already did | Two regressions (`test_groq_models_status_missing_emergency_only_warns` = the incident shape, `test_create_llm_fast_fallback_carries_api_key` exercises the real fallback chain); two health-check fixtures updated to the all-tiers message. Suite 252 → 254. Actionable startup warning now e.g. `missing from this account's catalog: emergency '…' (set EMERGENCY_MODEL)` |
+
+**Restart needed**: FastAPI backend only (agent + tests changed; frontend/extension untouched).
 
 
 ---
