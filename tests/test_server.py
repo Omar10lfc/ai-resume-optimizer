@@ -982,6 +982,135 @@ def test_step2_recovery_recomputes_stale_ats_snapshot(client, fake_llms,
     assert row["status"] == "done"
 
 
+def test_step2_recovery_after_real_midnode_crash_redoes_model_segment(
+        client, clean_name_register, monkeypatch):
+    """THE regression (live run 22e943c6, Nov 11 2026): a REAL mid-node
+    crash - the polisher's 3rd targeted rewrite raising, not a fabricated
+    update_state - leaves an INTERRUPTED polisher task in the checkpoint.
+    The recovery's notes injection (``update_state`` without as_node) was
+    then re-anchored onto that task by LangGraph's versions_seen inference,
+    which advanced ``next`` past the improver to the fan-out: the
+    "recovered" segment only re-ran cover_letter / interview_prep /
+    pdf_exporter and shipped score 0 with "No resume generated." The
+    rewound path must write reset + notes as ONE ``update_state`` anchored
+    with ``as_node="scanner"`` (probe-reproduced and probe-verified)."""
+
+    class CrashyCreative:
+        """Mirrors the live incident: invoke 1 = the improver's full
+        draft, invokes 2-4 = the polisher's targeted section rewrites,
+        invoke 4 RAISES mid-node (the live APIConnectionError)."""
+
+        DRAFT = ("## Professional Summary\n"
+                 "Python developer with cloud exposure.\n\n"
+                 "## Technical Skills\n- Python, Docker\n\n"
+                 "## Experience\n- Built ML pipelines.\n")
+
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            if self.calls == 4:
+                raise RuntimeError(
+                    "Simulated APIConnectionError('Connection error.')")
+            prompt = messages[-1].content
+            if "SURGICAL REVISION" in prompt:
+                lines = prompt.splitlines()
+                header = "## Technical Skills"
+                for i, line in enumerate(lines):
+                    if line.strip().startswith(
+                            "REVISION TARGET (return the full replacement"):
+                        header = lines[i + 1].strip()
+                        break
+                return AIMessage(content=f"{header}\n- Rewritten: {header}")
+            return AIMessage(content=self.DRAFT)
+
+    class StrictWithSections:
+        def invoke(self, messages):
+            return AIMessage(content="- Kubernetes\n- Terraform")
+
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    return agent.ReviewOutput(
+                        score=62,
+                        feedback="Rewrite the summary to target the role "
+                                 "and reorder skills.",
+                        sections=["Professional Summary", "Technical Skills",
+                                  "Experience"])
+            return Structured()
+
+    crashy = CrashyCreative()
+    monkeypatch.setattr(agent.llms, "llm_strict", StrictWithSections())
+    monkeypatch.setattr(agent.llms, "llm_creative", crashy)
+    monkeypatch.setattr(agent.llms, "llm_fast", FakeFastLLM())
+
+    r1 = client.post("/api/v1/step1",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT})
+    session = parse_sse(r1.text)[-1][1]["session"]
+    config = {"configurable": {"thread_id": session}}
+
+    # attempt 1 dies mid-polisher (creative invoke #4)
+    r2 = client.post("/api/v1/step2",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT,
+                           "notes": "I used k8s at work", "session": session})
+    assert parse_sse(r2.text)[-1][0] == "error"
+    # the crash left an INTERRUPTED task - not a fabricated snapshot
+    assert agent.agent_app.get_state(config).next == ("polisher",)
+
+    r3 = client.post("/api/v1/step2",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT,
+                           "notes": "I used k8s at work", "session": session})
+    events = parse_sse(r3.text)
+    assert [kind for kind, _ in events][-1] == "result"
+    warnings = [e for kind, e in events if kind == "warning"]
+    assert any("Recovered an interrupted run" in w["message"] for w in warnings)
+
+    # the model segment redid its work: the improver re-ran (calls 5+,
+    # one per recovery improver entry) and every loop node re-executed
+    assert crashy.calls >= 5
+    tagged_nodes = {e["node"] for kind, e in events
+                    if kind == "status" and e.get("node")}
+    assert {"improver", "reviewer", "ats_check", "polisher",
+            "cover_letter", "pdf_exporter"} <= tagged_nodes
+
+    result = events[-1][1]
+    assert result["optimized_resume"].strip()
+    assert "No resume generated" not in result["optimized_resume"]
+    assert result["score"] > 0
+
+    snapshot = agent.agent_app.get_state(config)
+    values = snapshot.values or {}
+    assert values.get("human_notes") == "I used k8s at work"
+    assert snapshot.next == ()
+
+    # and the ledger shows the recovery attempt as done with a real score
+    row = client.get(f"/api/v1/runs/{session}").json()
+    assert row["status"] == "done"
+    assert row["result"]["score"] > 0
+
+
+def test_split_composed_notes_dedupes_exact_gap_lines():
+    """Live run 22e943c6: a crash retry re-carried chip lines the crashed
+    attempt had already injected into the checkpoint, doubling the gap
+    channel the improver reads as research topics. Identical (normalized)
+    gap lines collapse - first occurrence wins - while wording variants
+    and distinct chip annotations stay; user evidence is never deduped."""
+    gaps, evidence = runners._split_composed_notes(
+        "- Kubernetes\n"
+        "- Kubernetes\n"
+        "- Docker: used it in coursework\n"
+        "- Kubernetes: used k8s at work\n"
+        "I also led the migration\n"
+        "I also led the migration",
+        "- Kubernetes\n- Terraform")
+    assert gaps == ("- Kubernetes\n"
+                    "- Docker: used it in coursework\n"
+                    "- Kubernetes: used k8s at work")
+    # evidence is user prose - untouched by the gap-channel dedupe
+    assert evidence == "I also led the migration\nI also led the migration"
+
+
 def test_step2_resume_writes_notes_without_reentering_the_graph(client,
                                                                 fake_llms,
                                                                 monkeypatch,

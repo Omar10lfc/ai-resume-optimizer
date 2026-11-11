@@ -416,7 +416,23 @@ def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
             gap_lines.append(s)
             continue
         evidence_lines.append(s)
-    return "\n".join(gap_lines), "\n".join(evidence_lines)
+
+    # Exact-normalized dedupe of the gap channel (live run 22e943c6, Nov 11
+    # 2026: a retry after a mid-pipeline crash re-carried chip lines the
+    # crashed attempt had already injected into the checkpoint, doubling the
+    # gap channel the improver reads as research topics). First occurrence
+    # wins; only IDENTICAL lines (after _norm_gap_line) collapse - wording
+    # variants are composed client-side (frontend/src/lib/gaps.ts serializes
+    # fresh per submit) and are unknowable server-side.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for line in gap_lines:
+        key = _norm_gap_line(line)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(line)
+    return "\n".join(deduped), "\n".join(evidence_lines)
 
 
 def _stream_step2(job_description: str, resume_source: str, notes: str,
@@ -487,8 +503,10 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                     state = agent_app.get_state(config)
                     next_nodes = tuple(state.next or ())
                 if next_nodes and next_nodes != ("improver",):
-                    agent_app.update_state(config, _recovery_reset(),
-                                           as_node="scanner")
+                    # The reset itself is DEFERRED to the notes injection
+                    # below: reset + notes must land as ONE update_state
+                    # anchored with as_node="scanner" (live run 22e943c6 -
+                    # see the injection site for the mechanism).
                     rewound = True
             elif not next_nodes:
                 if state.values:
@@ -540,10 +558,30 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
             # the ``notes_injection`` side run below, whose INPUT is the
             # split notes payload (PII-redacted by the tracer's hide_inputs
             # hook like every other run; live runs 29afd91b / 62725081).
-            agent_app.update_state(config, {
-                "human_notes": evidence_lines,
-                "missing_skills": gap_lines,
-            })
+            #
+            # Rewound path (live run 22e943c6, Nov 11 2026): reset + notes
+            # MUST land as ONE update_state anchored with as_node="scanner".
+            # An UNANCHORED second write lets LangGraph's as_node inference
+            # (no as_node -> the node with the highest versions_seen in the
+            # checkpoint, pregel/main.py _infer_as_node) attribute it to the
+            # INTERRUPTED polisher task - it had consumed the newest channel
+            # versions before crashing - so the notes write advanced `next`
+            # past the improver to the fan-out: the "recovered" segment only
+            # re-ran cover_letter / interview_prep / pdf_exporter and the
+            # run shipped score 0 with "No resume generated." An explicit
+            # as_node is immune to the inference; the notes keys come AFTER
+            # the spread so they win over the reset's empty strings.
+            if rewound:
+                agent_app.update_state(config, {
+                    **_recovery_reset(),
+                    "human_notes": evidence_lines,
+                    "missing_skills": gap_lines,
+                }, as_node="scanner")
+            else:
+                agent_app.update_state(config, {
+                    "human_notes": evidence_lines,
+                    "missing_skills": gap_lines,
+                })
             _trace_notes_injection(session, evidence_lines, gap_lines)
 
             # Resume: improver <-> reviewer -> ats_check -> fan-out -> pdf_exporter.
