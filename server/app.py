@@ -40,7 +40,7 @@ from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_413_
 
 from agent import config as agent_config
 from agent.llms import _groq_models_status
-from server import runners
+from server import run_store, runners
 
 # ---------------------------------------------------------------------------
 # Pipeline queue: Gradio-equivalent serialization (also the quota protector)
@@ -234,6 +234,15 @@ async def lifespan(app: FastAPI):
     agent_config.init_output_dirs()
     agent_config.start_background_cleanup()
 
+    # MR3: runs left 'running' by a previous process are dead (their mid-run
+    # LLM work stopped at some checkpoint) - mark them failed-with-retry the
+    # way Dossier's recoverInterruptedJobs() does, instead of letting a
+    # silent band-aid resume stitch half-completed state. 'awaiting_notes'
+    # rows survive: the review checkpoint is durable by design.
+    recovered = run_store.recover_interrupted()
+    if recovered:
+        print(f"[Runs] Marked {recovered} interrupted run(s) as failed - retry from Step 2.")
+
     # Fail fast at startup with an actionable message instead of letting users
     # hit a confusing provider error deep inside Step 2. One cheap /models
     # call (zero generation tokens).
@@ -340,6 +349,21 @@ def create_app() -> FastAPI:
             candidate.suffix.lower(), "application/octet-stream")
         return FileResponse(candidate, media_type=content_type,
                             filename=candidate.name)
+
+    @app.get("/api/v1/runs/{session}")
+    def get_run(session: str) -> dict:
+        """MR3 reattach contract: the durable status of a session's latest
+        run (status / last step / error / step-1 chips / the full result
+        payload for done runs), so the SPA can re-render results after a
+        reload or disconnect without re-running anything."""
+        try:
+            UUID(session)
+        except ValueError:
+            raise HTTPException(HTTP_404_NOT_FOUND, "Unknown session.") from None
+        row = run_store.get(session)
+        if row is None:
+            raise HTTPException(HTTP_404_NOT_FOUND, "Unknown session.")
+        return row
 
     frontend_dist = (Path(__file__).resolve().parents[1] / "frontend" / "dist").resolve()
     if frontend_dist.is_dir():

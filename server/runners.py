@@ -9,15 +9,34 @@ the FastAPI SSE layer and the Next.js frontend share the same flow:
   missing-skills output is returned for the review/edit box.
 - Step 2 resumes the interrupted thread: if Step 1 was skipped it first
   runs loader -> scanner up to the interrupt, injects the user's edited
-  notes via ``update_state``, then resumes with a PINNED root run id so
-  pipeline feedback records attach to the exact LangSmith trace.
+  notes via ``update_state`` (probe-calibrated Nov 11: providing the notes
+  as graph INPUT re-enters the graph from the entry point - one wasted
+  fast-model call, and the re-run scanner clobbers the user's gap lines),
+  then resumes with a PINNED root run id so pipeline feedback records
+  attach to the exact LangSmith trace. Trace visibility of the injection
+  is restored by the ``notes_injection`` side run (MR3) whose input is the
+  split notes payload.
+
+MR3 (durable, reattachable runs): both runners are wrapped by
+``_recorded`` so every attempt is tracked in the ``run_store`` ledger
+(status / per-step progress / step-1 chips / errors / done-run result
+payloads). Mid-pipeline leftovers from a crashed attempt are never
+resumed where they stopped - they are rewound to the human-review
+checkpoint with every per-run channel reset, which fixes the stale-ATS
+snapshot (shipped ATS 56.2 while the shipped resume recomputed to
+37.5/43.8) and the 7.4s band-aid stitch on live runs 29afd91b /
+62725081.
 """
 
+import functools
+import inspect
 import re
 import traceback
 from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
+
+from langchain_core.runnables import RunnableLambda
 
 from agent import TRACE_CALLBACKS, agent_app
 from agent import config as agent_config
@@ -27,6 +46,7 @@ from agent.tracing import (
     log_pipeline_feedback,
     register_known_name,
 )
+from server import run_store
 
 # Redacted-tracing callbacks go with every invoke (empty list = tracing off)
 _INVOKE_CONFIG_BASE = {"callbacks": TRACE_CALLBACKS}
@@ -65,6 +85,113 @@ def _thread_config(thread_id: str, run_id: str | None = None) -> dict:
     if run_id:
         cfg["run_id"] = run_id
     return cfg
+
+
+def _recovery_reset() -> dict:
+    """Per-run channels cleared for a mid-pipeline recovery (MR3).
+
+    A crashed attempt leaves its scoring snapshot (best_result / score /
+    ats_*) in the checkpoint; resuming from there ships the stale numbers
+    with whatever the recovery produced. Recovery rewinds to the human
+    checkpoint and resets every per-run channel so the redone segment
+    recomputes scoring on ITS OWN drafts. Loader outputs (resume_text /
+    job_text / output_dir / request_id) are deliberately kept: the
+    uploaded temp file is already deleted when recovery runs, so the
+    checkpointed parsed text is the only durable copy. prompt_versions is
+    not reset - it is reducer-merged (cannot be cleared) and its stamps
+    are re-emitted identically by the re-run nodes.
+    """
+    return {
+        "optimized_resume": "", "feedback": "", "score": 0,
+        "llm_quality_score": 0, "ats_percentage": 0.0,
+        "review_failed": False, "iteration": 0, "ats_result": "",
+        "best_result": {}, "cover_letter": "", "interview_questions": "",
+        "resume_pdf_path": "", "cover_letter_pdf_path": "",
+        "resume_docx_path": "", "resume_tex_path": "",
+        "resume_pages": 0, "resume_compacted": False,
+        "page_overflow_warning": "", "guardrail_warnings": [],
+        "scrub_removals": [], "unevidenced_metrics": [],
+        "declined_requests": [], "requirement_matches": [],
+        "feedback_sections": [], "polish_sections_targeted": [],
+        "human_notes": "", "missing_skills": "",
+    }
+
+
+def _trace_notes_injection(session: str, human_notes: str,
+                           missing_skills: str) -> None:
+    """MR3: a real traced side run whose INPUT is the injected notes payload.
+
+    ``update_state`` is not a runnable invocation, so the state write never
+    reaches LangSmith - which blinded post-run forensics on every resumed
+    invoke (runs 29afd91b / 62725081: "what did the user actually ask
+    for?" was unanswerable from the trace). This side run closes that gap:
+    it carries the split notes (evidence + gap lines) as its input,
+    PII-redacted by the tracer's ``hide_inputs`` hook like every other run,
+    and is named for project-level filtering. Tracing disabled (tests,
+    air-gapped) -> silent no-op; any failure is non-fatal by contract.
+    """
+    if not TRACE_CALLBACKS:
+        return
+    try:
+        RunnableLambda(lambda _: {"written": True},
+                       name="notes_injection").invoke(
+            {"session": session,
+             "human_notes": human_notes,
+             "missing_skills": missing_skills},
+            config={"callbacks": list(TRACE_CALLBACKS)},
+        )
+    except Exception as exc:
+        print(f"[Tracing] notes-injection side run failed (non-fatal): {exc}")
+
+
+def _recorded(runner):
+    """MR3: records a runner's lifecycle into the durable runs ledger.
+
+    The session id is normalized here (generated when absent) so the row
+    exists from the first event; the runner's fresh-session switch
+    (completed-thread reuse) re-points the recording and marks the
+    superseded row. Events pass through untouched; errors, crashes, and
+    client disconnects are RECORDED, never masked. Ledger failures are
+    non-fatal by contract (run_store prints and continues)."""
+    @functools.wraps(runner)
+    def wrapper(*args, **kwargs):
+        bound = inspect.signature(runner).bind(*args, **kwargs)
+        bound.apply_defaults()
+        session = str(bound.arguments.get("session") or uuid4())
+        bound.arguments["session"] = session
+        run_store.start(session, "step1" if runner is _stream_step1 else "step2")
+        gen = runner(*bound.args, **bound.kwargs)
+        try:
+            for event in gen:
+                etype = event.get("type")
+                if etype == "session" and event.get("session"):
+                    run_store.supersede(
+                        session,
+                        "Superseded - a fresh session was started because"
+                        " this one already held a completed run.")
+                    session = event["session"]
+                    run_store.start(session, "step2")
+                elif etype == "status" and event.get("node"):
+                    run_store.step(session, event["node"])
+                elif etype == "done":
+                    run_store.finish_scan(
+                        session, str(event.get("missing_skills") or ""))
+                elif etype == "result":
+                    run_store.finish(session, event)
+                elif etype == "error":
+                    run_store.fail(session, str(event.get("message") or "error"))
+                yield event
+        except GeneratorExit:
+            # Client disconnected mid-stream: the LLM work stops at the next
+            # checkpoint and the row must not linger as 'running' (it would
+            # only be fixed by the next backend restart).
+            run_store.fail(session,
+                           "Client disconnected mid-run - run Step 2 again.")
+            raise
+        except Exception as exc:  # backstop: record, never mask
+            run_store.fail(session, f"Pipeline crashed: {exc}")
+            raise
+    return wrapper
 
 
 def _initial_inputs(job_input: str, resume_source: str) -> dict:
@@ -109,8 +236,8 @@ def _status(message: str, node: str | None = None) -> dict:
     return info
 
 
-def stream_step1(job_description: str, resume_source: str,
-                 session: str | None, groq_api_key: str | None = None) -> Iterator[dict]:
+def _stream_step1(job_description: str, resume_source: str,
+                  session: str | None, groq_api_key: str | None = None) -> Iterator[dict]:
     """Step 1: loader -> scanner, interrupt before the improver.
 
     groq_api_key (optional) honors a client-supplied Groq key (browser
@@ -283,11 +410,22 @@ def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
     return "\n".join(gap_lines), "\n".join(evidence_lines)
 
 
-def stream_step2(job_description: str, resume_source: str, notes: str,
-                 session: str | None, groq_api_key: str | None = None) -> Iterator[dict]:
+def _stream_step2(job_description: str, resume_source: str, notes: str,
+                  session: str | None, groq_api_key: str | None = None) -> Iterator[dict]:
     """Step 2: resumes the interrupted session (or starts fresh).
 
     groq_api_key (optional) honors a client-supplied Groq key - see stream_step1.
+
+    Session-entry semantics (MR3):
+    - ``next == ("improver",)`` - the durable human-review checkpoint: the
+      normal path.
+    - empty next + values - the thread already completed: a FRESH session
+      is started (surfaced as a ``session`` event).
+    - anything else - mid-pipeline leftovers of a crashed attempt: never
+      resumed where they stopped; rewound to the human checkpoint with
+      per-run channels reset (``_recovery_reset``), then the model segment
+      is redone from the improver. A crashed SCANNER is re-run first (one
+      fast-model call) so the fresh chips are available to the notes split.
 
     Final event: ``{"type": "result", **payload}``.
     """
@@ -310,9 +448,33 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
 
         yield _status("Starting pipeline...")
         final_state: dict = {}
+        rewound = False
         try:
             state = agent_app.get_state(config)
-            if not state.next:
+            next_nodes = tuple(state.next or ())
+            if next_nodes and next_nodes != ("improver",):
+                # MR3 recovery: mid-pipeline leftovers of a crashed attempt.
+                # The 7.4s score-59 band-aid run and the stale-ATS snapshot
+                # (shipped 56.2, shipped-resume recompute 37.5/43.8 on live
+                # runs 29afd91b / 62725081) both came from resuming such a
+                # checkpoint where it stopped. Rewind to the human-review
+                # checkpoint and redo the model segment from the improver.
+                yield {"type": "warning",
+                       "message": "Recovered an interrupted run - restarting the optimization from your review checkpoint."}
+                if next_nodes == ("scanner",):
+                    # The loader finished but the scanner never did: re-run
+                    # it (one fast-model call) so fresh chips are available
+                    # to the notes split below.
+                    for _ in agent_app.stream(None, config=config,
+                                              stream_mode="updates"):
+                        pass
+                    state = agent_app.get_state(config)
+                    next_nodes = tuple(state.next or ())
+                if next_nodes and next_nodes != ("improver",):
+                    agent_app.update_state(config, _recovery_reset(),
+                                           as_node="scanner")
+                    rewound = True
+            elif not next_nodes:
                 if state.values:
                     # previous run completed in this session -> start a fresh one
                     session = str(uuid4())
@@ -328,6 +490,17 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
                 # refresh the snapshot so the pristine scanner chips below
                 # come from THIS run, not a previous thread's state
                 state = agent_app.get_state(config)
+                next_nodes = tuple(state.next or ())
+
+            # Pristine scanner chips for the notes split: the checkpoint's
+            # own copy - EXCEPT on the rewind path, where that copy holds
+            # the crashed attempt's injected gap lines; the ledger's step-1
+            # snapshot is the durable pristine source there.
+            if rewound:
+                row = run_store.get(session)
+                pristine_missing = str((row or {}).get("missing_skills") or "")
+            else:
+                pristine_missing = str((state.values or {}).get("missing_skills") or "")
 
             # Inject the user's edited gaps/context at the human-review
             # checkpoint. SPLIT (live runs a32f30fc / 868e406d, Nov 6 2026):
@@ -339,13 +512,23 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
             # lines - chips it can treat as research topics and "Do NOT
             # feature" directives - while human_notes receives the typed
             # evidence the improver is allowed to cite.
-            pristine_missing = str((state.values or {}).get("missing_skills") or "")
             gap_lines, evidence_lines = _split_composed_notes(
                 notes or "", pristine_missing)
+            # MR3: the write is ``update_state`` - probe-calibrated Nov 11:
+            # providing the notes as graph INPUT re-enters the graph from the
+            # entry point (the apply-run re-ran loader+scanner: one extra
+            # fast-model call per step-2, and the fresh scanner chips CLOBBER
+            # the user's edited gap lines - caught by the MR4 wire tests).
+            # Trace visibility of the injected notes - lost because
+            # ``update_state`` is not a runnable invocation - is restored by
+            # the ``notes_injection`` side run below, whose INPUT is the
+            # split notes payload (PII-redacted by the tracer's hide_inputs
+            # hook like every other run; live runs 29afd91b / 62725081).
             agent_app.update_state(config, {
                 "human_notes": evidence_lines,
                 "missing_skills": gap_lines,
             })
+            _trace_notes_injection(session, evidence_lines, gap_lines)
 
             # Resume: improver <-> reviewer -> ats_check -> fan-out -> pdf_exporter.
             # A pinned root run id lets the post-run feedback records attach to
@@ -396,3 +579,10 @@ def stream_step2(job_description: str, resume_source: str, notes: str,
 
         yield {"type": "result", "session": session,
                **_extract_results(final_state)}
+
+
+# MR3: the module-level public names are the RECORDING wrappers (the SSE
+# layer, tests, and monkeypatchers target these); the raw generators keep
+# underscore names.
+stream_step1 = _recorded(_stream_step1)
+stream_step2 = _recorded(_stream_step2)

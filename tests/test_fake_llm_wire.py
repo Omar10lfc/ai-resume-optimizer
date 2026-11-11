@@ -82,6 +82,13 @@ FRESH_STEP2_WIRES = [
 # Fixtures
 # ==========================================
 
+@pytest.fixture(autouse=True)
+def runs_db(tmp_path, monkeypatch):
+    """Hermetic runs ledger (MR3 records both steps' lifecycles)."""
+    monkeypatch.setattr(agent.config, "RUNS_DB_PATH",
+                        str(tmp_path / "runs.sqlite3"))
+
+
 @pytest.fixture
 def fake_groq():
     with FakeGroqServer() as server:

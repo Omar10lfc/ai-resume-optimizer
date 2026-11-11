@@ -31,6 +31,7 @@ import agent.llms  # noqa: E402
 import agent.tracing  # noqa: E402
 import server.app as server_app  # noqa: E402
 import server.runners as runners  # noqa: E402
+from server import run_store  # noqa: E402
 
 JD = "Python engineer with Docker and Kubernetes experience."
 RESUME_TEXT = "Jane Roe\nPython developer with cloud exposure."
@@ -796,3 +797,231 @@ def test_client_groq_key_header_is_sanitized():
 
     req_empty = _Request({"type": "http", "query_string": b"", "headers": []})
     assert server_app._client_groq_key(req_empty) is None
+
+
+# ==========================================
+# MR3: durable, reattachable runs (run_store + recovery)
+# ==========================================
+# Live defects this round closes (Nov 11 2026): a crashed attempt's scoring
+# snapshot (best_result / score / ats) leaked into the next attempt on the
+# same thread - live runs 29afd91b / 62725081 shipped ATS 56.2 while the
+# SHIPPED resume recomputed to 37.5 / 43.8, and the 7.4s score-59
+# "recovery" was a band-aid stitch of half-completed checkpoints. The
+# notes injection was also invisible on every resumed invoke's trace
+# (untraced update_state).
+
+@pytest.fixture(autouse=True)
+def runs_db(tmp_path, monkeypatch):
+    """Hermetic runs ledger per test (run_store reads the config path
+    dynamically, so the monkeypatch is enough)."""
+    path = tmp_path / "runs.sqlite3"
+    monkeypatch.setattr(agent.config, "RUNS_DB_PATH", str(path))
+    return path
+
+
+def test_runs_endpoint_roundtrips_step1_and_step2(client, fake_llms):
+    r1 = client.post("/api/v1/step1",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT})
+    session = parse_sse(r1.text)[-1][1]["session"]
+
+    row = client.get(f"/api/v1/runs/{session}").json()
+    assert row["status"] == "awaiting_notes"   # durable review checkpoint
+    assert row["step"] == "step1"
+    assert "Kubernetes" in row["missing_skills"]
+    assert row["result"] is None
+
+    r2 = client.post("/api/v1/step2",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT,
+                           "notes": "I used k8s at work", "session": session})
+    assert parse_sse(r2.text)[-1][0] == "result"
+
+    row = client.get(f"/api/v1/runs/{session}").json()
+    assert row["status"] == "done"
+    assert row["result"]["optimized_resume"].strip()
+    assert row["session"] == session
+
+
+def test_runs_ledger_records_failures_with_reason(client, fake_llms,
+                                                  monkeypatch):
+    class BrokenImproverLLM:
+        def invoke(self, messages):
+            raise RuntimeError("provider exploded")
+
+    # the improver is the first node after the interrupt -> fails the run
+    monkeypatch.setattr(agent.llms, "llm_creative", BrokenImproverLLM())
+    known = "66666666-6666-6666-6666-666666666666"
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": "", "session": known})
+    events = parse_sse(r.text)
+    assert events[-1][0] == "error"
+
+    row = client.get(f"/api/v1/runs/{known}").json()
+    assert row["status"] == "failed"
+    assert "provider exploded" in row["error"]
+
+
+def test_runs_endpoint_unknown_or_invalid_session_is_404(client):
+    assert client.get(
+        f"/api/v1/runs/{uuid.uuid4()}").status_code == 404
+    assert client.get("/api/v1/runs/not-a-uuid").status_code == 404
+
+
+def test_recover_interrupted_marks_running_rows_failed(runs_db):
+    import sqlite3
+
+    run_store.start("11111111-1111-1111-1111-111111111111", "step2")
+    run_store.finish_scan("22222222-2222-2222-2222-222222222222",
+                          "- Kubernetes")
+    run_store.supersede("33333333-3333-3333-3333-333333333333", "done elsewhere")
+
+    recovered = run_store.recover_interrupted()
+    assert recovered == 1
+    dead = run_store.get("11111111-1111-1111-1111-111111111111")
+    assert dead["status"] == "failed"
+    assert "backend restart" in dead["error"]
+
+    # the durable review checkpoint survives a restart UNtouched
+    alive = run_store.get("22222222-2222-2222-2222-222222222222")
+    assert alive["status"] == "awaiting_notes"
+    assert alive["missing_skills"] == "- Kubernetes"
+    # superseded rows are never mistaken for interrupted work
+    assert run_store.get("33333333-3333-3333-3333-333333333333")["status"] \
+        == "superseded"
+
+    # second recovery is a no-op
+    assert run_store.recover_interrupted() == 0
+    with sqlite3.connect(str(runs_db)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM runs WHERE status='running'"
+                            ).fetchone()[0] == 0
+
+
+def test_run_store_purges_expired_rows(runs_db):
+    import sqlite3
+
+    run_store.start("44444444-4444-4444-4444-444444444444", "step1")
+    with sqlite3.connect(str(runs_db)) as conn:
+        conn.execute("UPDATE runs SET created_at = 0, updated_at = 0"
+                     " WHERE session = '44444444-4444-4444-4444-444444444444'")
+
+    run_store.start("55555555-5555-5555-5555-555555555555", "step2")
+
+    assert run_store.get("44444444-4444-4444-4444-444444444444") is None
+    assert run_store.get("55555555-5555-5555-5555-555555555555") is not None
+
+
+def test_step2_recovery_recomputes_stale_ats_snapshot(client, fake_llms,
+                                                      clean_name_register):
+    """THE defect: mid-pipeline leftovers + a stale best_result snapshot on
+    the thread must never leak into the recovery attempt."""
+    r1 = client.post("/api/v1/step1",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT})
+    session = parse_sse(r1.text)[-1][1]["session"]
+    config = {"configurable": {"thread_id": session}}
+
+    # Fabricate the crashed-attempt shape: past ats_check (best snapshot
+    # written), died in the polisher/reviewer loop.
+    agent.agent_app.update_state(
+        config,
+        {"optimized_resume": "STALE DRAFT", "score": 59,
+         "ats_percentage": 56.2, "iteration": 1, "ats_result": "STALE",
+         "llm_quality_score": 85,
+         "best_result": {"score": 59, "optimized_resume": "STALE DRAFT",
+                         "ats_percentage": 56.2, "ats_result": "STALE",
+                         "llm_quality_score": 85, "requirement_matches": []}},
+        as_node="polisher")
+    assert agent.agent_app.get_state(config).next == ("reviewer",)
+
+    r2 = client.post("/api/v1/step2",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT,
+                           "notes": "I used k8s at work", "session": session})
+    events = parse_sse(r2.text)
+    kinds = [kind for kind, _ in events]
+    assert kinds[-1] == "result"
+    warnings = [e for kind, e in events if kind == "warning"]
+    assert any("Recovered an interrupted run" in w["message"] for w in warnings)
+
+    result = events[-1][1]
+    # the stale snapshot is gone: fresh score from the fresh draft
+    assert result["optimized_resume"] != "STALE DRAFT"
+    assert result["ats_percentage"] != 56.2
+    expected = round(agent.config.ATS_SCORE_WEIGHT * result["ats_percentage"]
+                     + agent.config.LLM_SCORE_WEIGHT * 85)
+    assert result["score"] == expected
+
+    # the recovery redid the model segment WITHOUT re-running the loader
+    statuses = _statuses(events)
+    assert not any("(1/2)" in s for s in statuses)
+    tagged_nodes = {e["node"] for kind, e in events
+                    if kind == "status" and e.get("node")}
+    assert {"improver", "reviewer", "ats_check", "cover_letter",
+            "pdf_exporter"} <= tagged_nodes
+    assert not {"loader", "scanner"} & tagged_nodes
+
+    snapshot = agent.agent_app.get_state(config)
+    values = snapshot.values or {}
+    assert values.get("human_notes") == "I used k8s at work"
+    assert values.get("best_result", {}).get("score") == expected
+
+    # and the ledger shows the recovery attempt as done
+    row = client.get(f"/api/v1/runs/{session}").json()
+    assert row["status"] == "done"
+
+
+def test_step2_resume_writes_notes_without_reentering_the_graph(client,
+                                                                fake_llms,
+                                                                monkeypatch,
+                                                                clean_name_register):
+    """MR3 + probe-calibrated Nov 11: providing the notes as graph INPUT
+    re-enters the graph from the entry point (loader+scanner re-run: one
+    extra fast-model call, and the fresh scanner chips CLOBBER the user's
+    edited gap lines - caught by the MR4 wire tests). The write must be
+    ``update_state``, with the ``notes_injection`` side run restoring trace
+    visibility of the injected payload."""
+    streams = []
+    updates = []
+    original_stream = agent.agent_app.stream
+    original_update = agent.agent_app.update_state
+
+    def spy_stream(graph_input, config, **kwargs):
+        streams.append(graph_input)
+        return original_stream(graph_input, config, **kwargs)
+
+    def spy_update(config, values, as_node=None):
+        updates.append(dict(values))
+        return original_update(config, values, as_node=as_node)
+
+    monkeypatch.setattr(agent.agent_app, "stream", spy_stream)
+    monkeypatch.setattr(agent.agent_app, "update_state", spy_update)
+
+    traced = []
+    monkeypatch.setattr(runners, "_trace_notes_injection",
+                        lambda session, notes, gaps: traced.append((notes, gaps)))
+
+    r1 = client.post("/api/v1/step1",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT})
+    session = parse_sse(r1.text)[-1][1]["session"]
+    streams.clear()  # only the step-2 segment is under test
+
+    r2 = client.post("/api/v1/step2",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT,
+                           "notes": "- Kubernetes: used at work\nI also led the migration",
+                           "session": session})
+    assert parse_sse(r2.text)[-1][0] == "result"
+
+    # the ONLY graph stream in the resume segment is the None-resume: an
+    # input-provided stream would re-run loader/scanner (re-entry bug)
+    assert streams == [None]
+    # the write is update_state, exactly once, with the SPLIT payloads:
+    # the kept chip line (matches the step-1 snapshot) -> gap channel, the
+    # typed prose -> evidence channel
+    assert len(updates) == 1
+    assert updates[0]["human_notes"] == "I also led the migration"
+    assert updates[0]["missing_skills"] == "- Kubernetes: used at work"
+    # the traced side run carries the same split payload for LangSmith
+    assert traced == [("I also led the migration", "- Kubernetes: used at work")]
+
+    snapshot = agent.agent_app.get_state({"configurable": {"thread_id": session}})
+    values = snapshot.values or {}
+    assert values.get("human_notes") == "I also led the migration"
+    assert values.get("missing_skills") == "- Kubernetes: used at work"

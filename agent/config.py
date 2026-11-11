@@ -20,6 +20,13 @@ _EMERGENCY_MODEL = os.environ.get("EMERGENCY_MODEL", "qwen/qwen3.8-27b")
 OUTPUT_ROOT = Path(tempfile.gettempdir()) / "resume_optimizer_output"
 OUTPUT_RETENTION_HOURS = 24
 CHECKPOINTER_DB_PATH = os.environ.get("CHECKPOINTER_DB_PATH", "").strip()
+# MR3 durable runs: SQLite ledger of run status/results (per-step progress,
+# step-1 chips for mid-pipeline recovery, done-run result payloads for
+# reattach). Defaults next to the artifacts; env-overridable (tests point it
+# at a tmp file). The artifact cleanup only removes stale DIRECTORIES under
+# OUTPUT_ROOT, so the ledger file itself survives the sweep.
+RUNS_DB_PATH = (os.environ.get("RUNS_DB_PATH", "").strip()
+                or str(OUTPUT_ROOT / "runs.sqlite3"))
 
 # --- Input Limits (env-overridable) ---
 MAX_PDF_BYTES = int(os.environ.get("MAX_PDF_BYTES", 5 * 1024 * 1024))
