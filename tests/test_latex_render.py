@@ -1398,5 +1398,70 @@ def test_layout_spec_b_acceptance(tmp_path):
     assert comp_tex.count(r"\looseness=-1") >= 5
 
 
+@pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
+                    reason="pdflatex/pdfplumber not installed")
+def test_label_rows_hang_wrapped_tails(tmp_path):
+    """Scripted acceptance for the hanging-indent spacing fix (live runs
+    ca102fa5 / 71f879ae, Nov 11 2026): label-row wrap tails broke
+    flush-left and measured IDENTICAL to the row-to-row gap (uniform
+    10.96pt dy), so "Fine-Tuning, Neural Networks" was indistinguishable
+    from the next skill row. Label rows now REPLACE the list's one-entry
+    \\parshape (the shape LaTeX's \\@trivlist sets - a nonempty \\parshape
+    makes TeX ignore \\hangindent) with a two-entry shape: line 1 keeps
+    the shipped geometry, every continuation line indents 1em.
+
+    Every check is pdfplumber-measured on BOTH modes of the spec-B
+    fixture, inside the rows blocks (Summary/Skills/Certifications) only:
+
+    - every adjacent 9pt line pair in the same block (dy <= 11.5pt)
+      indents either flush (< 1pt) or by the 1em band ([7, 13]pt) - the
+      label line and prose rows stay byte-identical, no partial indents;
+    - at least one true wrap exists (fixture-stale guard): a 1em-indented
+      line whose previous line sits at the margin.
+    """
+    md = _layout_spec_b_markdown()
+    data = parse_markdown_resume(md)
+    ROWS_HEADINGS = {"professional summary", "technical skills",
+                     "certifications"}
+    for mode, compact in (("base", False), ("compact", True)):
+        pdf = latex_to_pdf(render_resume_tex(data, compact=compact), tmp_path,
+                           f"hang_{mode}.pdf")
+        assert pdf, f"{mode}: compile failed"
+        all_lines = [ln for pg in _pdf_lines(pdf) for ln in pg["lines"]]
+        all_lines.sort(key=lambda l: l["top"])
+        small = [ln for ln in all_lines
+                 if ln["size"] <= 9.5 and not _is_marker_line(ln)]
+        margin = min(ln["x0"] for ln in small)
+        # walk every line; pair-scan only 9pt lines inside rows blocks
+        # (after a 12pt rows heading, before the next heading)
+        block = None
+        prev_in_block = None
+        wraps = 0
+        for ln in all_lines:
+            if ln["size"] >= 10.5:
+                t = ln["text"].strip().lower()
+                block = t if t in ROWS_HEADINGS else None
+                prev_in_block = None
+                continue
+            if ln["size"] > 9.5 or _is_marker_line(ln):
+                continue  # 10pt entry titles / bullet markers
+            if block is None:
+                continue
+            if (prev_in_block is not None
+                    and ln["top"] - prev_in_block["top"] <= 11.5):
+                d = ln["x0"] - margin
+                assert d < 1.0 or 7.0 <= d <= 13.0, (
+                    f"{mode}: line after {prev_in_block['text'][:40]!r} "
+                    f"indents {d:.2f}pt (flush or 1em only)")
+                if 7.0 <= d <= 13.0:
+                    assert prev_in_block["x0"] - margin < 1.0, (
+                        f"{mode}: wrap after non-flush line "
+                        f"{prev_in_block['text'][:40]!r}")
+                    wraps += 1
+            prev_in_block = ln
+        assert wraps >= 1, (
+            f"{mode}: no wrapped label row found - stale fixture")
+
+
 
 

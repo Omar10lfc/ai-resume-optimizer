@@ -1198,6 +1198,7 @@ def _render_section(section: Section, compact: bool = False) -> str:
 
     if section.simple_lines:
         items = []
+        hang_flags = []
         for ln in section.simple_lines:
             m = _BOLD_LABEL_RE.match(ln)
             if m:
@@ -1206,15 +1207,19 @@ def _render_section(section: Section, compact: bool = False) -> str:
                 value = m.group(2)
                 item_text = (r"\textbf{" + _latex_escape(label) + r"}{: " +
                              _render_text_with_links(value) + r"}")
+                is_label_row = True
             else:
                 # Generic label:value → bold label
                 cm = re.match(r'^(.*?):\s*(.*)$', ln)
                 if cm and len(cm.group(1)) <= 35:
                     item_text = (r"\textbf{" + _latex_escape(cm.group(1)) + r"}{: " +
                                  _render_text_with_links(cm.group(2)) + r"}")
+                    is_label_row = True
                 else:
                     item_text = _render_text_with_links(ln)
+                    is_label_row = False
             items.append(item_text)
+            hang_flags.append(is_label_row)
 
         # One \item PER ROW with itemsep=0pt (layout spec A, Nov 11 2026):
         # the old \\-joined single item made every row a forced break inside
@@ -1229,19 +1234,61 @@ def _render_section(section: Section, compact: bool = False) -> str:
         # `before` key is used (NOT topsep - probe-calibrated Nov 11 2026:
         # topsep glue is swallowed at list start, while before=\vspace
         # lands 1:1). -1.5pt keeps ~3.5pt of visual air under each rule.
+        # Label rows additionally carry a hanging indent (spacing fix, live
+        # runs ca102fa5 / 71f879ae, Nov 11 2026): wrapped row tails
+        # ("Fine-Tuning, Neural Networks") broke flush-left and measured
+        # IDENTICAL to the row-to-row gap (uniform 10.96pt dy), so a wrapped
+        # tail was indistinguishable from the next skill row - the "wall of
+        # text" look. Continuation lines indent 1em; first line unchanged.
+        # Horizontal-only: zero vertical budget cost, safe for the compact
+        # pass's ~4pt bottom slack. Probe-proven mechanics (Nov 11 2026):
+        # - LaTeX breaks each item's paragraph at the NEXT \item (latex.ltx
+        #   \@item: \ifhmode \unskip\unskip \par), OUTSIDE the \item{...}
+        #   group - parameters assigned inside the group revert first
+        #   (\hangindent measured dead there). The row therefore closes its
+        #   paragraph INSIDE the group with an explicit \par.
+        # - The list sets \parshape 1 \@totalleftmargin \linewidth
+        #   (latex.ltx \@trivlist) and enumitem does its indenting THROUGH
+        #   that shape, so \hangindent is ignored (TeX rule: nonempty
+        #   \parshape wins) and emptying the shape (\parshape 0) strips the
+        #   list margin itself (line 1 printed at the outer edge). The shape
+        #   is REPLACED with two entries instead: line 1 keeps the shipped
+        #   geometry (indent \leftmargin - equal to \@totalleftmargin at
+        #   depth 1, where \list does \advance\@totalleftmargin\leftmargin -
+        #   and width \linewidth); every later line is +1em indented and
+        #   \linewidth-1em wide (last pair repeats for all remaining lines).
+        #   \@-internal registers cannot appear in the emitted TeX: at
+        #   document-body catcodes \@ is \spacefactor (compile-fatal).
+        # - \par also makes the pre-existing \looseness=-1 live, which
+        #   probe-measured re-breaking rows (short first line, crammed
+        #   second); \looseness=0 after the pinned literal keeps the shave
+        #   inert exactly as shipped. Prose rows (Summary/Certifications)
+        #   keep the shipped emission byte-for-byte - no geometry change.
+        _HANG = (r"\parshape 2 \leftmargin \linewidth "
+                 r"\dimexpr\leftmargin+1em\relax "
+                 r"\dimexpr\linewidth-1em\relax \looseness=0 ")
         row_opts = ("leftmargin=0.15in, label={}, itemsep=0pt, parsep=0pt"
                     + (r", before=\vspace{-1.5pt}" if compact else ""))
         if len(items) > 1:
             parts.append(r"\begin{itemize}[" + row_opts + "]")
             parts.append(r"    \small{")
-            for it in items:
-                parts.append(r"    \item{\looseness=-1 " + it + "}")
+            for it, hang in zip(items, hang_flags):
+                if hang:
+                    parts.append(r"    \item{\looseness=-1 " + _HANG
+                                 + it + r"\par}")
+                else:
+                    parts.append(r"    \item{\looseness=-1 " + it + "}")
             parts.append(r"    }")
             parts.append(r"\end{itemize}<!--SECTION_TAIL_NUDGE:rows-->")
             parts.append("")
         elif items:
             parts.append(r"\begin{itemize}[" + row_opts + "]")
-            parts.append(r"    \small{\item{\looseness=-1 " + items[0] + r"}}")
+            if hang_flags[0]:
+                parts.append(r"    \small{\item{\looseness=-1 " + _HANG
+                             + items[0] + r"\par}}")
+            else:
+                parts.append(r"    \small{\item{\looseness=-1 "
+                             + items[0] + r"}}")
             parts.append(r"\end{itemize}<!--SECTION_TAIL_NUDGE:rows-->")
             parts.append("")
 
