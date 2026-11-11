@@ -60,6 +60,7 @@ skills-lock.json
 
 # Internal scratch plans & diagram utility
 IMPLEMENTATION_PLAN.md
+DOSSIER_COMPARISON.md
 make_diagram.py
 session-*.md
 draft/*
