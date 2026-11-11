@@ -58,7 +58,7 @@ EXPECTED_PROMPT_VERSIONS = {
     "polisher": "polisher-full@1",
     "reviewer": "reviewer@2",
     "ats-semantic": "ats-semantic@1",
-    "cover-letter": "cover-letter@1",
+    "cover-letter": "cover-letter@2",
     "interview-prep": "interview-prep@1",
 }
 

@@ -555,6 +555,69 @@ def test_step2_result_payload_carries_integrity_and_versions(client, fake_llms, 
     assert usage["llm_calls"] == 0 and usage["total_tokens"] == 0
 
 
+def test_cover_letter_fabricated_metrics_are_flagged(client, fake_llms,
+                                                    monkeypatch):
+    """Live run 22e943c6 (Nov 11 2026): the cover letter fabricated "70%"
+    and "45%" - numbers absent from every input - because the resume
+    path's unevidenced-metric tripwire never watched the letter. The
+    letter now gets the same scan (evidence = source resume + user notes)
+    surfaced as its own warning event + payload key."""
+    class FabricatingLetterLLM:
+        def invoke(self, messages):
+            return AIMessage(content=(
+                "Dear Hiring Manager,\n\n"
+                "I reduced manual processing time by 70% for a climate-data "
+                "client and increased user engagement by 45%.\n\n"
+                "Sincerely, Jane Roe"))
+
+    monkeypatch.setattr(agent.llms, "llm_fast", FabricatingLetterLLM())
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": "- I used k8s at work"})
+    events = parse_sse(r.text)
+    kinds = [kind for kind, _ in events]
+    assert kinds[-1] == "result"
+
+    payload = events[-1][1]
+    assert payload["cover_letter_metrics"] == ["70%", "45%"]
+    # no cross-contamination: the letter's findings live in their own
+    # channel - the resume path's accumulator is untouched
+    assert payload["unevidenced_metrics"] == []
+
+    warnings = [e for kind, e in events if kind == "warning"]
+    # clean resume draft + non-empty notes -> the letter's warning is the
+    # only one, and it lands directly before the result like the resume's
+    assert len(warnings) == 1
+    assert "cover letter" in warnings[0]["message"]
+    assert "70%" in warnings[0]["message"] and "45%" in warnings[0]["message"]
+    assert kinds.index("warning") == len(kinds) - 2
+
+
+def test_cover_letter_evidenced_metrics_pass_clean(client, fake_llms,
+                                                  monkeypatch):
+    """The scan's positive control: numbers the USER NOTES evidence are
+    legitimate letter content and raise no cover-letter warning."""
+    class EvidencedLetterLLM:
+        def invoke(self, messages):
+            return AIMessage(content=(
+                "Dear Hiring Manager,\n\n"
+                "At work I reduced manual processing time by 70% and would "
+                "bring the same rigor to your team.\n\n"
+                "Sincerely, Jane Roe"))
+
+    monkeypatch.setattr(agent.llms, "llm_fast", EvidencedLetterLLM())
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": "I reduced manual processing time by 70% at work"})
+    events = parse_sse(r.text)
+    assert events[-1][0] == "result"
+
+    payload = events[-1][1]
+    assert payload["cover_letter_metrics"] == []
+    warnings = [e for kind, e in events if kind == "warning"]
+    assert not any("cover letter" in w["message"] for w in warnings)
+
+
 def test_step2_result_payload_carries_requirement_table(client, fake_llms):
     """MR2: the SSE result payload ships the deterministic requirement-fit
     table (covered/partial/gap rows with evidence terms and human reasons),

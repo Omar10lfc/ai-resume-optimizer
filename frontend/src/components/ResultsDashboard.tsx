@@ -74,11 +74,13 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   const tabRefs = useRef(new Map<TabId, HTMLButtonElement | null>());
 
   // The Integrity tab only exists when this run actually has integrity
-  // content (QW2/QW3): removals, declined requests, or metric findings.
+  // content (QW2/QW3): removals, declined requests, or metric findings
+  // (resume path + the cover letter's own scan, live run 22e943c6).
   const integrityList = [
     ...(result.removals ?? []),
     ...(result.declined_requests ?? []),
     ...(result.unevidenced_metrics ?? []),
+    ...(result.cover_letter_metrics ?? []),
   ];
   // Tabs beyond the core four exist only when this run has their content:
   // Fit (MR2 requirement table) and Integrity (QW2/QW3 channels).
@@ -427,6 +429,18 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                 <div className="flex flex-wrap gap-1.5">
                   {result.unevidenced_metrics!.map((item, i) => (
                     <span key={`um-${i}`} className="px-2 py-0.5 rounded-sm2 bg-warn-tint border border-warn/25 text-2xs text-warn font-mono">{item}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(result.cover_letter_metrics?.length ?? 0) > 0 && (
+              <div className="mb-4">
+                <h4 className="text-2xs font-semibold text-ink mb-1.5">Cover-letter numbers to verify</h4>
+                <p className="text-2xs text-ink-3 mb-1.5">Still in the cover letter; neither your resume nor your notes contain them (live run 22e943c6 fabricated "70%"/"45%" this way). Verify before sending:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {result.cover_letter_metrics!.map((item, i) => (
+                    <span key={`clm-${i}`} className="px-2 py-0.5 rounded-sm2 bg-warn-tint border border-warn/25 text-2xs text-warn font-mono">{item}</span>
                   ))}
                 </div>
               </div>

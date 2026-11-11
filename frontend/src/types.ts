@@ -33,6 +33,9 @@ export interface OptimizationResult {
   removals?: string[];
   /** QW3: metric-shaped numbers still in the draft that the evidence lacks. */
   unevidenced_metrics?: string[];
+  /** Live run 22e943c6: the same scan for the COVER letter - fabricated
+   *  numbers the letter coined that no input contains. */
+  cover_letter_metrics?: string[];
   /** QW2: requests the writer declined because the evidence doesn't back them. */
   declined_requests?: string[];
   /** QW1: per-node prompt fingerprints (e.g. { improver: "improver@2" }). */

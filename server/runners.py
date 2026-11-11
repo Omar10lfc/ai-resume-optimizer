@@ -120,6 +120,7 @@ def _recovery_reset() -> dict:
         "scrub_removals": [], "unevidenced_metrics": [],
         "declined_requests": [], "requirement_matches": [],
         "feedback_sections": [], "polish_sections_targeted": [],
+        "cover_letter_metrics": [],
         "human_notes": "", "missing_skills": "",
     }
 
@@ -330,6 +331,9 @@ def _extract_results(final_state: dict) -> dict:
         "removals": final_state.get("scrub_removals") or [],
         "unevidenced_metrics": final_state.get("unevidenced_metrics") or [],
         "declined_requests": final_state.get("declined_requests") or [],
+        # Cover-letter integrity scan (live run 22e943c6): the letter's own
+        # unevidenced numbers, rendered by the results Integrity tab.
+        "cover_letter_metrics": final_state.get("cover_letter_metrics") or [],
         "prompt_versions": final_state.get("prompt_versions") or {},
         # MR2: deterministic requirement-level fit table (covered/partial/gap
         # rows with evidence terms and human reasons).
@@ -633,6 +637,20 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
             yield {"type": "warning",
                    "message": "Integrity check: " + "; ".join(integrity)
                               + ". Verify the resume before applying."}
+
+        # Cover-letter integrity (live run 22e943c6, Nov 11 2026): the letter
+        # gets its own scan + warning - the resume path's tripwire never
+        # watched the letter, which fabricated "70%"/"45%" from nothing.
+        # Its own event (not folded into the resume integrity list) because
+        # the artifact to verify is different - and cover_letter writes the
+        # channel from the concurrent fan-out, so guardrail_warnings
+        # (last-writer-wins) would clobber the resume's warnings.
+        letter_metrics = final_state.get("cover_letter_metrics") or []
+        if letter_metrics:
+            yield {"type": "warning",
+                   "message": "Integrity check (cover letter): unevidenced "
+                              "number(s) " + ", ".join(letter_metrics)
+                              + ". Verify the cover letter before sending."}
 
         results_payload = _extract_results(final_state)
         # PB3: opt-in echo of the PARSED original resume. It lives in the

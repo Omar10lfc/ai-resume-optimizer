@@ -87,6 +87,15 @@ class AgentState(TypedDict):
     # table of the draft that actually ships) so the payload never describes a
     # regressed draft.
     requirement_matches: NotRequired[list]
+    # Cover-letter integrity (live run 22e943c6, Nov 11 2026): metric-shaped
+    # tokens in the generated COVER LETTER that neither the source resume nor
+    # the user notes contain (the letter fabricated "70%"/"45%" from nothing
+    # while the resume path's tripwire only watched the resume). Own channel
+    # because cover_letter writes it from the fan-out, concurrent with
+    # interview_prep: guardrail_warnings (last-writer-wins) would clobber the
+    # resume's warnings, and unevidenced_metrics is the resume path's
+    # node-managed accumulator.
+    cover_letter_metrics: NotRequired[list]
     # QW1 forensics: one stamp per node, e.g. {"improver": "improver@2"}.
     # Reducer merge so the concurrent cover_letter / interview_prep
     # fan-out (both writing this key in one superstep) keeps BOTH entries
