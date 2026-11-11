@@ -363,6 +363,9 @@ export function App() {
 
     const fd = buildFormData();
     fd.append("notes", notesArg ?? userNotesRef.current);
+    // BB1 Phase B (PB3): ask the server to echo the parsed original in the
+    // result so the before/after diff also works for uploaded resumes.
+    fd.append("include_diff", "original");
 
     runStep2(fd, {
       onStatus: handleStreamStatus,
@@ -554,7 +557,8 @@ export function App() {
           <div ref={resultsRef} className="scroll-mt-16">
             <ResultsDashboard
               result={result}
-              originalResume={resumeMode === "paste" ? resumeText : undefined}
+              originalResume={result.original_resume
+                ?? (resumeMode === "paste" ? resumeText : undefined)}
             />
           </div>
         )}

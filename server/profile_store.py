@@ -102,7 +102,10 @@ def record_run(job_text: str, resume_text: str, session: str,
         llm = float(result.get("llm_quality_score") or 0)
         failed = 1 if result.get("review_failed") else 0
         payload = {k: v for k, v in result.items()
-                   if k not in ("type", "session")}
+                   if k not in ("type", "session",
+                                # PB3: a duplicate of this row's stored
+                                # resume_text - no at-rest duplication.
+                                "original_resume")}
         now = time.time()
         conn = _connect()
         try:

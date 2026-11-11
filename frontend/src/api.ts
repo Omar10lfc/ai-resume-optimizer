@@ -105,6 +105,20 @@ export async function resolveArtifactUrl(relativePath: string): Promise<string> 
   return `${baseUrl}${cleanPath}`;
 }
 
+/**
+ * BB1 Phase B (PB2): the server REGENERATES this artifact from the run's
+ * stored text (through the current template), so history downloads keep
+ * working long after the original files hit the 24h cleanup sweep.
+ */
+export async function resolveRunArtifactUrl(
+  appId: number,
+  runId: number,
+  kind: "resume-pdf" | "cover-pdf"
+): Promise<string> {
+  const baseUrl = await getBaseUrl();
+  return `${baseUrl}/api/v1/applications/${appId}/runs/${runId}/artifacts/${kind}`;
+}
+
 // BB1: application history (persistent profile store).
 
 export async function fetchApplications(limit = 50): Promise<ApplicationSummary[]> {

@@ -1,7 +1,6 @@
 """Environment setup, model constants, output directories, and tuning knobs."""
 import os
 import shutil
-import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -31,7 +30,14 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").strip()
 LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", 120))
 
 # --- Output Directories & Persistence ---
-OUTPUT_ROOT = Path(tempfile.gettempdir()) / "resume_optimizer_output"
+# BB1 Phase B (PB1): artifacts live under the project's gitignored data/
+# dir by default (visible to the user, survives OS temp cleaners, and
+# ships with the workspace instead of vanishing into %TEMP%). Env-
+# overridable - point OUTPUT_ROOT at a scratch disk or the historical
+# %TEMP% location if preferred. Tests monkeypatch the attribute directly.
+_OUTPUT_ROOT_RAW = os.environ.get("OUTPUT_ROOT", "").strip()
+OUTPUT_ROOT = (Path(_OUTPUT_ROOT_RAW) if _OUTPUT_ROOT_RAW
+               else Path(__file__).resolve().parents[1] / "data" / "artifacts")
 OUTPUT_RETENTION_HOURS = 24
 CHECKPOINTER_DB_PATH = os.environ.get("CHECKPOINTER_DB_PATH", "").strip()
 # MR3 durable runs: SQLite ledger of run status/results (per-step progress,

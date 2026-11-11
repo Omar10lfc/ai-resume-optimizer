@@ -761,9 +761,11 @@ def test_step_passes_client_groq_key_header_to_runner(client, fake_llms,
         captured["step1"] = groq_api_key
         return original_step1(job_description, resume_source, session, groq_api_key)
 
-    def spy_step2(job_description, resume_source, notes, session, groq_api_key=None):
+    def spy_step2(job_description, resume_source, notes, session,
+                  groq_api_key=None, **kwargs):
         captured["step2"] = groq_api_key
-        return original_step2(job_description, resume_source, notes, session, groq_api_key)
+        return original_step2(job_description, resume_source, notes, session,
+                              groq_api_key, **kwargs)
 
     monkeypatch.setattr(runners, "stream_step1", spy_step1)
     monkeypatch.setattr(runners, "stream_step2", spy_step2)
@@ -1142,3 +1144,115 @@ def test_applications_endpoint_validation(client):
     assert client.delete("/api/v1/applications/999999").status_code == 404
     assert client.get("/api/v1/applications?limit=0").status_code == 422
     assert client.get("/api/v1/applications?limit=500").status_code == 422
+
+
+# ==========================================
+# BB1 Phase B: workspace artifacts + history re-download + server-side diff
+# ==========================================
+
+def test_output_root_default_is_project_local():
+    """PB1: artifacts default into the workspace's gitignored data/ dir
+    (was %TEMP%/resume_optimizer_output - OS temp cleaners could vanish
+    files mid-retention-window). The OUTPUT_ROOT env knob stays available
+    for overrides; tests monkeypatch the attribute directly."""
+    if os.environ.get("OUTPUT_ROOT", "").strip():
+        pytest.skip("OUTPUT_ROOT explicitly set in this environment")
+    project_root = Path(agent.__file__).resolve().parents[1]
+    assert agent.config.OUTPUT_ROOT == project_root / "data" / "artifacts"
+
+
+def test_regenerate_run_artifacts_from_stored_text(client, fake_llms, monkeypatch, tmp_path):
+    """PB2: a past run's artifacts are re-created from the STORED text after
+    the originals hit the 24h sweep. Regeneration goes through the CURRENT
+    template; with LaTeX absent the resume still degrades to HTML->PDF."""
+    monkeypatch.setattr(agent.config, "OUTPUT_ROOT", tmp_path)
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT, "notes": ""})
+    assert parse_sse(r.text)[-1][0] == "result"
+
+    detail = client.get("/api/v1/applications/1").json()
+    run_id = detail["runs"][0]["id"]
+
+    def regen(kind):
+        return client.get(f"/api/v1/applications/1/runs/{run_id}/artifacts/{kind}")
+
+    resume_pdf = regen("resume-pdf")
+    assert resume_pdf.status_code == 200
+    assert resume_pdf.headers["content-type"].startswith("application/pdf")
+    assert resume_pdf.content[:4] == b"%PDF"
+
+    cover_pdf = regen("cover-pdf")
+    assert cover_pdf.status_code == 200
+    assert cover_pdf.headers["content-type"].startswith("application/pdf")
+    assert cover_pdf.content[:4] == b"%PDF"
+
+    # The .tex source is written before compilation (pure Python render),
+    # so it regenerates regardless of pdflatex availability.
+    tex = regen("resume-tex")
+    assert tex.status_code == 200
+    assert tex.headers["content-type"].startswith("text/x-tex")
+    assert b"documentclass" in tex.content
+
+    # DOCX needs pandoc: served when present, honest 404 when the renderer
+    # is unavailable (endpoint-only surface - the UI exposes PDFs only).
+    assert regen("resume-docx").status_code in (200, 404)
+
+    # Regeneration writes into FRESH request dirs under OUTPUT_ROOT, left
+    # behind for the regular 24h sweep (pipeline dir + regenerated dirs).
+    assert len([p for p in tmp_path.iterdir() if p.is_dir()]) >= 2
+
+
+def test_regenerate_run_artifact_validation(client, monkeypatch, tmp_path):
+    import server.profile_store as profile_store
+
+    monkeypatch.setattr(agent.config, "OUTPUT_ROOT", tmp_path)
+    assert client.get(
+        "/api/v1/applications/1/runs/1/artifacts/resume-xls").status_code == 404
+    assert client.get(
+        "/api/v1/applications/999/runs/1/artifacts/resume-pdf").status_code == 404
+
+    rid = profile_store.record_run(
+        JD, RESUME_TEXT, "sess-x",
+        {"score": 60, "ats_percentage": 40.0, "llm_quality_score": 70,
+         "review_failed": False,
+         "optimized_resume": "No resume generated.",
+         "cover_letter": "No cover letter generated."})
+    assert rid is not None
+    # _extract_results' placeholder strings are not exportable content.
+    assert client.get(
+        f"/api/v1/applications/1/runs/{rid}/artifacts/resume-pdf").status_code == 404
+    assert client.get(
+        f"/api/v1/applications/1/runs/{rid}/artifacts/cover-pdf").status_code == 404
+
+    # A run id from a DIFFERENT application is unknown (no cross-app leaks).
+    profile_store.record_run(JD, RESUME_TEXT + "\nMore experience.", "sess-y",
+                             {"score": 50})
+    assert client.get(
+        f"/api/v1/applications/2/runs/{rid}/artifacts/resume-pdf").status_code == 404
+
+
+def test_step2_include_diff_original_echoes_parsed_resume(client, fake_llms):
+    """PB3: include_diff=original echoes the PARSED original resume so
+    DiffView works for uploads too (the SPA never parses PDFs client-side)."""
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": ""},
+                    params={"include_diff": "original"})
+    assert parse_sse(r.text)[-1][0] == "result"
+    result = parse_sse(r.text)[-1][1]
+    # Pasted text passes through the loader unmodified -> exact echo.
+    assert result["original_resume"] == RESUME_TEXT
+
+    # Stored history: the echo is NOT duplicated at rest - resume_text is
+    # already the application's evidence column.
+    detail = client.get("/api/v1/applications/1").json()
+    assert "original_resume" not in detail["runs"][0]["result"]
+    assert detail["resume_text"] == RESUME_TEXT
+
+
+def test_step2_without_include_diff_omits_original(client, fake_llms):
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": ""})
+    assert parse_sse(r.text)[-1][0] == "result"
+    assert "original_resume" not in parse_sse(r.text)[-1][1]

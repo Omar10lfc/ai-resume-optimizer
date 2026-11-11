@@ -2,12 +2,14 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   ArrowClockwise,
   CaretDown,
+  DownloadSimple,
   Trash,
 } from "@phosphor-icons/react";
 import {
   deleteApplication,
   fetchApplication,
   fetchApplications,
+  resolveRunArtifactUrl,
 } from "../api";
 import type { ApplicationDetail, ApplicationSummary } from "../types";
 
@@ -74,11 +76,61 @@ const ApplicationRuns: React.FC<{ detail: ApplicationDetail }> = ({ detail }) =>
               </span>
             </div>
           )}
+          <RunDownloads appId={detail.id} runId={run.id} />
         </li>
       );
     })}
   </ul>
 );
+
+/**
+ * BB1 Phase B (PB2): history re-download. The original artifact files hit
+ * the 24h cleanup sweep, so these links ask the server to REGENERATE the
+ * documents from the run's stored text (through the current template -
+ * the honest "restore" for past runs). Plain links, like the results
+ * dashboard's artifact downloads (auth is optional in this app).
+ */
+const RunDownloads: React.FC<{ appId: number; runId: number }> = ({ appId, runId }) => {
+  const [urls, setUrls] = useState<{ resume: string; cover: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [resume, cover] = await Promise.all([
+          resolveRunArtifactUrl(appId, runId, "resume-pdf"),
+          resolveRunArtifactUrl(appId, runId, "cover-pdf"),
+        ]);
+        if (alive) setUrls({ resume, cover });
+      } catch {
+        // Settings unavailable - skip the buttons quietly.
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [appId, runId]);
+
+  if (!urls) return null;
+  const chip =
+    "inline-flex items-center gap-1 px-2 py-0.5 rounded-sm2 border border-line bg-inset text-2xs text-ink-2 font-mono hover:text-ink hover:bg-surface transition-colors";
+  return (
+    <div
+      className="flex items-center gap-2 mt-2 flex-wrap"
+      title="Regenerated from this run's stored text through the current template."
+    >
+      <a href={urls.resume} download className={chip}>
+        <DownloadSimple className="w-3 h-3" />
+        Resume PDF
+      </a>
+      <a href={urls.cover} download className={chip}>
+        <DownloadSimple className="w-3 h-3" />
+        Cover PDF
+      </a>
+      <span className="text-2xs text-ink-3 font-mono">regenerated on click</span>
+    </div>
+  );
+};
 
 /**
  * BB1 Phase A: the application history (persistent profile store).

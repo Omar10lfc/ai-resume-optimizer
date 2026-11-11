@@ -39,6 +39,10 @@ export interface OptimizationResult {
   prompt_versions?: Record<string, string>;
   /** MR2: deterministic requirement fit rows (covered/partial/gap + reasons). */
   requirement_matches?: RequirementMatch[];
+  /** BB1 Phase B (PB3): the PARSED original resume, echoed server-side when
+   *  the request opts in (include_diff=original) - powers DiffView for
+   *  uploads; paste mode falls back to the client-held text. */
+  original_resume?: string;
 }
 
 export type PipelineStage =

@@ -27,7 +27,8 @@ type TabId = "resume" | "cover" | "ats" | "fit" | "interview" | "integrity";
 
 interface ResultsDashboardProps {
   result: OptimizationResult;
-  /** Present only in paste mode: powers the before/after diff view. */
+  /** Powers the before/after diff view: paste mode passes the client-held
+   *  text, uploads rely on the server echo (PB3 include_diff=original). */
   originalResume?: string;
 }
 

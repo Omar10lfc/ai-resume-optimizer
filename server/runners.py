@@ -420,10 +420,14 @@ def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
 
 
 def _stream_step2(job_description: str, resume_source: str, notes: str,
-                  session: str | None, groq_api_key: str | None = None) -> Iterator[dict]:
+                  session: str | None, groq_api_key: str | None = None,
+                  include_original: bool = False) -> Iterator[dict]:
     """Step 2: resumes the interrupted session (or starts fresh).
 
     groq_api_key (optional) honors a client-supplied Groq key - see stream_step1.
+    include_original (BB1 Phase B / PB3): echoes the PARSED original resume
+    text in the final result payload so the SPA's before/after diff works
+    for uploads too (default off - paste mode already holds the text).
 
     Session-entry semantics (MR3):
     - ``next == ("improver",)`` - the durable human-review checkpoint: the
@@ -593,6 +597,14 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                               + ". Verify the resume before applying."}
 
         results_payload = _extract_results(final_state)
+        # PB3: opt-in echo of the PARSED original resume. It lives in the
+        # authoritative snapshot (loader output - final_state only carries
+        # this segment's deltas on the step1->step2 resume path). The
+        # profile store filters this key back out of result_json: the
+        # resume text is already stored at application level.
+        if include_original:
+            results_payload["original_resume"] = str(
+                (snapshot.values or {}).get("resume_text") or "")
         yield {"type": "result", "session": session,
                # MR5: per-task token accounting rides the result payload (and
                # lands in the runs ledger for free, since done-run payloads

@@ -4,6 +4,10 @@ The optimized resume is rendered through a bundled LaTeX template (PDF + DOCX
 + source .tex), while the cover letter keeps the simpler HTML→PDF path.
 If LaTeX/pandoc are unavailable, the resume gracefully falls back to HTML→PDF
 so exports still work everywhere.
+
+BB1 Phase B (PB2): the export core is factored into ``export_documents`` so
+the history panel can REGENERATE artifacts from a past run's stored text
+(the pipeline node and the server endpoint share one implementation).
 """
 from pathlib import Path
 from uuid import uuid4
@@ -14,11 +18,14 @@ from ..helpers import _safe_print, _html_to_pdf
 from .. import latex_render as _latex
 
 
-def pdf_exporter_node(state: AgentState):
-    _safe_print(f"\n--- PDF EXPORT ---")
+def export_documents(resume_text: str, cover_text: str, request_dir: Path) -> dict:
+    """Renders the optimized resume + cover letter into ``request_dir``.
 
-    request_dir = Path(state.get("output_dir") or str(OUTPUT_ROOT / uuid4()))
-
+    Returns exactly the keys the exporter node writes back into the graph
+    state (file paths as strings, "" when an export failed; the trailing
+    keys carry the 1-page containment outcome). Shared by the pipeline
+    node and the PB2 history re-download endpoint.
+    """
     # --- Resume: LaTeX template → PDF + DOCX (+ .tex source) ---
     resume_pdf_path = None
     resume_docx_path = None
@@ -26,9 +33,8 @@ def pdf_exporter_node(state: AgentState):
     resume_pages = None
     resume_compacted = False
     page_overflow_warning = ""
-    optimized_resume = state['optimized_resume']
     try:
-        data = _latex.parse_markdown_resume(optimized_resume)
+        data = _latex.parse_markdown_resume(resume_text)
         tex_content = _latex.render_resume_tex(data)
         # Save the .tex source alongside the compiled outputs (useful for
         # advanced editing in Overleaf/TeX editors).
@@ -82,17 +88,12 @@ def pdf_exporter_node(state: AgentState):
     # resume download always works.
     if not resume_pdf_path:
         resume_pdf_path = _html_to_pdf(
-            optimized_resume, "Optimized_Resume.pdf", "Resume", request_dir)
+            resume_text, "Optimized_Resume.pdf", "Resume", request_dir)
         if resume_pdf_path and not resume_pages:
             resume_pages = _latex.pdf_page_count(resume_pdf_path)
 
     # --- Cover letter: HTML→PDF (unchanged) ---
-    cover_path = _html_to_pdf(state['cover_letter'], "Cover_Letter.pdf", "Cover Letter", request_dir)
-
-    _safe_print(f"-> Saved resume PDF:  {resume_pdf_path}")
-    _safe_print(f"-> Saved resume DOCX: {resume_docx_path}")
-    _safe_print(f"-> Saved resume TEX:  {resume_tex_path}")
-    _safe_print(f"-> Saved cover:       {cover_path}")
+    cover_path = _html_to_pdf(cover_text, "Cover_Letter.pdf", "Cover Letter", request_dir)
 
     return {
         "resume_pdf_path": resume_pdf_path or "",
@@ -103,3 +104,18 @@ def pdf_exporter_node(state: AgentState):
         "resume_compacted": resume_compacted,
         "page_overflow_warning": page_overflow_warning,
     }
+
+
+def pdf_exporter_node(state: AgentState):
+    _safe_print(f"\n--- PDF EXPORT ---")
+
+    request_dir = Path(state.get("output_dir") or str(OUTPUT_ROOT / uuid4()))
+    exported = export_documents(
+        state['optimized_resume'], state['cover_letter'], request_dir)
+
+    _safe_print(f"-> Saved resume PDF:  {exported['resume_pdf_path']}")
+    _safe_print(f"-> Saved resume DOCX: {exported['resume_docx_path']}")
+    _safe_print(f"-> Saved resume TEX:  {exported['resume_tex_path']}")
+    _safe_print(f"-> Saved cover:       {exported['cover_letter_pdf_path']}")
+
+    return exported

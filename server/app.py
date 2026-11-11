@@ -29,7 +29,7 @@ import tempfile
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,6 +40,7 @@ from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_413_
 
 from agent import config as agent_config
 from agent.llms import _groq_models_status
+from agent.nodes.pdf_exporter import export_documents
 from server import profile_store, run_store, runners
 
 # ---------------------------------------------------------------------------
@@ -320,13 +321,18 @@ def create_app() -> FastAPI:
               resume_text: str = Form(""),
               resume_file: UploadFile | None = File(None),
               notes: str = Form(""),
-              session: str = Form("")) -> StreamingResponse:
+              session: str = Form(""),
+              include_diff: str = Query("")) -> StreamingResponse:
+        # BB1 Phase B (PB3): include_diff=original asks the server to echo the
+        # PARSED original resume in the result payload - DiffView then works
+        # for uploads too (the SPA never parsed PDFs client-side).
         job_description, resume_path = _validate_step_common(
             job_description, resume_text, resume_file)
         session = _safeguard_session(session)
         gen = runners.stream_step2(job_description,
                                    runners.resolve_resume_source(resume_path, resume_text),
-                                   notes, session, groq_api_key=_client_groq_key(request))
+                                   notes, session, groq_api_key=_client_groq_key(request),
+                                   include_original=include_diff == "original")
         temp = [resume_path] if resume_path else []
         return StreamingResponse(
             _wrapped_pipeline(gen, temp),
@@ -388,6 +394,53 @@ def create_app() -> FastAPI:
         if not profile_store.delete_application(app_id):
             raise HTTPException(HTTP_404_NOT_FOUND, "Unknown application.")
         return {"deleted": app_id}
+
+    # BB1 Phase B (PB2): history re-download. Stored run text outlives the
+    # 24h artifact sweep, so regenerating from it is the honest "versions /
+    # restore" for past runs. Regeneration runs through the CURRENT template
+    # (may differ slightly from the original run's files); output lands in a
+    # fresh request dir under OUTPUT_ROOT and is left for the regular sweep.
+    _REGENERATE_KINDS = {
+        "resume-pdf": "resume_pdf_path",
+        "resume-docx": "resume_docx_path",
+        "resume-tex": "resume_tex_path",
+        "cover-pdf": "cover_letter_pdf_path",
+    }
+
+    @app.get("/api/v1/applications/{app_id}/runs/{run_id}/artifacts/{kind}")
+    def regenerate_run_artifact(app_id: int, run_id: int, kind: str) -> FileResponse:
+        export_key = _REGENERATE_KINDS.get(kind)
+        if export_key is None:
+            raise HTTPException(HTTP_404_NOT_FOUND, "Unknown artifact kind.")
+        detail = profile_store.get_application(app_id)
+        if detail is None:
+            raise HTTPException(HTTP_404_NOT_FOUND, "Unknown application.")
+        run = next((r for r in detail["runs"] if r["id"] == run_id), None)
+        if run is None:
+            raise HTTPException(HTTP_404_NOT_FOUND, "Unknown run.")
+        result = run.get("result") or {}
+        optimized = result.get("optimized_resume") or ""
+        cover = result.get("cover_letter") or ""
+        # _extract_results' placeholder strings are not exportable text.
+        if optimized == "No resume generated.":
+            optimized = ""
+        if cover == "No cover letter generated.":
+            cover = ""
+        needed_text = optimized if kind.startswith("resume-") else cover
+        if not needed_text.strip():
+            raise HTTPException(
+                HTTP_404_NOT_FOUND,
+                "Stored run text not available for regeneration.")
+        request_dir = agent_config.OUTPUT_ROOT / str(uuid4())
+        exported = export_documents(optimized, cover, request_dir)
+        path = Path(exported.get(export_key) or "")
+        if not path.is_file():
+            raise HTTPException(
+                HTTP_404_NOT_FOUND, "Artifact could not be regenerated.")
+        content_type = _ARTIFACT_CONTENT_TYPES.get(
+            path.suffix.lower(), "application/octet-stream")
+        return FileResponse(path, media_type=content_type,
+                            filename=path.name)
 
     frontend_dist = (Path(__file__).resolve().parents[1] / "frontend" / "dist").resolve()
     if frontend_dist.is_dir():
