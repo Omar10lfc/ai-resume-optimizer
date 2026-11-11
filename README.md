@@ -704,6 +704,19 @@ A real user run (session `22e943c6…`, "AI Automation Intern at FortyGuard!") e
 
 > Status: `venv\Scripts\python.exe -m pytest -q` → **307 passed** — **restart the FastAPI backend**. Offline repro (TestClient + counting fake `llm_creative`, hermetic ledgers) reproduces the incident exactly (`next=('polisher',)` after the crash; retry statuses cover_letter/interview/pdf only; score 0) and shows the fixed retry recomputing score 61 / ATS 60 on the recovery's own drafts. Also confirmed: re-running the same posting after such a crash is safe either way — the finished thread has empty `next` → fresh session, and the profile store pair-dedupes it as attempt 2. Documented follow-up (flagged, not yet approved): the cover-letter path lacks the resume path's unevidenced-metric guardrail — this incident's cover letter fabricated "70%"/"45%" that appear in no input, plus production claims straight from the JD chips.
 
+### Session — Nov 11 2026 (cover-letter integrity: unevidenced-metric tripwire extended to the letter)
+
+Same-day follow-up, closing the follow-up flagged by the MR3 recovery round: that incident's cover letter fabricated "70%"/"45%" metrics absent from every input and claimed production use of tools the JD merely lists as requirements — the resume path's integrity tripwire never watched the letter.
+
+| Change | Why | Impact |
+|--------|-----|--------|
+| **Truthfulness gate on the letter prompt** (`agent/nodes/cover_letter.py`, stamp `cover-letter@1 → @2`) | Prompt guards alone demonstrably fold — the resume path learned this Nov 6 (request `14751ff9`) | New QUALITY RULE 5: numbers, percentages, multipliers, and durations must come from the shipped resume; JD requirements are NOT experience; when a point is stronger quantified but no number is evidenced, make it qualitatively |
+| **Unevidenced-metric scan on the generated letter** (`find_unevidenced_metric_claims`, the resume path's own scanner) | Detection must be deterministic, not prompt-only | Evidence = source resume + user notes (the resume path's exact rule). The shipped resume draft is deliberately NOT letter-evidence: a number the user is already asked to verify on the resume must not silently become legitimate because the letter repeated it. Findings land in the NEW `cover_letter_metrics` channel — an own channel because `cover_letter` writes it from the concurrent fan-out: `guardrail_warnings` is last-writer-wins and would clobber the resume's warnings, and `unevidenced_metrics` is the resume path's node-managed accumulator |
+| **Surfacing** (`server/runners.py`, frontend `types.ts` / `ResultsDashboard.tsx`) | A warning that is not user-visible changes nothing | Own SSE warning event ("Integrity check (cover letter): unevidenced number(s) … — Verify the cover letter before sending."), own `_extract_results` payload key, and a "Cover-letter numbers to verify" block in the Integrity tab next to the resume's "Numbers to verify" |
+| **Recovery hygiene + tests** (`_recovery_reset()`, `test_server.py`, `test_fake_llm_wire.py`) | Per-run channel hygiene + pinning the new contracts | `_recovery_reset()` clears `cover_letter_metrics`; suite 307 → 309 (`test_server.py` 55 → 57: fabricated letter flags `["70%", "45%"]` with no cross-contamination into the resume channels + positive control where the user notes evidence the number); wire stamp expectation updated to `cover-letter@2` |
+
+> Status: `venv\Scripts\python.exe -m pytest -q` → **309 passed**; `tsc && vite build` clean — **restart the backend, reload the frontend**. Documented survivor (out of scope until it recurs): deterministic prose scrubbing of the letter for tool claims — the same incident's JD-chip laundering ("I am comfortable working with Claude, Cursor, and Codex") is addressed by the prompt gate; prose surgery by the scrubber remains resume-markdown-specific.
+
 ### UI Fixes
 
 | Change | Reason |
