@@ -24,7 +24,7 @@ import agent.config  # noqa: E402
 import agent.llms  # noqa: E402
 import agent.tracing  # noqa: E402
 import agent.url_fetch  # noqa: E402
-from langchain_core.messages import AIMessage  # noqa: E402
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage  # noqa: E402
 
 
 # ==========================================
@@ -1601,9 +1601,12 @@ def _tool_use_failed_exc(generation: str, *, with_body: bool = True):
 
 def test_salvage_parses_score_from_failed_generation(fake_llms, monkeypatch):
     """Traces 01a15e3a/01a15f6d: on tool_use_failed the model's prose answer
-    (score + feedback) sits in body.error.failed_generation. The reviewer must
-    salvage it instead of flagging review_failed - and NOT spend a retry on
-    identical bytes (trace 01a15f6d: retry folded identically 3s apart)."""
+    (score + feedback) sits in body.error.failed_generation. MR5 ladder order:
+    attempt 2 is the schema REPAIR (the model sees its own answer + the schema
+    - a different payload, so the identical-bytes objection from trace
+    01a15f6d does not apply), and the prose salvage below runs only when even
+    the repair folds. This fake folds EVERY attempt, so the salvage must
+    still recover the score and avoid review_failed at the 2-call cap."""
     probe = {"calls": 0}
 
     class FoldedReviewer:
@@ -1627,12 +1630,15 @@ def test_salvage_parses_score_from_failed_generation(fake_llms, monkeypatch):
     expected = round(agent.ATS_SCORE_WEIGHT * result["ats_percentage"]
                      + agent.LLM_SCORE_WEIGHT * 80)
     assert result["score"] == expected
-    assert probe["calls"] == 1  # salvage short-circuits the retry
+    assert probe["calls"] == 2  # repair precedes salvage: 2 calls, then salvage
 
 
 def test_salvage_skipped_when_generation_unparseable(fake_llms, monkeypatch):
-    """A tool_use_failed payload WITHOUT an extractable score stays on the
-    regular path: one same-payload retry, then review_failed."""
+    """A tool_use_failed payload whose prose has NO extractable score: the
+    MR5 ladder still spends its one repair attempt (the prose exists, so
+    attempt 2 shows it back to the model with the schema), the salvage
+    returns None on the second failure, and the reviewer degrades to
+    review_failed at the 2-call cap."""
     probe = {"calls": 0}
 
     class FoldedReviewer:
@@ -1690,6 +1696,224 @@ def test_salvage_reads_wrapped_repr_errors():
     salvaged = agent._salvage_review_output(wrapped)
     assert salvaged.score == 80
     assert "Copilot" in salvaged.feedback
+
+
+# ==========================================
+# MR5 provider ladder: uniform schema-repair retry
+# ==========================================
+
+def _foldable_llm(first_error, success_after, *, always_fail=False):
+    """Fake strict LLM for direct ladder tests: raises ``first_error`` on
+    attempt 1 (pass None to succeed immediately), returns ``success_after``
+    on the next attempt (or keeps raising when ``always_fail``). Records
+    every attempt's message list."""
+    calls = []
+
+    class Fake:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    calls.append(list(messages))
+                    if first_error is not None and (len(calls) == 1 or always_fail):
+                        raise first_error
+                    return success_after
+
+            return Structured()
+
+    return Fake, calls
+
+
+def test_ladder_direct_success_is_one_call():
+    good = agent.ReviewOutput(score=90, feedback="ok")
+    Fake, calls = _foldable_llm(None, good)
+    result, method = agent.invoke_structured_with_repair(
+        Fake(), agent.ReviewOutput, [HumanMessage(content="grade")], label="t")
+    assert method == "direct"
+    assert result is good
+    assert len(calls) == 1
+
+
+def test_ladder_repair_shows_model_its_own_answer_and_schema():
+    exc = _tool_use_failed_exc(_SALVAGE_GENERATION)
+    good = agent.ReviewOutput(score=85, feedback="ok", sections=["projects"])
+    Fake, calls = _foldable_llm(exc, good)
+    result, method = agent.invoke_structured_with_repair(
+        Fake(), agent.ReviewOutput,
+        [SystemMessage(content="sys"), HumanMessage(content="grade")], label="t")
+    assert method == "repair"
+    assert result is good
+    assert len(calls) == 2
+    first, second = calls
+    # Attempt 2 = attempt 1's conversation + the model's own prose (as its
+    # prior turn) + ONE code-owned repair instruction naming the schema.
+    assert second[:len(first)] == first
+    assert isinstance(second[-2], AIMessage)
+    assert "Combined weighted quality score" in second[-2].content
+    assert "ReviewOutput" in second[-1].content
+    assert "tool" in second[-1].content.lower()
+    assert second[-1].content != first[-1].content
+
+
+def test_ladder_plain_retry_when_failure_has_no_prose():
+    """Transient class (no failed_generation anywhere): attempt 2 stays the
+    pre-MR5 plain same-payload retry - messages untouched."""
+    Fake, calls = _foldable_llm(
+        RuntimeError("connection reset"),
+        agent.ReviewOutput(score=70, feedback="ok"))
+    result, method = agent.invoke_structured_with_repair(
+        Fake(), agent.ReviewOutput, [HumanMessage(content="grade")], label="t")
+    assert method == "retry"
+    assert calls[1] == calls[0]
+
+
+def test_ladder_salvage_runs_only_after_both_attempts_fail():
+    exc = _tool_use_failed_exc(_SALVAGE_GENERATION)
+    Fake, calls = _foldable_llm(exc, None, always_fail=True)
+    salvage_seen = []
+
+    def salvage(e):
+        salvage_seen.append(e)
+        return agent.ReviewOutput(score=80, feedback="salvaged")
+
+    result, method = agent.invoke_structured_with_repair(
+        Fake(), agent.ReviewOutput, [HumanMessage(content="grade")],
+        salvage=salvage, label="t")
+    assert method == "salvage"
+    assert result.score == 80
+    assert len(calls) == 2          # the 2-LLM-call cap holds
+    assert len(salvage_seen) == 1   # salvage sees only the LAST failure
+
+
+def test_ladder_raises_when_everything_fails():
+    Fake, calls = _foldable_llm(RuntimeError("provider down"), None,
+                                always_fail=True)
+    with pytest.raises(RuntimeError, match="provider down"):
+        agent.invoke_structured_with_repair(
+            Fake(), agent.ReviewOutput, [HumanMessage(content="grade")],
+            label="t")
+    assert len(calls) == 2
+
+
+def test_repair_recovers_structured_review_with_sections(fake_llms, monkeypatch):
+    """The point of MR5: when the reviewer's structured output folds but the
+    model's prose exists, the REPAIR attempt recovers the full structured
+    result - including `sections`, which prose salvage loses."""
+    calls = []
+
+    class FoldThenRepair:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    calls.append(1)
+                    if len(calls) == 1:
+                        raise _tool_use_failed_exc(_SALVAGE_GENERATION)
+                    return agent.ReviewOutput(score=85, feedback="Fix bullets.",
+                                              sections=["projects"])
+
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", FoldThenRepair())
+    monkeypatch.setattr(agent.graphs, "MAX_ITERATIONS", 1)
+    result = agent.full_app.invoke(_base_inputs())
+    assert result["review_failed"] is False
+    assert result["llm_quality_score"] == 85
+    assert result["feedback_sections"] == ["projects"]
+    assert len(calls) == 2
+
+
+def test_ats_semantic_repair_recovers_verdicts(monkeypatch):
+    """The 'Tool choice is required' flake class hit the reviewer THEN the
+    ATS semantic check: attempt 2 (repair) recovers the verdicts instead of
+    degrading keywords to missing."""
+    calls = []
+
+    class FoldThenRepair:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    calls.append(1)
+                    if len(calls) == 1:
+                        raise _tool_use_failed_exc(
+                            "Docker: the resume mentions building images.")
+                    return agent.SemanticReview(verdicts=[
+                        agent.SemanticVerdict(keyword="docker",
+                                              genuinely_missing=False),
+                        agent.SemanticVerdict(keyword="kubernetes",
+                                              genuinely_missing=True),
+                    ])
+
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_fast", FoldThenRepair())
+    from agent.nodes.ats_check import _semantic_verify_missing
+    expressed = _semantic_verify_missing(
+        "Jane Roe built docker images", ["docker", "kubernetes"])
+    assert expressed == {"docker"}
+    assert len(calls) == 2
+
+
+def test_ats_semantic_degrades_after_ladder_exhausted(monkeypatch):
+    """Both attempts fold with NO prose: the safe failure direction keeps
+    every keyword as missing (never a fabricated semantic rescue)."""
+    calls = []
+
+    class AlwaysFolded:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    calls.append(1)
+                    raise RuntimeError("no structured output today")
+
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_fast", AlwaysFolded())
+    from agent.nodes.ats_check import _semantic_verify_missing
+    expressed = _semantic_verify_missing("resume text", ["docker"])
+    assert expressed == set()
+    assert len(calls) == 2
+
+
+def test_token_usage_tracker_reads_llm_output_and_metadata_fallback():
+    from types import SimpleNamespace
+
+    # OpenAI-shaped llm_output (the wire path) wins when present...
+    tracker = agent.TokenUsageTracker()
+    tracker.on_llm_end(SimpleNamespace(
+        llm_output={"token_usage": {"prompt_tokens": 5, "completion_tokens": 2}},
+        generations=[[SimpleNamespace(message=SimpleNamespace(
+            usage_metadata={"input_tokens": 100, "output_tokens": 100}))]]))
+    assert tracker.totals() == {"prompt_tokens": 5, "completion_tokens": 2,
+                                "total_tokens": 7, "llm_calls": 1}
+
+    # ...else langchain-core's usage_metadata on the generated message.
+    tracker2 = agent.TokenUsageTracker()
+    tracker2.on_llm_end(SimpleNamespace(
+        llm_output=None,
+        generations=[[SimpleNamespace(message=SimpleNamespace(
+            usage_metadata={"input_tokens": 7, "output_tokens": 3}))]]))
+    assert tracker2.totals() == {"prompt_tokens": 7, "completion_tokens": 3,
+                                 "total_tokens": 10, "llm_calls": 1}
+
+    # No usage anywhere (some fakes): zeroed totals, never raises.
+    tracker3 = agent.TokenUsageTracker()
+    tracker3.on_llm_end(SimpleNamespace(llm_output=None, generations=[]))
+    tracker3.on_llm_end(SimpleNamespace(llm_output="not a dict", generations=[]))
+    assert tracker3.totals() == {"prompt_tokens": 0, "completion_tokens": 0,
+                                 "total_tokens": 0, "llm_calls": 0}
+
+    # Concurrent accumulation (the cover/prep fan-out runs in threads).
+    import threading
+    tracker4 = agent.TokenUsageTracker()
+    resp = SimpleNamespace(
+        llm_output={"token_usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+    threads = [threading.Thread(target=tracker4.on_llm_end, args=(resp,))
+               for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert tracker4.totals() == {"prompt_tokens": 4, "completion_tokens": 4,
+                                 "total_tokens": 8, "llm_calls": 4}
 
 
 # ==========================================
@@ -2127,6 +2351,96 @@ def test_groq_models_status_missing_emergency_only_warns(monkeypatch):
     assert agent.llms._EMERGENCY_MODEL in message
     assert "EMERGENCY_MODEL" in message
     assert agent.llms._PRIMARY_MODEL not in message
+
+
+# ==========================================
+# MR5 provider knobs: LLM_BASE_URL / LLM_TIMEOUT_SECONDS
+# ==========================================
+
+def test_models_endpoint_official_and_custom(monkeypatch):
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
+    assert agent.llms._models_endpoint() == ("https://api.groq.com/openai/v1/models", True)
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "http://localhost:11434/v1/")
+    url, is_groq = agent.llms._models_endpoint()
+    assert url == "http://localhost:11434/v1/models"
+    assert is_groq is False
+
+
+def test_chat_kwargs_official_groq(monkeypatch):
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
+    kwargs = agent.llms._chat_kwargs("m1", 0.2, reasoning_effort="low",
+                                     api_key="k")
+    assert kwargs["model"] == "m1"
+    assert kwargs["temperature"] == 0.2
+    assert kwargs["max_retries"] == 2
+    assert kwargs["request_timeout"] == agent.llms.LLM_TIMEOUT_SECONDS
+    assert kwargs["reasoning_effort"] == "low"
+    assert kwargs["groq_api_key"] == "k"
+    assert "base_url" not in kwargs
+
+
+def test_chat_kwargs_never_injects_none_key_or_reasoning(monkeypatch):
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
+    kwargs = agent.llms._chat_kwargs("m", 0.0)
+    # api_key=None must never override ChatGroq's env-var default factory
+    assert "groq_api_key" not in kwargs
+    # reasoning_effort is set only by the Groq-tuned tiers that pass it
+    assert "reasoning_effort" not in kwargs
+
+
+def test_chat_kwargs_custom_endpoint(monkeypatch):
+    """Any OpenAI-compatible base rides the MR4-proven ChatGroq seam; the
+    Groq-specific reasoning_effort is omitted (custom endpoints may reject
+    unknown params)."""
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "http://localhost:1234/v1")
+    kwargs = agent.llms._chat_kwargs("m2", 0.2, reasoning_effort="low")
+    assert kwargs["base_url"] == "http://localhost:1234/v1"
+    assert "reasoning_effort" not in kwargs
+
+
+def test_check_provider_health_custom_endpoint_needs_no_key(monkeypatch):
+    """A local Ollama/LM Studio endpoint needs no GROQ_API_KEY (config.py
+    relaxed its import-time check the same way); the delegated status call
+    receives the empty key (no Authorization header)."""
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    seen = {}
+
+    def fake_status(key, timeout_seconds=8.0):
+        seen["key"] = key
+        return True, "API reachable (1 models)."
+
+    monkeypatch.setattr(agent.llms, "_groq_models_status", fake_status)
+    ok, message = agent.llms.check_provider_health()
+    assert ok is True
+    assert seen["key"] == ""
+
+
+def test_groq_models_status_custom_endpoint_skips_tier_gap_warning(monkeypatch):
+    """Tier names are Groq-catalog vocabulary: with a custom LLM_BASE_URL the
+    missing-tier warning must NOT fire even when the catalog lacks every
+    configured model."""
+    import json
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"data": [{"id": "local-model"}]}).encode()
+
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "http://localhost:1234/v1")
+    monkeypatch.setattr("urllib.request.urlopen",
+                        lambda request, timeout=None: FakeResponse())
+    ok, message = agent.llms._groq_models_status("")
+    assert ok is True
+    assert "API reachable" in message
+    assert "missing from this account's catalog" not in message
 
 
 def test_create_llm_fast_fallback_carries_api_key():

@@ -3,6 +3,7 @@ import re
 
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted, ReviewOutput
 from .. import llms as _llms
+from ..provider import invoke_structured_with_repair, extract_failed_generation
 from ..helpers import _safe_print, _safe_truncate, _strip_markdown_for_review
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -17,10 +18,12 @@ REVIEWER_PROMPT_VERSION = "reviewer@2"
 # content/protocol-shaped, NOT a transient blip: attempt 1 and the identical
 # same-payload retry folded within 3 seconds. Crucially, the error payload
 # carries 'failed_generation' - the model's prose answer (score + feedback) that
-# it produced but failed to package as a tool call. So on this failure class we
-# PARSE the prose straight out of the exception instead of retrying identical
-# bytes; the generic retry below only remains for true transient errors.
-_REVIEW_ATTEMPTS = 2
+# it produced but failed to package as a tool call. MR5 therefore routes the
+# call through the provider ladder (invoke_structured_with_repair): attempt 2
+# is a schema REPAIR (the model sees its own answer + the schema and
+# re-packages - a different payload, so the identical-fold objection does not
+# apply), and the prose salvage below remains the free deterministic fallback
+# when even the repair folds. The cap stays at TWO LLM calls, then give up.
 
 # Unicode space variants (narrow no-break U+202F, NBSP, thin spaces, minus
 # signs) that Groq's prose answers inject between score tokens: '**\u2248 80 /
@@ -31,47 +34,6 @@ _SCORE_LABELLED_RE = re.compile(r"score[^:\d]{0,12}[:：]\s*(\d{1,3}(?:\.\d+)?)"
 _FEEDBACK_RE = re.compile(r"feedback\s*:[:\s]*(.+?)(?:\n\s*\n|\Z)", re.IGNORECASE | re.DOTALL)
 _SALVAGE_DEFAULT_FEEDBACK = ("Score recovered from a failed structured-output "
                              "response; no specific feedback was parsed.")
-# Fallback when the exception object is wrapped and only str(exc) survives,
-# matching how the trace export recorded the error string. The repr carries
-# escaped unicode (\u202f becomes six ASCII chars) that must be decoded first.
-_FAILED_GENERATION_STR_RE = re.compile(r"failed_generation[\"']?\s*:?\s*'(.+?)'\s*\}\}", re.DOTALL)
-_UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
-
-
-def _extract_failed_generation(exc: BaseException) -> str | None:
-    """Best-effort extraction of the model's prose answer from a structured
-    output failure. Groq/OpenAI BadRequestError (tool_use_failed) carries the
-    generated text in body['error']['failed_generation']; some SDK versions
-    expose the same envelope on .response.json(), and wrapped errors may only
-    keep the repr string."""
-    candidates: list = []
-    body = getattr(exc, "body", None)
-    if isinstance(body, dict):
-        err = body.get("error")
-        if isinstance(err, dict):
-            candidates.append(err.get("failed_generation"))
-        candidates.append(body.get("failed_generation"))
-    if not any(isinstance(c, str) and c.strip() for c in candidates):
-        try:
-            resp = getattr(exc, "response", None)
-            payload = resp.json() if resp is not None else None
-            err = payload.get("error") if isinstance(payload, dict) else None
-            if isinstance(err, dict):
-                candidates.append(err.get("failed_generation"))
-        except Exception:
-            pass
-    if not any(isinstance(c, str) and c.strip() for c in candidates):
-        try:
-            raw = _FAILED_GENERATION_STR_RE.search(str(exc) or "")[1]
-            raw = _UNICODE_ESCAPE_RE.sub(lambda m: chr(int(m[1], 16)), raw)
-            raw = raw.replace("\\n", "\n").replace("\\'", "'").replace('\\"', '"')
-            candidates.append(raw)
-        except (AttributeError, IndexError, TypeError):
-            pass
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate
-    return None
 
 
 def _parse_salvaged_score(text: str) -> int | None:
@@ -123,8 +85,8 @@ def _parse_salvaged_feedback(text: str) -> str:
 def _salvage_review_output(exc: BaseException) -> ReviewOutput | None:
     """Parse score + feedback from the model's prose answer inside a
     structured-output failure. Returns None when the failure offers no
-    salvageable generation (caller then re-raises into the retry loop)."""
-    generation = _extract_failed_generation(exc)
+    salvageable generation (the ladder then raises into the caller)."""
+    generation = extract_failed_generation(exc)
     if not generation:
         return None
     text = _NORM_SPACE_RE.sub(" ", generation.replace("**", "")).strip()
@@ -136,8 +98,6 @@ def _salvage_review_output(exc: BaseException) -> ReviewOutput | None:
 
 def reviewer_node(state: AgentState):
     _safe_print(f"\n--- NODE 3: REVIEWING DRAFT ---")
-
-    structured_llm = _llms.llm_strict.with_structured_output(ReviewOutput)
 
     prompt = f"""
     You are a senior hiring manager judging the QUALITY of a resume's presentation.
@@ -214,34 +174,22 @@ def reviewer_node(state: AgentState):
         HumanMessage(content=prompt),
     ]
 
-    last_error = None
-    for attempt in range(1, _REVIEW_ATTEMPTS + 1):
-        try:
-            result = structured_llm.invoke(messages)
-            _safe_print(f"-> LLM quality score: {result.score}/100")
-            _safe_print(f"-> Feedback: {result.feedback}")
-            if attempt > 1:
-                _safe_print(f"-> (recovered on attempt {attempt}/{_REVIEW_ATTEMPTS})")
-            if result.sections:
-                _safe_print(f"-> Feedback targets: {', '.join(result.sections)}")
-            return {"llm_quality_score": result.score, "feedback": result.feedback,
-                    "feedback_sections": [str(s) for s in result.sections],
-                    "review_failed": False,
-                    "prompt_versions": {"reviewer": REVIEWER_PROMPT_VERSION}}
-        except Exception as e:
-            last_error = e
-            # Content-shaped failure (tool call folded, prose exists): salvage
-            # instead of retrying identical bytes - trace 01a15f6d showed the
-            # same-payload retry folding identically 3s apart.
-            salvaged = _salvage_review_output(e)
-            if salvaged is not None:
-                _safe_print(f"-> Salvaged score from failed generation: {salvaged.score}/100")
-                return {"llm_quality_score": salvaged.score, "feedback": salvaged.feedback,
-                        "feedback_sections": [],
-                        "review_failed": False,
-                        "prompt_versions": {"reviewer": REVIEWER_PROMPT_VERSION}}
-            _safe_print(f"   [Warning] Structured output attempt {attempt}/{_REVIEW_ATTEMPTS} failed: {e}")
-
-    _safe_print(f"   [Warning] Review failed after {_REVIEW_ATTEMPTS} attempts. Flagging review as failed.")
-    return {"review_failed": True,
-            "feedback": "Review could not be completed. Proceeding with current draft."}
+    try:
+        result, method = invoke_structured_with_repair(
+            _llms.llm_strict, ReviewOutput, messages,
+            salvage=_salvage_review_output, label="reviewer")
+        _safe_print(f"-> LLM quality score: {result.score}/100")
+        _safe_print(f"-> Feedback: {result.feedback}")
+        if method != "direct" and result.sections:
+            _safe_print(f"-> Feedback targets: {', '.join(result.sections)}")
+        elif method == "salvage":
+            _safe_print("-> (salvaged prose carries no section targets - the"
+                        " polisher will consider the whole document)")
+        return {"llm_quality_score": result.score, "feedback": result.feedback,
+                "feedback_sections": [str(s) for s in result.sections],
+                "review_failed": False,
+                "prompt_versions": {"reviewer": REVIEWER_PROMPT_VERSION}}
+    except Exception:
+        _safe_print("   [Warning] Review failed after 2 attempts. Flagging review as failed.")
+        return {"review_failed": True,
+                "feedback": "Review could not be completed. Proceeding with current draft."}

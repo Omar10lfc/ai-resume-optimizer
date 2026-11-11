@@ -16,6 +16,20 @@ _FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "openai/gpt-oss-20b")
 # Verified present on the live catalog: 'qwen/qwen3.8-27b'.
 _EMERGENCY_MODEL = os.environ.get("EMERGENCY_MODEL", "qwen/qwen3.8-27b")
 
+# --- MR5 provider abstraction (env-overridable) ---
+# LLM_BASE_URL: any OpenAI-compatible endpoint (Ollama http://localhost:11434/v1,
+# LM Studio http://localhost:1234/v1, OpenRouter https://openrouter.ai/api/v1, ...).
+# Empty = Groq's official API (the historical default). When set, the chat models
+# are pointed at that endpoint (ChatGroq speaks the OpenAI wire protocol - proven
+# by the MR4 wire tests against the fake server) and the Groq-specific
+# reasoning_effort parameter is omitted. GROQ_API_KEY doubles as the generic
+# API-key slot; a custom endpoint that needs no auth (local Ollama) runs without
+# one, which also relaxes the import-time key requirement below.
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").strip()
+# Hard cap per LLM call in seconds (the SDK's own default is 10 minutes - a hung
+# call used to stall the serialized pipeline for everyone).
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", 120))
+
 # --- Output Directories & Persistence ---
 OUTPUT_ROOT = Path(tempfile.gettempdir()) / "resume_optimizer_output"
 OUTPUT_RETENTION_HOURS = 24
@@ -115,9 +129,11 @@ def start_background_cleanup(
     return thread
 
 
-if not os.environ.get("GROQ_API_KEY"):
+if not os.environ.get("GROQ_API_KEY") and not LLM_BASE_URL:
     raise EnvironmentError(
         "GROQ_API_KEY is not set. "
         "Please set it in your .env file or as an environment variable.\n"
-        "Get a free key at: https://console.groq.com/keys"
+        "Get a free key at: https://console.groq.com/keys\n"
+        "(Or set LLM_BASE_URL to an OpenAI-compatible endpoint that needs no key,"
+        " e.g. a local Ollama/LM Studio server.)"
     )

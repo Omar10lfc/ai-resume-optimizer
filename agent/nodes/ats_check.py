@@ -5,6 +5,7 @@ from ..config import ATS_SCORE_WEIGHT, LLM_SCORE_WEIGHT
 from ..ats import compute_ats_match, apply_semantic_matches
 from ..helpers import _safe_print, _safe_truncate
 from ..match import compute_requirement_match_table
+from ..provider import invoke_structured_with_repair
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Bump when the semantic-verification prompt or policy changes materially.
@@ -32,10 +33,16 @@ def _semantic_verify_missing(resume_text: str, missing_keywords: list[str],
     Return one verdict per keyword.
     """
     try:
-        review = _llms.llm_fast.with_structured_output(SemanticReview).invoke([
-            SystemMessage(content=SYSTEM_GUARDRAIL),
-            HumanMessage(content=prompt),
-        ])
+        # MR5: the same schema-repair ladder the reviewer uses (the
+        # "Tool choice is required" flake class hit the reviewer THEN the
+        # ATS semantic check). One repair attempt showing the model its own
+        # answer + the schema before degrading to "keep keywords as
+        # missing" - the safe failure direction.
+        review, _ = invoke_structured_with_repair(
+            _llms.llm_fast, SemanticReview, [
+                SystemMessage(content=SYSTEM_GUARDRAIL),
+                HumanMessage(content=prompt),
+            ], label="ats-semantic")
         expressed = {v.keyword.strip().lower() for v in review.verdicts
                      if not v.genuinely_missing}
         _safe_print(f"-> Semantic matches: {sorted(expressed) if expressed else 'none'}")

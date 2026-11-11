@@ -41,6 +41,7 @@ from langchain_core.runnables import RunnableLambda
 from agent import TRACE_CALLBACKS, agent_app
 from agent import config as agent_config
 from agent.llms import groq_key_override
+from agent.provider import TokenUsageTracker
 from agent.tracing import (
     candidate_name_hint,
     log_pipeline_feedback,
@@ -73,17 +74,23 @@ _ARTIFACT_KINDS = {
 }
 
 
-def _thread_config(thread_id: str, run_id: str | None = None) -> dict:
+def _thread_config(thread_id: str, run_id: str | None = None,
+                   callbacks: list | None = None) -> dict:
     """RunnableConfig for one graph segment.
 
     run_id (optional) pins the ROOT run id of the segment's trace: LangGraph
     reads config['run_id'] for the root run, so pipeline feedback records can
     target a known trace root instead of scraping the tracer's run tree.
+    callbacks (optional) EXTENDS the trace callbacks with per-run handlers
+    (MR5: the TokenUsageTracker); the shared TRACE_CALLBACKS list is never
+    mutated - a fresh list is built.
     """
     cfg = dict(_INVOKE_CONFIG_BASE)
     cfg["configurable"] = {"thread_id": thread_id}
     if run_id:
         cfg["run_id"] = run_id
+    if callbacks:
+        cfg["callbacks"] = [*TRACE_CALLBACKS, *callbacks]
     return cfg
 
 
@@ -257,7 +264,8 @@ def _stream_step1(job_description: str, resume_source: str,
     with groq_key_override(groq_api_key):
         premask_resume_name(resume_source)
         session = session or str(uuid4())
-        config = _thread_config(session)
+        usage = TokenUsageTracker()
+        config = _thread_config(session, callbacks=[usage])
 
         yield _status("Loading documents...")
         try:
@@ -276,6 +284,7 @@ def _stream_step1(job_description: str, resume_source: str,
             return
 
         yield {"type": "done", "session": session, "missing_skills": missing,
+               "token_usage": usage.totals(),
                "status": "Analysis complete - review & edit the gaps below, then run Step 2."}
 
 
@@ -444,7 +453,10 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                    "message": "No missing skills / context provided. Running with auto-detected gaps only."}
 
         session = session or str(uuid4())
-        config = _thread_config(session)
+        # MR5: one usage tracker for the WHOLE step-2 attempt (any recovery
+        # re-runs + the resume segment all count toward this task).
+        usage = TokenUsageTracker()
+        config = _thread_config(session, callbacks=[usage])
 
         yield _status("Starting pipeline...")
         final_state: dict = {}
@@ -478,7 +490,7 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                 if state.values:
                     # previous run completed in this session -> start a fresh one
                     session = str(uuid4())
-                    config = _thread_config(session)
+                    config = _thread_config(session, callbacks=[usage])
                     yield {"type": "session", "session": session}
                     yield _status("Starting a fresh run...")
                 # Step 1 was skipped: run loader -> scanner up to the interrupt
@@ -534,8 +546,11 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
             # A pinned root run id lets the post-run feedback records attach to
             # the exact LangSmith trace (threshold/root of THIS segment).
             resume_run_id = str(uuid4())
-            for update in agent_app.stream(None, config=_thread_config(session, resume_run_id),
-                                           stream_mode="updates"):
+            for update in agent_app.stream(
+                    None,
+                    config=_thread_config(session, resume_run_id,
+                                          callbacks=[usage]),
+                    stream_mode="updates"):
                 for node, delta in update.items():
                     if node and delta:
                         final_state.update(delta)
@@ -578,6 +593,10 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                               + ". Verify the resume before applying."}
 
         yield {"type": "result", "session": session,
+               # MR5: per-task token accounting rides the result payload (and
+               # lands in the runs ledger for free, since done-run payloads
+               # are persisted wholesale).
+               "token_usage": usage.totals(),
                **_extract_results(final_state)}
 
 

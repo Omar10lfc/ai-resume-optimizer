@@ -226,6 +226,10 @@ def test_step1_over_the_wire_returns_gaps_after_single_llm_call(client, wire_llm
     uuid.UUID(done["session"])  # well-formed uuid
     assert done["missing_skills"] == "- Kubernetes\n- Terraform"
     assert "Analysis complete" in done["status"]
+    # MR5: per-task usage rides the step-1 done event too - the scanner is
+    # this run's only completion, and the fake server reports 1/1 tokens.
+    assert done["token_usage"] == {"prompt_tokens": 1, "completion_tokens": 1,
+                                   "total_tokens": 2, "llm_calls": 1}
     assert any("(step 1 of 2)" in s for s in _statuses(events))
     assert any("Loading documents..." in s for s in _statuses(events))
 
@@ -281,6 +285,12 @@ def test_step2_over_the_wire_end_to_end(client, wire_llms, monkeypatch):
 
     # The seven prompt-version stamps survive the concurrent fan-out merge.
     assert result["prompt_versions"] == EXPECTED_PROMPT_VERSIONS
+
+    # MR5: per-task token accounting rides the result payload. The fake
+    # server reports {prompt:1, completion:1, total:2} per completion and a
+    # fresh step-2 makes exactly 9 completions (tool sequence below).
+    assert result["token_usage"] == {"prompt_tokens": 9, "completion_tokens": 9,
+                                     "total_tokens": 18, "llm_calls": 9}
 
     # MR2 rides the same payload: the deterministic requirement-fit table for
     # the FAKE_RESUME draft (no semantic rescues in the wire fake) - classified

@@ -545,6 +545,15 @@ def test_step2_result_payload_carries_integrity_and_versions(client, fake_llms, 
     # Both fan-out siblings ship their own stamp (reducer merge, not clobber).
     assert pv["polisher"]
 
+    # MR5: per-task token accounting always rides the result payload. The
+    # fake-invoke harness bypasses the callback layer (fakes replace whole
+    # chains), so the totals are zeroed here - the exact numbers are
+    # asserted in the WIRE tests, which run real chat-model calls.
+    usage = payload["token_usage"]
+    assert set(usage) == {"prompt_tokens", "completion_tokens",
+                          "total_tokens", "llm_calls"}
+    assert usage["llm_calls"] == 0 and usage["total_tokens"] == 0
+
 
 def test_step2_result_payload_carries_requirement_table(client, fake_llms):
     """MR2: the SSE result payload ships the deterministic requirement-fit
