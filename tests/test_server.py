@@ -821,10 +821,13 @@ def test_client_groq_key_header_is_sanitized():
 
 @pytest.fixture(autouse=True)
 def runs_db(tmp_path, monkeypatch):
-    """Hermetic runs ledger per test (run_store reads the config path
-    dynamically, so the monkeypatch is enough)."""
+    """Hermetic runs ledger + profile store per test (both read their
+    config paths dynamically, so the monkeypatch is enough)."""
     path = tmp_path / "runs.sqlite3"
     monkeypatch.setattr(agent.config, "RUNS_DB_PATH", str(path))
+    monkeypatch.setattr(agent.config, "PROFILE_DB_PATH",
+                        str(tmp_path / "profile.sqlite3"))
+    monkeypatch.setattr(agent.config, "PROFILE_DB_ENABLED", True)
     return path
 
 
@@ -1034,3 +1037,108 @@ def test_step2_resume_writes_notes_without_reentering_the_graph(client,
     values = snapshot.values or {}
     assert values.get("human_notes") == "I also led the migration"
     assert values.get("missing_skills") == "- Kubernetes: used at work"
+
+
+# ==========================================
+# BB1 Phase A: persistent profile store (application history)
+# ==========================================
+
+def test_profile_store_records_and_dedupes_by_pair(runs_db):
+    import server.profile_store as profile_store
+
+    rid1 = profile_store.record_run(JD, RESUME_TEXT, "sess-1",
+                                    {"score": 71, "ats_percentage": 44.0,
+                                     "llm_quality_score": 85,
+                                     "review_failed": False,
+                                     "optimized_resume": "R1",
+                                     "requirement_matches": []})
+    assert rid1 is not None
+    # Same (JD, resume) pair -> the SAME application, a second attempt.
+    rid2 = profile_store.record_run(JD, RESUME_TEXT, "sess-2",
+                                    {"score": 76, "ats_percentage": 50.0,
+                                     "llm_quality_score": 88,
+                                     "review_failed": False,
+                                     "optimized_resume": "R2"})
+    apps = profile_store.list_applications()
+    assert len(apps) == 1
+    assert apps[0]["attempts"] == 2
+    assert apps[0]["best_score"] == 76
+    assert apps[0]["title"].startswith("Python engineer")
+    assert "resume_text" not in apps[0]  # summaries stay cheap
+
+    detail = profile_store.get_application(apps[0]["id"])
+    assert detail["job_text"] == JD
+    assert detail["resume_text"] == RESUME_TEXT
+    assert [r["id"] for r in detail["runs"]] == [rid2, rid1]  # newest first
+    assert detail["runs"][0]["result"]["optimized_resume"] == "R2"
+    assert detail["runs"][-1]["result"]["optimized_resume"] == "R1"
+
+    # A different resume is a different application (same posting).
+    profile_store.record_run(JD, RESUME_TEXT + "\nMore experience.", "sess-3",
+                             {"score": 60})
+    assert len(profile_store.list_applications()) == 2
+
+
+def test_profile_store_nonfatal_and_disabled(runs_db, monkeypatch, capsys):
+    import server.profile_store as profile_store
+
+    # Store failure is non-fatal: warn + continue, never raise.
+    def broken_connect():
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(profile_store, "_connect", broken_connect)
+    assert profile_store.record_run(JD, RESUME_TEXT, "s", {"score": 1}) is None
+    assert profile_store.list_applications() == []
+    assert profile_store.get_application(1) is None
+    assert profile_store.delete_application(1) is False
+    assert "recording failed" in capsys.readouterr().out
+
+    # Disabled posture (PROFILE_DB_PATH=off): nothing recorded, empty reads.
+    monkeypatch.setattr(agent.config, "PROFILE_DB_ENABLED", False)
+    monkeypatch.setattr(profile_store, "_connect",
+                        lambda: (_ for _ in ()).throw(
+                            AssertionError("must not open when disabled")))
+    assert profile_store.record_run(JD, RESUME_TEXT, "s", {"score": 1}) is None
+    assert profile_store.list_applications() == []
+    assert profile_store.get_application(1) is None
+    assert profile_store.delete_application(1) is False
+
+
+def test_applications_endpoints_roundtrip(client, fake_llms):
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": ""})
+    assert parse_sse(r.text)[-1][0] == "result"
+
+    listing = client.get("/api/v1/applications").json()["applications"]
+    assert len(listing) == 1
+    row = listing[0]
+    assert row["attempts"] == 1
+    assert row["best_score"] is not None
+    assert "Python engineer" in row["title"]
+    assert "resume_text" not in row
+
+    detail = client.get(f"/api/v1/applications/{row['id']}").json()
+    assert detail["job_text"].strip() == JD
+    assert detail["runs"][0]["session"]
+    assert detail["runs"][0]["result"]["optimized_resume"].strip()
+
+    # Re-running the same pair attaches a second attempt - no duplicate app.
+    r2 = client.post("/api/v1/step2",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT,
+                           "notes": "I used k8s at work"})
+    assert parse_sse(r2.text)[-1][0] == "result"
+    listing = client.get("/api/v1/applications").json()["applications"]
+    assert len(listing) == 1
+    assert listing[0]["attempts"] == 2
+
+    assert client.delete(f"/api/v1/applications/{row['id']}").status_code == 200
+    assert client.get("/api/v1/applications").json()["applications"] == []
+    assert client.get(f"/api/v1/applications/{row['id']}").status_code == 404
+
+
+def test_applications_endpoint_validation(client):
+    assert client.get("/api/v1/applications/999999").status_code == 404
+    assert client.delete("/api/v1/applications/999999").status_code == 404
+    assert client.get("/api/v1/applications?limit=0").status_code == 422
+    assert client.get("/api/v1/applications?limit=500").status_code == 422

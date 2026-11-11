@@ -40,7 +40,7 @@ from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_413_
 
 from agent import config as agent_config
 from agent.llms import _groq_models_status
-from server import run_store, runners
+from server import profile_store, run_store, runners
 
 # ---------------------------------------------------------------------------
 # Pipeline queue: Gradio-equivalent serialization (also the quota protector)
@@ -364,6 +364,30 @@ def create_app() -> FastAPI:
         if row is None:
             raise HTTPException(HTTP_404_NOT_FOUND, "Unknown session.")
         return row
+
+    # BB1 Phase A: the persistent profile store - application history with
+    # their optimization attempts (auto-recorded on every completed run).
+
+    @app.get("/api/v1/applications")
+    def list_applications(limit: int = Query(default=50, ge=1, le=200)) -> dict:
+        """Newest-first application summaries (no resume/job text - the
+        detail endpoint carries it). Empty list when recording is off."""
+        return {"applications": profile_store.list_applications(limit)}
+
+    @app.get("/api/v1/applications/{app_id}")
+    def get_application(app_id: int) -> dict:
+        """One application: its evidence texts plus every recorded run
+        (newest first, result payloads parsed) - the Fit history data."""
+        row = profile_store.get_application(app_id)
+        if row is None:
+            raise HTTPException(HTTP_404_NOT_FOUND, "Unknown application.")
+        return row
+
+    @app.delete("/api/v1/applications/{app_id}")
+    def delete_application(app_id: int) -> dict:
+        if not profile_store.delete_application(app_id):
+            raise HTTPException(HTTP_404_NOT_FOUND, "Unknown application.")
+        return {"deleted": app_id}
 
     frontend_dist = (Path(__file__).resolve().parents[1] / "frontend" / "dist").resolve()
     if frontend_dist.is_dir():

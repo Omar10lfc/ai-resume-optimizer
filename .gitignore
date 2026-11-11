@@ -17,6 +17,9 @@ extension/assets/
 .env
 .env.local
 
+# BB1 persistent profile store (resume/job text at rest - never commit)
+data/
+
 # Virtual environments
 venv/
 .venv/

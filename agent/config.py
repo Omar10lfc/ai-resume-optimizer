@@ -41,6 +41,17 @@ CHECKPOINTER_DB_PATH = os.environ.get("CHECKPOINTER_DB_PATH", "").strip()
 # OUTPUT_ROOT, so the ledger file itself survives the sweep.
 RUNS_DB_PATH = (os.environ.get("RUNS_DB_PATH", "").strip()
                 or str(OUTPUT_ROOT / "runs.sqlite3"))
+# BB1 persistent profile store: applications + their optimization attempts
+# (scores, requirement tables, full result payloads). Unlike the runs ledger
+# (24h retention, next to the artifacts), history is PERSISTENT by design -
+# the resume/job text at rest is the point (the Dossier study's Application
+# record: every artifact derives from it). Defaults under the project root's
+# gitignored data/ dir; set PROFILE_DB_PATH=off to disable recording (no
+# file is created, no history is written).
+_PROFILE_DB_RAW = os.environ.get("PROFILE_DB_PATH", "").strip()
+PROFILE_DB_ENABLED = _PROFILE_DB_RAW.lower() != "off"
+PROFILE_DB_PATH = (_PROFILE_DB_RAW
+                   or str(Path(__file__).resolve().parents[1] / "data" / "profile.sqlite3"))
 
 # --- Input Limits (env-overridable) ---
 MAX_PDF_BYTES = int(os.environ.get("MAX_PDF_BYTES", 5 * 1024 * 1024))

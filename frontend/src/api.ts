@@ -1,5 +1,8 @@
-import type { OptimizationResult } from "./types";
-
+import type {
+  ApplicationDetail,
+  ApplicationSummary,
+  OptimizationResult,
+} from "./types";
 interface StreamCallbacks<T> {
   onStatus: (message: string, node?: string) => void;
   onWarning?: (message: string) => void;
@@ -100,6 +103,35 @@ export async function resolveArtifactUrl(relativePath: string): Promise<string> 
   const baseUrl = await getBaseUrl();
   const cleanPath = relativePath.startsWith("/") ? relativePath : `/${relativePath}`;
   return `${baseUrl}${cleanPath}`;
+}
+
+// BB1: application history (persistent profile store).
+
+export async function fetchApplications(limit = 50): Promise<ApplicationSummary[]> {
+  const baseUrl = await getBaseUrl();
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${baseUrl}/api/v1/applications?limit=${limit}`, { headers });
+  if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+  const data = await res.json();
+  return (data.applications ?? []) as ApplicationSummary[];
+}
+
+export async function fetchApplication(id: number): Promise<ApplicationDetail> {
+  const baseUrl = await getBaseUrl();
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${baseUrl}/api/v1/applications/${id}`, { headers });
+  if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+  return (await res.json()) as ApplicationDetail;
+}
+
+export async function deleteApplication(id: number): Promise<void> {
+  const baseUrl = await getBaseUrl();
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${baseUrl}/api/v1/applications/${id}`, {
+    method: "DELETE",
+    headers,
+  });
+  if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
 }
 
 async function consumeSSE<T>(

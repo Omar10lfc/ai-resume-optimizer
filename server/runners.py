@@ -47,7 +47,7 @@ from agent.tracing import (
     log_pipeline_feedback,
     register_known_name,
 )
-from server import run_store
+from server import profile_store, run_store
 
 # Redacted-tracing callbacks go with every invoke (empty list = tracing off)
 _INVOKE_CONFIG_BASE = {"callbacks": TRACE_CALLBACKS}
@@ -592,12 +592,29 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                    "message": "Integrity check: " + "; ".join(integrity)
                               + ". Verify the resume before applying."}
 
+        results_payload = _extract_results(final_state)
         yield {"type": "result", "session": session,
                # MR5: per-task token accounting rides the result payload (and
                # lands in the runs ledger for free, since done-run payloads
                # are persisted wholesale).
                "token_usage": usage.totals(),
-               **_extract_results(final_state)}
+               **results_payload}
+
+        # BB1: record the completed run into the persistent profile store
+        # (auto-record, zero UI). The PARSED evidence texts live in the
+        # authoritative SNAPSHOT (loader outputs - `final_state` only
+        # accumulates this segment's deltas, so on the step1->step2 resume
+        # path it never held them); the wrapper only sees the input, which
+        # may be a file path. Non-fatal by contract; disabled by
+        # PROFILE_DB_PATH=off.
+        try:
+            snapshot_values = snapshot.values or {}
+            profile_store.record_run(
+                str(snapshot_values.get("job_text") or job_description or ""),
+                str(snapshot_values.get("resume_text") or ""),
+                session, results_payload)
+        except Exception as exc:  # belt & braces: record_run never raises
+            print(f"[Profile] recording skipped (non-fatal): {exc}")
 
 
 # MR3: the module-level public names are the RECORDING wrappers (the SSE

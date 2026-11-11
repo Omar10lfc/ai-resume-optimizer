@@ -84,9 +84,13 @@ FRESH_STEP2_WIRES = [
 
 @pytest.fixture(autouse=True)
 def runs_db(tmp_path, monkeypatch):
-    """Hermetic runs ledger (MR3 records both steps' lifecycles)."""
+    """Hermetic runs ledger + profile store (MR3 records both steps'
+    lifecycles; BB1 auto-records every completed run)."""
     monkeypatch.setattr(agent.config, "RUNS_DB_PATH",
                         str(tmp_path / "runs.sqlite3"))
+    monkeypatch.setattr(agent.config, "PROFILE_DB_PATH",
+                        str(tmp_path / "profile.sqlite3"))
+    monkeypatch.setattr(agent.config, "PROFILE_DB_ENABLED", True)
 
 
 @pytest.fixture
@@ -291,6 +295,18 @@ def test_step2_over_the_wire_end_to_end(client, wire_llms, monkeypatch):
     # fresh step-2 makes exactly 9 completions (tool sequence below).
     assert result["token_usage"] == {"prompt_tokens": 9, "completion_tokens": 9,
                                      "total_tokens": 18, "llm_calls": 9}
+
+    # BB1: the completed run was auto-recorded into the persistent profile
+    # store - one application (the parsed evidence texts, not the raw
+    # input) with exactly this run attached.
+    apps = client.get("/api/v1/applications").json()["applications"]
+    assert len(apps) == 1
+    assert apps[0]["attempts"] == 1
+    assert "Python engineer" in apps[0]["title"]
+    detail = client.get(f"/api/v1/applications/{apps[0]['id']}").json()
+    assert detail["resume_text"].strip() == RESUME_TEXT
+    assert detail["job_text"].strip() == JD
+    assert detail["runs"][0]["result"]["optimized_resume"] == FAKE_RESUME
 
     # MR2 rides the same payload: the deterministic requirement-fit table for
     # the FAKE_RESUME draft (no semantic rescues in the wire fake) - classified

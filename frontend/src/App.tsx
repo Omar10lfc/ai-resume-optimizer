@@ -4,6 +4,7 @@ import { StepTimeline } from "./components/StepTimeline";
 import { InputSection, type JobMeta } from "./components/InputSection";
 import { HumanReviewModal } from "./components/HumanReviewModal";
 import { ResultsDashboard } from "./components/ResultsDashboard";
+import { HistoryPanel } from "./components/HistoryPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { ErrorState } from "./components/ErrorState";
 import { Onboarding } from "./components/Onboarding";
@@ -557,6 +558,9 @@ export function App() {
             />
           </div>
         )}
+
+        {/* BB1: application history (persistent profile store, auto-recorded) */}
+        <HistoryPanel />
       </main>
 
       {/* Footer */}

@@ -48,6 +48,37 @@ export type PipelineStage =
   | "step2_running"
   | "step2_done";
 
+/** BB1: one application in the persistent profile store (summary shape). */
+export interface ApplicationSummary {
+  id: number;
+  title: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  attempts: number;
+  best_score: number | null;
+  last_run_at: number | null;
+}
+
+/** BB1: one recorded optimization attempt under an application. */
+export interface ApplicationRun {
+  id: number;
+  session: string;
+  score: number;
+  ats_percentage: number;
+  llm_score: number;
+  review_failed: number;
+  created_at: number;
+  result: OptimizationResult | null;
+}
+
+/** BB1: an application with all of its runs (detail shape). */
+export interface ApplicationDetail extends ApplicationSummary {
+  job_text: string;
+  resume_text: string;
+  runs: ApplicationRun[];
+}
+
 export interface NodeStatus {
   node: string;
   label: string;
