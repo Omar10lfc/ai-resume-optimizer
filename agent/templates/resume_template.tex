@@ -24,6 +24,14 @@
 \usepackage{fancyhdr}
 \usepackage[english]{babel}
 \usepackage{tabularx}
+% Orphan repair (layout spec A, Nov 11 2026): microtype's font expansion
+% shrinks/grows glyphs a hair so TeX can pull short last lines back onto the
+% previous line; factor=2000 (the pdftex max) gives the widest orphan-pull
+% window. \emergencystretch gives borderline bullets/rows a stretch band so
+% near-full lines do not strand a lonely word. Both are spacing-only - they
+% never change any character in the text layer.
+\usepackage[expansion=true,factor=2000]{microtype}
+\setlength{\emergencystretch}{1em}
 \input{glyphtounicode}
 
 %----------FONT OPTIONS----------
@@ -59,41 +67,69 @@
 \setlength{\tabcolsep}{0in}
 
 % Sections formatting
+% (layout spec B, Nov 11 2026) - heading block spacing, pdfplumber-tuned:
+%  - leading \vspace -6.6pt (was -4pt): puts the FIRST section heading
+%    (Professional Summary) 21.3pt below the contact block's last baseline
+%    (gap 9.3pt), matching the token-normalized gaps of every other heading.
+%    Later headings are re-normalized by the section-tail tokens, so this
+%    value only sets the shared offset.
+%  - after-rule \vspace -7.5pt (was -5pt): the rule-to-content distance is
+%    the one unclaimed vertical lever left after the spec's gap floors
+%    (entry >=5pt, stack >=1pt, Certs 9.3pt, name >=14pt) consumed the page
+%    slack; -7.5pt keeps ~4.5pt of visible air under each rule while
+%    letting run-B's content stop above the 763.2pt bottom-margin line.
 \titleformat{\section}{
-  \vspace{-4pt}\scshape\raggedright\large
-}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+  \vspace{-6.6pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-7.5pt}]
 
 % Ensure that generate pdf is machine readable/ATS parsable
 \pdfgentounicode=1
 
 %-------------------------
 % Custom commands
+% \looseness=-1 (layout spec A): each bullet is asked to prefer one fewer
+% line, so a lonely short last line ("(27-point gain).") is pulled up when
+% the width allows. It is a line-count preference only - text is untouched.
 \newcommand{\resumeItem}[1]{
   \item\small{
+    \looseness=-1
     {#1 \vspace{-2pt}}
   }
 }
 
+% Entry header rows (layout spec B, Nov 11 2026), pdfplumber-measured on the
+% run-B render:
+%  - leading \vspace -1pt (was -2pt): with the base itemize's rubber
+%    itemsep, the bullet-to-next-title gap measures 22.7pt baseline
+%    distance (gap 12.7pt) - comfortably above the 6pt target AND robust
+%    under page-pressure compression (rubber glue shrinks at most ~3pt,
+%    leaving gap >=9pt, far above the 539f7c1d collision floor).
+%  - width \textwidth-0.15in (= the outer list indent) puts the tabular's
+%    right edge exactly on the section-rule/bullet right edge, so dates
+%    right-align with the rules (base rule x1 579.6pt; compact 583.2pt).
+%  - trailing \vspace -5.8pt (was -7pt): the tech-stack line sits 13.2pt
+%    above its first bullet (gap 4.2pt, well above the 1.5pt floor) while
+%    the title->stack gap stays 2.8pt.
 \newcommand{\resumeSubheading}[4]{
-  \vspace{-2pt}\item
-    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+  \vspace{-1pt}\item
+    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}[t]{l@{\extracolsep{\fill}}r}
       \textbf{#1} & #2 \\
       \textit{\small#3} & \textit{\small #4} \\
-    \end{tabular*}\vspace{-7pt}
+    \end{tabular*}\vspace{-5.8pt}
 }
 
 \newcommand{\resumeSubSubheading}[2]{
     \item
-    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}{l@{\extracolsep{\fill}}r}
       \textit{\small#1} & \textit{\small #2} \\
-    \end{tabular*}\vspace{-7pt}
+    \end{tabular*}\vspace{-5.8pt}
 }
 
 \newcommand{\resumeProjectHeading}[2]{
     \item
-    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}{l@{\extracolsep{\fill}}r}
       \small#1 & #2 \\
-    \end{tabular*}\vspace{-7pt}
+    \end{tabular*}\vspace{-5.8pt}
 }
 
 \newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
@@ -103,13 +139,13 @@
 \newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
 \newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
 \newcommand{\resumeItemListStart}{\begin{itemize}}
-% Base-mode boundary spacer: a negative spacer here crams every next
-% entry's bold title onto the preceding list's last (wrapped) line at
-% ~7pt baseline distance - 10pt descenders print through the title
-% (live render, request 539f7c1d, Nov 8 2026). -1pt keeps entries tight
-% without collisions; the auto-compact override uses +1pt for ~12pt
-% wrapped-line parity.
-\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-1pt}}
+% Base-mode boundary spacer: the base itemize keeps LaTeX's rubber itemsep,
+% so entry-title gaps are already generous (measured 22.7pt baseline
+% distance, gap 12.7pt - target 6pt, floor 5pt). +1.9pt preserves that
+% margin without spending more; the auto-compact pass overrides this to
+% its own rigid, tighter value. The 539f7c1d floor (never tighter than
+% -1pt / no baseline collision) stays the lower bound.
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{1.9pt}}
 
 <!--COMPACT_BLOCK-->
 

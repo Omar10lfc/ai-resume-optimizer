@@ -3,3 +3,6 @@
 #   pip install -r requirements.txt -r requirements-dev.txt
 pytest==9.1.1
 pytest-cov==7.1.0
+# Test-only: scripted layout acceptance (tests/test_latex_render.py
+# test_layout_spec_b_acceptance) measures rendered PDF line geometry.
+pdfplumber==0.11.10

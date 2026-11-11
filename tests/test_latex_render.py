@@ -510,8 +510,13 @@ def test_comma_separated_prose_not_split():
     assert "consistently applied" in h
 
 
-def test_skills_rendered_compact_single_item():
-    """Skills section simple lines must be rendered in a single compact item."""
+def test_skills_rows_render_as_per_row_items():
+    """Skills section simple lines render as ONE \\item PER ROW with
+    itemsep=0pt (layout spec A, Nov 11 2026): as separate paragraphs each
+    row gets its own \\looseness pass, so a stranded row tail ('Neural
+    Networks') can be shaved when the width allows - the old \\\\-joined
+    single item made every row a forced break inside one paragraph and
+    \\looseness could never act on it. Text and row order unchanged."""
     data = parse_markdown_resume(
         "## Technical Skills\n"
         "**Languages**: Java, Python, C/C++\n"
@@ -520,9 +525,13 @@ def test_skills_rendered_compact_single_item():
     )
     tex = render_resume_tex(data)
     body = tex.split("\\begin{document}")[1]
-    # Should use the compact \\ style, not 3 separate \item blocks
-    assert "\\\\" in body
-    assert body.count("\\small{\\item{") == 1
+    # One \item per row (3 rows), not a \\-joined single item
+    assert body.count(r"\item{\looseness=-1 ") == 3
+    assert r"\begin{itemize}[leftmargin=0.15in, label={}, itemsep=0pt, parsep=0pt]" in body
+    assert "\\\\" not in body
+    # Compact pass adds the calibrated list-start glue on the rows block
+    compact_body = render_resume_tex(data, compact=True).split("\\begin{document}")[1]
+    assert r"before=\vspace{-1.5pt}" in compact_body
 
 
 def test_parse_education_four_columns_university_location_degree_dates():
@@ -1138,6 +1147,255 @@ def test_compact_pass_renders_one_page_without_baseline_collision(tmp_path):
     rows = sorted({round(y, 1) for y in chunks}, reverse=True)
     min_gap = min(a - b for a, b in zip(rows, rows[1:]))
     assert min_gap >= 6.5, f"baseline collision: min gap {min_gap}pt"
+
+
+# ==========================================
+# Layout spec B acceptance (Nov 11 2026, pdfplumber-measured)
+# ==========================================
+
+try:
+    import pdfplumber
+    HAVE_PDFPLUMBER = True
+except ImportError:
+    HAVE_PDFPLUMBER = False
+
+
+def _pdf_lines(pdf):
+    """Per-page visual line ledger via pdfplumber.
+
+    Lines cluster words whose glyph tops sit within 2.0pt (the same
+    convention as the calibration scripts); baseline = top + first-word
+    font size (the user-spec baseline definition). Returns one dict per
+    page: the line ledger, the rightmost long section rule x1, and the
+    right-half year-bearing words (candidate right-column dates).
+    """
+    pages = []
+    with pdfplumber.open(str(pdf)) as doc:
+        for page in doc.pages:
+            words = page.extract_words(extra_attrs=["size"], keep_blank_chars=False)
+            lines = []
+            for w in sorted(words, key=lambda x: (round(x["top"], 1), x["x0"])):
+                if not w["text"].strip():
+                    continue
+                for ln in lines:
+                    if abs(ln["top"] - w["top"]) <= 2.0:
+                        ln["text"] += " " + w["text"]
+                        ln["x1"] = max(ln["x1"], w["x1"])
+                        break
+                else:
+                    lines.append({"top": w["top"], "x0": w["x0"], "x1": w["x1"],
+                                  "size": round(w["size"], 1), "text": w["text"]})
+            for ln in lines:
+                ln["baseline"] = ln["top"] + ln["size"]
+            lines.sort(key=lambda l: (l["top"], l["x0"]))
+            rules = [r for r in page.lines if (r["x1"] - r["x0"]) > 300]
+            date_words = [w for w in words
+                          if w["x0"] > 430 and re.search(r"\d{4}", w["text"])]
+            pages.append({
+                "lines": lines,
+                "rule_x1": max((r["x1"] for r in rules), default=None),
+                "date_words": date_words,
+            })
+    return pages
+
+
+def _is_marker_line(ln):
+    return ln["text"].strip() in {"•", "-", "◦", "*"}
+
+
+def _layout_spec_b_markdown() -> str:
+    """Fixture exercising EVERY section-tail class (rows x3, list, sub, ph):
+    Professional Summary + Technical Skills + Certifications end on rows
+    blocks; Experience (2 entries) ends on a bullet list; Education ends on
+    a two-row header tabular; Projects ends on a bare header-only
+    \\resumeProjectHeading. Contact carries linkedin+github (scheme-strip),
+    bullets carry ASCII '->' arrows."""
+    return (
+        "# Test Candidate\n"
+        "tc@example.com | +1 555 010 0100 | linkedin.com/in/testcandidate | "
+        "github.com/testcandidate\n\n"
+        "## Professional Summary\n"
+        "ML engineer with a strong track record building end-to-end LLM/RAG "
+        "pipelines, AI agents and workflow automations, and optimization "
+        "solutions that cut latency and costs.\n\n"
+        "## Technical Skills\n"
+        "**Machine Learning & Deep Learning**: Python, SQL, PyTorch, Hugging "
+        "Face Transformers, Scikit-learn, Model Fine-Tuning, Neural Networks\n"
+        "**Optimization & Operations Research**: OR-Tools CP-SAT, "
+        "Combinatorial Optimization, IsolationForest, Anomaly Detection\n"
+        "**LLM & Generative AI**: Retrieval-Augmented Generation (RAG), "
+        "Multi-Agent Systems, LLM Orchestration, Prompt Engineering\n\n"
+        "## Experience\n"
+        "**Computer Vision Engineer** | Tech Corp | Jan 2024 - Present\n"
+        "- Built and evaluated computer-vision models across medical and "
+        "automotive datasets -> shipped to production on edge devices\n"
+        "- Fine-tuned detectors for real-time inference -> latency cut from "
+        "60 s to under 0.5 s per image\n\n"
+        "**Data Science Intern** | Data Inc | Apr 2023 - Oct 2023\n"
+        "- Led development of a clinical diagnosis system -> validated on a "
+        "2,195-instance held-out set with radiologists\n\n"
+        "## Projects\n"
+        "**Aegis: Heat-Risk Operations Agent** "
+        "[Live](https://aegis.example.com) | FastAPI, LangGraph | "
+        "Aug 2025 - Sep 2026\n"
+        "- Engineered a FastAPI service around a 4-node LangGraph agent with "
+        "bounded LLM timeouts and Pydantic safeguards\n\n"
+        "**Port Digital Twin: AIS-Fed Optimization** "
+        "[Code](https://port.example.com) | OR-Tools CP-SAT | "
+        "Sep 2024 - Jun 2025\n"
+        "- Engineered a CP-SAT berth-allocation solver cutting average "
+        "vessel wait time by 47% vs the FCFS baseline\n\n"
+        "**Probe Header-Only Project | Jan 2026 - Feb 2026**\n\n"
+        "## Education\n"
+        "**Test University of Science and Technology** | Testville\n"
+        "B.Sc. in Computer Science, AI & Data Science | Oct 2022 - Jun 2026\n\n"
+        "## Certifications\n"
+        "**AWS Future AI Engineer**: Udacity (Nov 2025) - Certificate\n"
+        "**Natural Language Processing in Python**: Maven Analytics "
+        "(Oct 2025) - Certificate\n"
+    )
+
+
+@pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
+                    reason="pdflatex/pdfplumber not installed")
+def test_layout_spec_b_acceptance(tmp_path):
+    """Scripted acceptance for the layout-spec B round (Nov 11 2026).
+
+    Every check is pdfplumber-measured on both render modes of a fixture
+    that exercises all four section-tail classes (rows/list/sub/ph):
+
+    - into-heading gap >= 9.0pt for every section heading in BOTH modes
+      (the shipped defect: Certifications printed 4.6pt under the last
+      Languages row);
+    - compact into-heading uniformity: spread <= 1.5pt across all six
+      headings regardless of how each section ends;
+    - entry-title boundary gap >= 5.0pt (>= 2.5x the wrapped-line gap),
+      both modes - the 539f7c1d collision floor;
+    - stack/title-row -> first-bullet gap >= 0.5pt, both modes;
+    - no adjacent-line collision anywhere else (gap >= 0.5pt), ignoring
+      the 10pt-bullet-marker clustering artifact;
+    - name top offset >= 14pt, both modes;
+    - right-column dates flush with the section rules (<= 1.5pt);
+    - compact render fits ONE page with the last baseline at or above the
+      763.2pt bottom-margin stop;
+    - displayed link text keeps no scheme while \\href keeps the full URL;
+    - ASCII '->' arrows survive render and extraction;
+    - bullets and rows carry \\looseness=-1 (line-shave pass only).
+    """
+    md = _layout_spec_b_markdown()
+    data = parse_markdown_resume(md)
+
+    base_pdf = latex_to_pdf(render_resume_tex(data), tmp_path, "lsb_base.pdf")
+    comp_pdf = latex_to_pdf(render_resume_tex(data, compact=True), tmp_path,
+                            "lsb_compact.pdf")
+    assert base_pdf, "base render failed to compile"
+    assert comp_pdf and pdf_page_count(comp_pdf) == 1, (
+        "compact render must reclaim the overflow to one page")
+
+    geoms = {"base": _pdf_lines(base_pdf), "compact": _pdf_lines(comp_pdf)}
+    HEADINGS = {"professional summary", "technical skills", "experience",
+                "projects", "education", "certifications"}
+    # Entry-title lead-ins: bold titles (10pt) + \\small project titles (9pt)
+    TITLES = ("Computer Vision Engineer", "Data Science Intern",
+              "Aegis: Heat-Risk", "Port Digital Twin",
+              "Probe Header-Only Project",
+              "Test University of Science and Technology")
+    STACKS = ("Tech Corp", "Data Inc", "FastAPI, LangGraph", "OR-Tools CP-SAT")
+
+    for mode, pages in geoms.items():
+        lines = [ln for pg in pages for ln in pg["lines"]]
+        marker_tops = [ln["baseline"] for ln in lines if _is_marker_line(ln)]
+
+        def near_marker(ln):
+            return any(abs(ln["baseline"] - m) <= 4.0 for m in marker_tops)
+
+        # -- into-heading gaps (uniform 9.3pt family, the original complaint) --
+        head_gaps = []
+        for i, ln in enumerate(lines):
+            if (ln["text"].strip().lower() in HEADINGS
+                    and ln["size"] >= 10.5 and i > 0):
+                head_gaps.append(ln["baseline"] - lines[i - 1]["baseline"] - 12.0)
+        assert len(head_gaps) == 6, f"{mode}: headings found = {len(head_gaps)}"
+        assert min(head_gaps) >= 9.0, (
+            f"{mode}: tightest heading gap {min(head_gaps):.1f}pt < 9.0")
+        if mode == "compact":
+            assert max(head_gaps) - min(head_gaps) <= 1.5, (
+                f"{mode}: heading gaps not uniform: "
+                f"{[round(g, 1) for g in head_gaps]}")
+
+        # -- entry-title boundaries (>= 5pt, never counting the heading->first
+        #    entry pair, which is the rule-to-content air) --
+        for i, ln in enumerate(lines):
+            if i == 0 or not any(ln["text"].startswith(t) for t in TITLES):
+                continue
+            prev = lines[i - 1]
+            if prev["text"].strip().lower() in HEADINGS:
+                continue
+            gap = ln["baseline"] - prev["baseline"] - ln["size"]
+            assert gap >= 5.0, (
+                f"{mode}: entry boundary {gap:.1f}pt < 5.0 at "
+                f"[{prev['text'][-28:]}] -> [{ln['text'][:28]}]")
+
+        # -- stack/title-row -> first bullet (>= 0.5pt) --
+        for i, ln in enumerate(lines):
+            if not any(ln["text"].startswith(s) for s in STACKS):
+                continue
+            if i + 1 >= len(lines):
+                continue
+            nxt = lines[i + 1]
+            if _is_marker_line(nxt) and i + 2 < len(lines):
+                nxt = lines[i + 2]  # 10pt marker clustered separately
+            gap = nxt["baseline"] - ln["baseline"] - nxt["size"]
+            assert gap >= 0.5, (
+                f"{mode}: stack boundary {gap:.1f}pt < 0.5 after "
+                f"[{ln['text'][:28]}]")
+
+        # -- no other adjacent-line collision (marker clusters excluded) --
+        bad = []
+        for a, b in zip(lines, lines[1:]):
+            if (_is_marker_line(a) or _is_marker_line(b)
+                    or near_marker(a) or near_marker(b)):
+                continue
+            g = b["baseline"] - a["baseline"] - b["size"]
+            if g < 0.5:
+                bad.append((round(g, 1), a["text"][-26:], b["text"][:26]))
+        assert not bad, f"{mode}: adjacent-line collisions {bad[:4]}"
+
+        # -- name top offset >= 14pt --
+        first = pages[0]["lines"][0]
+        assert first["top"] >= 14.0, f"{mode}: name top offset {first['top']:.1f}pt"
+
+        # -- right-column dates flush with the rules (<= 1.5pt) --
+        for pg in pages:
+            if pg["rule_x1"] is None:
+                continue
+            flushed = [w for w in pg["date_words"]
+                       if w["x1"] >= pg["rule_x1"] - 3.0]
+            assert flushed, f"{mode}: no right-column dates on a ruled page"
+            worst = max(abs(w["x1"] - pg["rule_x1"]) for w in flushed)
+            assert worst <= 1.5, (
+                f"{mode}: date flush off by {worst:.1f}pt "
+                f"(rule x1 {pg['rule_x1']:.1f})")
+
+    # -- compact page budget: last baseline at/above the 763.2pt stop --
+    comp_last = geoms["compact"][0]["lines"][-1]
+    assert comp_last["baseline"] <= 763.2, (
+        f"compact last baseline {comp_last['baseline']:.1f}pt crosses the "
+        "763.2pt bottom-margin stop")
+
+    # -- link text scheme-strip (href keeps the full URL) --
+    comp_tex = render_resume_tex(data, compact=True)
+    assert not re.search(r"\\href\{[^}]*\}\{https?://", comp_tex), (
+        "displayed link text must not carry the scheme; \\href must")
+    assert "\\href{https://" in comp_tex
+
+    # -- ASCII arrows survive render and text extraction --
+    assert "->" in comp_tex
+    extracted = " ".join(ln["text"] for pg in geoms["compact"] for ln in pg["lines"])
+    assert "->" in extracted, "ASCII arrow lost in extraction (mojibake risk)"
+
+    # -- line-shave pass present on bullets and rows (text untouched) --
+    assert comp_tex.count(r"\looseness=-1") >= 5
 
 
 

@@ -835,10 +835,22 @@ def _render_text_with_links(text: str) -> str:
             idx = int(m_link.group(1))
             label, url = links[idx]
             clean_url = _clean_latex_url(url)
-            parts.append(r'\href{' + clean_url + r'}{\underline{' + _latex_escape(label) + r'}}')
+            # Display text hides the scheme (href keeps the full URL).
+            parts.append(r'\href{' + clean_url + r'}{\underline{' + _latex_escape(_display_url_text(label)) + r'}}')
         else:
             parts.append(_latex_escape(piece))
     return ''.join(parts)
+
+
+def _display_url_text(s: str) -> str:
+    """Displayed URL text without the scheme prefix (layout spec A, Nov 11
+    2026): LinkedIn/GitHub links print as linkedin.com/... instead of
+    https://linkedin.com/... so the contact row fits one line and link-heavy
+    project headers wrap one line less. The FULL URL stays in the href -
+    only the displayed characters change, which the spec's acceptance diff
+    already whitelists ('text layer unchanged except whitespace and the
+    removed https://')."""
+    return re.sub(r'^https?://', '', s.strip(), flags=re.IGNORECASE)
 
 
 def _render_contact(contact: Contact) -> str:
@@ -847,6 +859,26 @@ def _render_contact(contact: Contact) -> str:
     if not contact.name and not contact.details:
         return ""
     name_part = contact.name or "Candidate"
+    # Name top offset (layout spec B item 5): the name printed 7.3pt from
+    # the page's top edge vs ~34pt of bottom margin - a print-clip risk.
+    # This offset is the LAST vertical dollar spent: every point here
+    # pushes the whole page down.
+    # RIGID GLUE GUARD: LaTeX's center environment is a trivlist whose
+    # default \topsep/\partopsep are RUBBER (plus/minus stretch). The page
+    # builder exercises that rubber differently depending on how much
+    # content follows, which moved the name's top offset by +-2pt between
+    # resumes (probe-calibrated Nov 11 2026: partopsep alone accounted for
+    # exactly 2.0pt). Zeroing both inside a group pins the name to one
+    # deterministic position for ANY body content; the group closes before
+    # the sections, so no list elsewhere is affected.
+    # -3.3pt lands the WORST case (accent-free names, glyph height = cap
+    # height, probe floor 2.2pt under the old -15.3) at 14.2pt >= the
+    # 14pt floor; names with accents/descenders sit even lower (measured
+    # 16.1pt). Compact stop: run-B's last baseline ends at 760.6pt <= the
+    # 763.2pt bottom-margin line (2.6pt margin).
+    lines.append(r"\vspace*{-3.3pt}")
+    lines.append(r"\begingroup")
+    lines.append(r"\setlength{\topsep}{0pt}\setlength{\partopsep}{0pt}")
     lines.append(r"\begin{center}")
     # Reduced from \Huge to \LARGE (or \Large if long) so name heading is proportional
     heading_font = r"\LARGE" if len(name_part) <= 30 else r"\Large"
@@ -877,19 +909,19 @@ def _render_contact(contact: Contact) -> str:
             # Check for LinkedIn profile
             if 'linkedin.com' in p.lower():
                 url = p if p.startswith(('http://', 'https://')) else 'https://' + p
-                rendered.append(r'\href{' + _clean_latex_url(url) + r'}{\underline{' + _latex_escape(p) + r'}}')
+                rendered.append(r'\href{' + _clean_latex_url(url) + r'}{\underline{' + _latex_escape(_display_url_text(p)) + r'}}')
                 continue
 
             # Check for GitHub profile
             if 'github.com' in p.lower():
                 url = p if p.startswith(('http://', 'https://')) else 'https://' + p
-                rendered.append(r'\href{' + _clean_latex_url(url) + r'}{\underline{' + _latex_escape(p) + r'}}')
+                rendered.append(r'\href{' + _clean_latex_url(url) + r'}{\underline{' + _latex_escape(_display_url_text(p)) + r'}}')
                 continue
 
             # Check for web URLs or portfolio domains
             if re.match(r'^(?:https?://|www\.)', p) or re.search(r'\.(?:io|dev|ai|app|me|tech|com|org)(?:/|$)', p):
                 url = p if p.startswith(('http://', 'https://')) else 'https://' + p
-                rendered.append(r'\href{' + _clean_latex_url(url) + r'}{\underline{' + _latex_escape(p) + r'}}')
+                rendered.append(r'\href{' + _clean_latex_url(url) + r'}{\underline{' + _latex_escape(_display_url_text(p)) + r'}}')
                 continue
 
             # Otherwise plain text (e.g. location, phone number)
@@ -897,6 +929,7 @@ def _render_contact(contact: Contact) -> str:
 
         lines.append(r"\small " + r" $|$ ".join(rendered))
     lines.append(r"\end{center}")
+    lines.append(r"\endgroup")
     lines.append("")
     return "\n".join(lines)
 
@@ -998,7 +1031,7 @@ def _extract_project_links_and_title(
     return clean_title, links
 
 
-def _render_section(section: Section) -> str:
+def _render_section(section: Section, compact: bool = False) -> str:
     """Render one section into LaTeX using the template macros."""
     parts = []
     parts.append(r"\section{" + _latex_escape(section.title) + "}")
@@ -1011,6 +1044,15 @@ def _render_section(section: Section) -> str:
     if section.entries:
         populated = [e for e in section.entries if (e.header or e.right or e.sub or e.sub_right)]
         if populated:
+            # Layout spec B (Nov 11 2026) - section-tail normalization: when a
+            # section ENDS on a header row (Education-style subheading tabular
+            # or a header-only ProjectHeading), the next section heading's
+            # gap above it is much tighter than after an entry that ends on a
+            # bullet list (measured 4.7pt vs 9.3pt on the shipped PDF). The
+            # emitted tail token gets replaced in render_resume_tex with a
+            # per-mode \vspace that re-uniforms every heading gap.
+            last_header_kind = None
+            last_is_bulleted = False
             parts.append(r"\resumeSubHeadingListStart")
             for e in populated:
                 headers_left = e.header or ""
@@ -1068,6 +1110,7 @@ def _render_section(section: Section) -> str:
                             left_items.append(r"\emph{" + tech_text + r"}")
                         left_line = " $|$ ".join(left_items)
                         parts.append(r"\resumeProjectHeading{" + left_line + r"}{" + date_text + r"}")
+                        last_header_kind = "ph"
                     else:
                         # Multi-line: Title + links on Row 1, tech stack on Row 2
                         row1_items = [_latex_escape(clean_title)]
@@ -1075,6 +1118,7 @@ def _render_section(section: Section) -> str:
                             row1_items.append(r"\textnormal{" + " $|$ ".join(formatted_links) + r"}")
                         row1_left = " $|$ ".join(row1_items)
                         parts.append(r"\resumeSubheading{" + row1_left + r"}{" + date_text + r"}{" + tech_text + r"}{}")
+                        last_header_kind = "sub"
                 elif is_exp_sec:
                     # Experience: Role and Company side-by-side on the left, dates on the right
                     # (e.g. \resumeProjectHeading{\textbf{Role} $|$ \emph{Company}}{Dates})
@@ -1105,6 +1149,7 @@ def _render_section(section: Section) -> str:
                         parts.append(r"\resumeProjectHeading{" + left_heading + r"}{" + date_text + r"}")
                     else:
                         parts.append(r"\resumeProjectHeading{\textbf{" + role_text + r"}}{" + date_text + r"}")
+                    last_header_kind = "ph"
                 elif is_edu_sec:
                     # Education: University & Location on row 1, Degree & Dates on row 2
                     inst_text = _render_text_with_links(headers_left)
@@ -1113,6 +1158,7 @@ def _render_section(section: Section) -> str:
                     date_text = _render_text_with_links(sub_right)
                     parts.append(r"\resumeSubheading{" + inst_text + "}{" +
                                  loc_text + "}{" + deg_text + "}{" + date_text + "}")
+                    last_header_kind = "sub"
                 else:
                     # Generic entries (Awards, Leadership, Publications, Certifications, etc.)
                     h_text = _render_text_with_links(headers_left)
@@ -1121,16 +1167,33 @@ def _render_section(section: Section) -> str:
                     sr_text = _latex_escape(sub_right)
                     if not s_text and not sr_text:
                         parts.append(r"\resumeProjectHeading{\textbf{" + h_text + r"}}{" + r_text + r"}")
+                        last_header_kind = "ph"
                     else:
                         parts.append(r"\resumeSubheading{" + h_text + "}{" +
                                      r_text + "}{" + s_text + "}{" + sr_text + "}")
+                        last_header_kind = "sub"
 
                 if e.items:
                     parts.append(r"\resumeItemListStart")
                     for item in e.items:
                         parts.append(r"\resumeItem{" + _render_text_with_links(item) + "}")
                     parts.append(r"\resumeItemListEnd")
-            parts.append(r"\resumeSubHeadingListEnd")
+                    last_is_bulleted = True
+                    last_header_kind = None  # the list tail takes over the spacing
+
+            # AFTER the entry loop (single per-section tail, layout spec B):
+            if last_header_kind == "sub":
+                parts.append(r"\resumeSubHeadingListEnd<!--SECTION_TAIL_NUDGE:sub-->")
+            elif last_header_kind == "ph":
+                parts.append(r"\resumeSubHeadingListEnd<!--SECTION_TAIL_NUDGE:ph-->")
+            elif last_is_bulleted:
+                # The section ends on a bullet list whose tail grew when
+                # the entry-title gaps went to the >=5pt tier (layout
+                # spec B): pull the NEXT section heading back to the
+                # shared reference distance.
+                parts.append(r"\resumeSubHeadingListEnd<!--SECTION_TAIL_NUDGE:list-->")
+            else:
+                parts.append(r"\resumeSubHeadingListEnd")
             parts.append("")
 
     if section.simple_lines:
@@ -1153,19 +1216,33 @@ def _render_section(section: Section) -> str:
                     item_text = _render_text_with_links(ln)
             items.append(item_text)
 
-        # Render simple line rows inside a single item joined by \\ (Jake Gutierrez style)
+        # One \item PER ROW with itemsep=0pt (layout spec A, Nov 11 2026):
+        # the old \\-joined single item made every row a forced break inside
+        # one paragraph, so TeX's \looseness could never shave a stranded
+        # row tail ("Neural Networks" printed alone). As separate paragraphs
+        # each row gets its own \looseness pass; itemsep=0pt keeps the
+        # 12pt row rhythm identical (rows sit on baselineskip like the
+        # forced breaks did). Text and row order unchanged.
+        # Compact mode also tightens the list-start glue (layout spec B): the
+        # skip between a section rule and the first row/entry is unclaimed
+        # vertical budget the 763.2pt bottom-margin stop needs. enumitem's
+        # `before` key is used (NOT topsep - probe-calibrated Nov 11 2026:
+        # topsep glue is swallowed at list start, while before=\vspace
+        # lands 1:1). -1.5pt keeps ~3.5pt of visual air under each rule.
+        row_opts = ("leftmargin=0.15in, label={}, itemsep=0pt, parsep=0pt"
+                    + (r", before=\vspace{-1.5pt}" if compact else ""))
         if len(items) > 1:
-            joined = " \\\\\n     ".join(items)
-            parts.append(r"\begin{itemize}[leftmargin=0.15in, label={}]")
-            parts.append(r"    \small{\item{")
-            parts.append(f"     {joined}")
-            parts.append(r"    }}")
-            parts.append(r"\end{itemize}")
+            parts.append(r"\begin{itemize}[" + row_opts + "]")
+            parts.append(r"    \small{")
+            for it in items:
+                parts.append(r"    \item{\looseness=-1 " + it + "}")
+            parts.append(r"    }")
+            parts.append(r"\end{itemize}<!--SECTION_TAIL_NUDGE:rows-->")
             parts.append("")
         elif items:
-            parts.append(r"\begin{itemize}[leftmargin=0.15in, label={}]")
-            parts.append(r"    \small{\item{" + items[0] + r"}}")
-            parts.append(r"\end{itemize}")
+            parts.append(r"\begin{itemize}[" + row_opts + "]")
+            parts.append(r"    \small{\item{\looseness=-1 " + items[0] + r"}}")
+            parts.append(r"\end{itemize}<!--SECTION_TAIL_NUDGE:rows-->")
             parts.append("")
 
     # A section that ended up with no usable content (no non-empty entries and
@@ -1194,10 +1271,16 @@ _COMPACT_OVERRIDES = r"""
 % ---- AUTO-COMPACT PASS (activated after a >1-page first render) ----
 % Tighter bullet spacing (enumitem is loaded in this preamble)
 \setlist[itemize]{itemsep=0pt, parsep=0pt, topsep=2pt, leftmargin=*}
-% Tighter section heading + rule spacing
+% Entry-list start glue (layout spec B, Nov 11 2026): the compact pass
+% pulls each section rule 1.5pt closer to its first entry - probe-calibrated
+% (topsep is swallowed at list start; enumitem's before=\vspace lands 1:1).
+\renewcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}, topsep=0pt, before=\vspace{-1.5pt}]}
+% Tighter section heading + rule spacing (ar -8.5: the rule-to-content air
+% drops from ~6pt to ~3.5pt; the last unclaimed vertical lever paired with
+% the before= start glue above)
 \titleformat{\section}{
   \vspace{-7pt}\scshape\raggedright\large
-}{}{0em}{}[\color{black}\titlerule \vspace{-7pt}]
+}{}{0em}{}[\color{black}\titlerule \vspace{-8.5pt}]
 % Recover a little vertical room
 \addtolength{\topmargin}{-.12in}
 \addtolength{\textheight}{.24in}
@@ -1210,35 +1293,51 @@ _COMPACT_OVERRIDES = r"""
 % tabulars pulled the following bullet lists and the next heading's own
 % rows ONTO the header/tech lines - measured header->bullet baseline gap
 % collapsed to 2.8pt. -4pt keeps the density win without glyph collisions.)
-\renewcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-2pt}}}}
+% VERTICAL-SPACING TIERS (layout spec B, Nov 11 2026) - the compact pass
+% shrinks in this exact order and never touches resume text:
+%   1) newly widened entry-title gaps are rebuilt tighter than base but the
+%      visible entry gap NEVER drops below 5pt (>=2.5x the wrapped-line gap);
+%   2) only then the historic margin levers (topmargin/textheight/width).
+% pdfplumber-calibrated on the run-B render (Nov 11 2026):
+%  - \resumeItemListEnd +3.0pt -> entry-title baseline distance 15.0pt
+%    (gap 5.0pt = exactly 2.5x the 11.0pt intra-bullet wrap distance, the
+%    spec floor; the 6pt target cannot fit this resume inside the 763.2pt
+%    bottom-margin stop).
+%  - tabular tails -2.8pt -> stack->first-bullet distance 10.0pt (gap 1.0pt,
+%    above the 0.3pt collision bug this tail class fixes; the 1.5pt target
+%    was scaled down per the spec's "scale items 1-2" fallback).
+%  - after-rule -7.5pt (see template) - the only unclaimed lever left.
+% The 539f7c1d entry-boundary minimum stays the floor for every list end.
+\renewcommand{\resumeItem}[1]{\item\small\looseness=-1{{#1 \vspace{-2pt}}}}
 \renewcommand{\resumeSubheading}[4]{
   \vspace{-1pt}\item
-    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}[t]{l@{\extracolsep{\fill}}r}
       \textbf{#1} & #2 \\
       \textit{\small#3} & \textit{\small #4} \\
-    \end{tabular*}\vspace{-4pt}
+    \end{tabular*}\vspace{-3.1pt}
 }
 \renewcommand{\resumeSubSubheading}[2]{
     \item
-    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}{l@{\extracolsep{\fill}}r}
       \textit{\small#1} & \textit{\small #2} \\
-    \end{tabular*}\vspace{-4pt}
+    \end{tabular*}\vspace{-3.1pt}
 }
 \renewcommand{\resumeProjectHeading}[2]{
     \item
-    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}{l@{\extracolsep{\fill}}r}
       \small#1 & #2 \\
-    \end{tabular*}\vspace{-4pt}
+    \end{tabular*}\vspace{-3.1pt}
 }
 % Entry-boundary repair (live request 539f7c1d, Nov 8 2026): after the
 % itemize's own -2pt item tails, a negative end-of-list spacer collapsed
 % the bullet-to-(next-entry)-title baseline distance to 7.0pt - normal
 % wrapped lines sit 12.0-12.2pt apart, so 10pt-font descenders ("pipeline.",
 % "service.") printed straight through the next entry's bold titles
-% ("Smart Lecture Assistant", "AI Resume Optimizer Agent"). A small
-% POSITIVE spacer restores ~12pt parity with wrapped-line spacing while
-% keeping the density win everywhere else.
-\renewcommand{\resumeItemListEnd}{\end{itemize}\vspace{1pt}}
+% ("Smart Lecture Assistant", "AI Resume Optimizer Agent").
+% Layout spec B tier: +3.0pt keeps the compact entry gap at exactly the
+% 5pt floor (>=2.5x the intra-bullet wrap gap) after the tabular tails
+% and margin levers were spent; see the tier comment above.
+\renewcommand{\resumeItemListEnd}{\end{itemize}\vspace{3.0pt}}
 % ---------------- end auto-compact pass ----------------
 """
 
@@ -1268,10 +1367,36 @@ def render_resume_tex(data: ResumeData, compact: bool = False) -> str:
     if contact_tex:
         body_parts.append(contact_tex)
     for section in data.sections:
-        body_parts.append(_render_section(section))
+        body_parts.append(_render_section(section, compact=compact))
 
     body = "\n".join(body_parts) if body_parts else _latex_escape(
         "No structured content could be extracted — please provide a resume.")
+
+    # Section-tail normalization (layout spec B, Nov 11 2026): every section
+    # heading must sit 21.4pt (gap 9.4pt) below the previous section's last
+    # line, regardless of how that section ended. The tokens are
+    # pdfplumber-derived from zero-nudge probe renders of the run-B data
+    # (Nov 11 2026) and re-checked against the shipped render:
+    #   list - a section ending on a bullet list (inner itemize end + iLE
+    #          + outer itemize end all land here);
+    #   sub  - a section ending on a two-row header tabular;
+    #   ph   - a section ending on a bare one-row \resumeProjectHeading
+    #          (header-only entry); probe-calibrated, see test;
+    #   rows - a section ending on the simple-lines rows block. The base
+    #          rows end carries ~9pt of hidden glue (the block's own
+    #          topsep-like end skip survives the heading merge), hence the
+    #          large negative token.
+    # Base mode has no page-budget pressure, so its tokens exist purely for
+    # gap uniformity; compact mode's values are also tuned so run-B's last
+    # baseline stops above the 763.2pt bottom-margin line.
+    _NUDGE = {
+        "list": r"\vspace{-3.9pt}" if compact else r"\vspace{-10.4pt}",
+        "sub": r"\vspace{1.8pt}" if compact else r"\vspace{-3.9pt}",
+        "ph": r"\vspace{2.3pt}" if compact else r"\vspace{-3.3pt}",
+        "rows": r"\vspace{-2.8pt}" if compact else r"\vspace{-9.0pt}",
+    }
+    for kind, value in _NUDGE.items():
+        body = body.replace(f"<!--SECTION_TAIL_NUDGE:{kind}-->", value)
 
     # Replace the placeholder comment with the rendered body
     template = template.replace("<!--RESUME_BODY-->", body)
