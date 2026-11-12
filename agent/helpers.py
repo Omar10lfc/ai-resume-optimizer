@@ -362,6 +362,62 @@ def find_dropped_source_metrics(final_text: str, source_resume: str,
     return findings
 
 
+def find_unused_context_terms(human_notes: str, final_text: str,
+                              source_resume: str, max_findings: int = 6
+                              ) -> list[str]:
+    """Context-incorporation tripwire, the notes-side mirror of
+    find_dropped_source_metrics (round 7, Nov 12 2026): both fresh runs
+    (25ff4ae5 / 1a8125f0) lost the user's pasted Aegis project and NOTHING
+    recorded it - the improver's "USE THIS USER CONTEXT" instruction is
+    advisory, the scrubber treats the notes as evidence (it can only
+    remove content, never restore it), and a polisher section rewrite can
+    drop context bullets without leaving a trace.
+
+    Detection-only: distinctive terms the typed notes contribute that
+    appear in NEITHER the source resume NOR the final resume are surfaced
+    for the integrity warning. Advisory by design - tailoring may
+    legitimately paraphrase or omit - but a silently dropped context
+    becomes a visible warning instead of a mystery. Reuses the chip
+    vocabulary filters: function-word noise (_CHIP_STOPWORDS), acronym
+    noise (_GENERIC_SHORT), and tool-name-preserving tokenization
+    (_WORD_SPLIT_RE keeps c++ / gpt-4 / node.js whole).
+    """
+    if not (human_notes or "").strip():
+        return []
+    final_l = (final_text or "").lower()
+    source_l = (source_resume or "").lower()
+    # Verb/preposition noise beyond the chip stoplist ("Ran the deploy
+    # pipeline on a home lab") - kept local so _CHIP_STOPWORDS' contract
+    # with the scrubber's suppression matching stays untouched.
+    extra_stop = frozenset(
+        "ran run runs running home lab".split())
+    seen: set[str] = set()
+    findings: list[str] = []
+    for raw in _WORD_SPLIT_RE.split(human_notes):
+        # trailing '.' is sentence punctuation, never part of a term
+        # ("LangGraph." -> "langgraph") - internal dots stay (node.js)
+        tok = raw.strip("-").rstrip(".").lower()
+        if len(tok) < 3 or tok in seen:
+            continue
+        if (tok in _CHIP_STOPWORDS or tok in _GENERIC_SHORT
+                or tok in extra_stop):
+            continue
+        if tok[0].isdigit() or re.fullmatch(r"[0-9.]+", tok):
+            continue  # metrics have their own tripwires
+        seen.add(tok)
+        if tok in final_l or tok in source_l:
+            continue
+        # de-hyphenated variant counts as present ("heat-risk" ~ "Heat Risk")
+        spaced = tok.replace("-", " ")
+        if spaced in final_l or spaced in source_l:
+            continue
+        findings.append(raw.strip("-").rstrip("."))
+    # Proper-noun tokens first (project/tool names are the actionable
+    # findings), longest first within each class.
+    findings.sort(key=lambda f: (f[:1].isupper(), len(f)), reverse=True)
+    return findings[:max_findings]
+
+
 # ============================================================
 # Deterministic fabrication scrubber
 # ============================================================
@@ -595,22 +651,26 @@ def _scrub_skill_row_line(stripped: str, suppressed: list[str],
                           removals: list[str]) -> Optional[str]:
     """Item-level scrub of a skills row: drops '(or similar)' hedges and
     items echoing suppressed chip terms. Returns the rebuilt row, or None
-    when every item is gone."""
+    when every item is gone. A row with nothing to remove is returned
+    byte-identical: rebuilding would reformat it ("https://" -> "https: //"
+    on a bare-URL contact line the row regex happens to match), and the
+    scrubber's contract is removal, not reformatting."""
     m = re.match(r"^\s*([^:]{1,45}):(\s*.*)$", stripped)
     label, value = m.group(1), m.group(2)
-    value, _ = _OR_SIMILAR_PAREN_RE.subn("", value)
+    value, hedges = _OR_SIMILAR_PAREN_RE.subn("", value)
 
+    items = [item.strip() for item in value.split(",") if item.strip()]
     kept_items: list[str] = []
-    for item in value.split(","):
-        if not item.strip():
-            continue
+    for item in items:
         if any(_term_in_text(t, item) for t in suppressed):
             removals.append("skills item removed: " + item.strip()[:44])
             continue
-        kept_items.append(item.strip())
-    if kept_items:
-        return _tidy_removal_residue(label + ": " + ", ".join(kept_items))
-    return None
+        kept_items.append(item)
+    if not kept_items:
+        return None
+    if len(kept_items) == len(items) and not hedges:
+        return stripped
+    return _tidy_removal_residue(label + ": " + ", ".join(kept_items))
 
 
 def scrub_unsupported_content(optimized_text: str, resume_text: str,
@@ -899,23 +959,55 @@ def _contact_placeholder_tokens() -> list[str]:
     return ["n/a", "na", "n.a.", "tbd", "none", "null"]
 
 
+# A full-part markdown link in the contact line ("[Portfolio](https://...)").
+_CONTACT_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+def _unwrap_contact_link(part: str, normalized: list[str]) -> str:
+    """Contact-line part transform: a full-part markdown link becomes the
+    bare URL, because the renderer prints the LABEL of a markdown link
+    (_render_contact's \\href{url}{\\underline{label}}) while the accepted
+    header form displays the URL text itself. Round 7 (Nov 12 2026, runs
+    25ff4ae5 / 1a8125f0): both drafts shipped
+    "[LinkedIn](https://...) | ... | [Portfolio](https://huggingface.co/...)"
+    and the PDF showed the word "Portfolio" where every accepted run
+    displays huggingface.co/Omar10lfc. Mailto links unwrap to the address;
+    anything else passes through unchanged. Display form is recorded for
+    the guardrail channel."""
+    m = _CONTACT_MD_LINK_RE.fullmatch(part)
+    if not m:
+        return part
+    url = m.group(2).strip().split()[0].strip().lstrip("<").rstrip(")")
+    if url.lower().startswith("mailto:"):
+        url = url[len("mailto:"):]
+    if not url:
+        return part
+    display = re.sub(r"^(?:https?://|www\.)", "", url,
+                     flags=re.IGNORECASE).rstrip("/")
+    normalized.append(display or url)
+    return url
+
+
 def preserve_contact_links(
         draft: str,
-        source_resume: str) -> tuple[str, list[str], list[str]]:
+        source_resume: str) -> tuple[str, list[str], list[str], list[str]]:
     """Re-injects source-header contact links that the rewritten draft's
     header lost; also strips a dangling trailing "|" from the draft's
-    contact line (run 124f40cb shipped "...github.com/Omar10lfc |") and
+    contact line (run 124f40cb shipped "...github.com/Omar10lfc |"),
     placeholder tokens (N/A / TBD / ...) standing in for an absent field
-    (run bf0f7941 shipped "...github.com/Omar10lfc | N/A | ...").
+    (run bf0f7941 shipped "...github.com/Omar10lfc | N/A | ..."), and
+    normalizes label-form markdown links to their bare URLs (round 7, Nov
+    12 2026: "[Portfolio](https://huggingface.co/...)" printed the label
+    instead of the URL).
 
-    Returns (draft, restored_tokens, removed_placeholders) with tokens in
-    display form (scheme stripped). Idempotent: an already-complete header
-    restores nothing and the text passes through unchanged. Only the header
-    REGION is compared - links in the body are content and have their own
-    integrity paths.
+    Returns (draft, restored_tokens, removed_placeholders, normalized_links)
+    with tokens in display form (scheme stripped). Idempotent: an
+    already-complete header restores nothing and the text passes through
+    unchanged. Only the header REGION is compared - links in the body are
+    content and have their own integrity paths.
     """
     if not draft or not source_resume:
-        return draft, [], []
+        return draft, [], [], []
 
     lines = draft.split("\n")
     region_idx: list[int] = []
@@ -935,11 +1027,14 @@ def preserve_contact_links(
         if len(region_idx) >= 6:
             break
     if not region_idx:
-        return draft, [], []
+        return draft, [], [], []
 
-    # Placeholder sanitation first, so a restored link never lands after a
-    # fake "N/A" token. A contact line keeps at least two tokens.
+    # Sanitation pass on the contact line: placeholder tokens out (a
+    # restored link must never land after a fake "N/A" token), label-form
+    # markdown links unwrapped to bare URLs. A contact line keeps at least
+    # two tokens.
     removed: list[str] = []
+    normalized: list[str] = []
     changed = False
     contact_idx = None
     for i in region_idx:
@@ -949,14 +1044,18 @@ def preserve_contact_links(
         contact_idx = region_idx[-1]
     placeholders = set(_contact_placeholder_tokens())
     parts = [p.strip() for p in lines[contact_idx].split("|")]
-    kept = [p for p in parts if p and p.lower() not in placeholders]
-    if len(kept) != len(parts) and len(kept) >= 2:
-        removed = [p for p in parts if p and p.lower() in placeholders]
+    unwrapped = [_unwrap_contact_link(p, normalized) for p in parts]
+    kept = [p for p in unwrapped if p and p.lower() not in placeholders]
+    if kept != parts and len(kept) >= 2:
+        removed = [p for p in unwrapped if p and p.lower() in placeholders]
         lines[contact_idx] = " | ".join(kept)
         changed = True
         if removed:
             _safe_print(f"   [Contact] Removed placeholder token(s) from "
                         f"the contact line: {', '.join(removed)}")
+        if normalized:
+            _safe_print(f"   [Contact] Normalized contact link label(s) to "
+                        f"the bare URL: {', '.join(normalized)}")
 
     src_tokens: dict[str, str] = {}
     for line in _header_region_lines(source_resume):
@@ -990,8 +1089,8 @@ def preserve_contact_links(
             _safe_print(f"   [Contact] Restored dropped contact link(s): "
                         f"{', '.join(restored)}")
     if not changed:
-        return draft, [], []
-    return "\n".join(lines), restored, removed
+        return draft, [], [], []
+    return "\n".join(lines), restored, removed, normalized
 
 
 def accumulate_unique(existing: Optional[list], added: Optional[list]) -> list:

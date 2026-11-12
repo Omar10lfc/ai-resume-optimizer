@@ -1247,24 +1247,27 @@ def test_preserve_contact_links_restores_links_the_rewrite_dropped():
         "## Professional Summary\n"
         "Experienced AI/ML engineer.\n"
     )
-    fixed, restored, placeholders = agent.preserve_contact_links(draft, source)
+    fixed, restored, placeholders, normalized = agent.preserve_contact_links(
+        draft, source)
     assert restored == ["huggingface.co/Omar10lfc"]
-    assert placeholders == []
+    assert placeholders == [] and normalized == []
     assert "https://huggingface.co/Omar10lfc" in fixed
     # the dangling separator is gone and the link sits at the line's end
     assert "github.com/Omar10lfc | https://huggingface.co/Omar10lfc" in fixed
     assert not fixed.splitlines()[1].rstrip().endswith("|")
     # idempotent: a second pass restores nothing and changes nothing
-    fixed2, restored2, placeholders2 = agent.preserve_contact_links(fixed,
-                                                                   source)
+    fixed2, restored2, placeholders2, normalized2 = \
+        agent.preserve_contact_links(fixed, source)
     assert restored2 == [] and placeholders2 == [] and fixed2 == fixed
+    assert normalized2 == []
     # a complete draft is untouched
     complete = draft.replace(
         "https://github.com/Omar10lfc |",
         "https://github.com/Omar10lfc | https://huggingface.co/Omar10lfc")
-    same, restored3, placeholders3 = agent.preserve_contact_links(complete,
-                                                                 source)
+    same, restored3, placeholders3, normalized3 = agent.preserve_contact_links(
+        complete, source)
     assert restored3 == [] and placeholders3 == [] and same == complete
+    assert normalized3 == []
     # an email domain inside the source header can never be re-injected
     assert "| gmail.com" not in fixed and "https://gmail.com" not in fixed
 
@@ -1291,20 +1294,68 @@ def test_preserve_contact_links_strips_placeholder_tokens():
         "## Professional Summary\n"
         "AI engineer.\n"
     )
-    fixed, restored, removed = agent.preserve_contact_links(draft, source)
+    fixed, restored, removed, normalized = agent.preserve_contact_links(
+        draft, source)
     assert removed == ["N/A"]
     assert restored == ["huggingface.co/omar"]
+    assert normalized == []
     assert " | N/A" not in fixed and "N/A |" not in fixed
     # the restored link lands directly after the last real token
     assert "https://github.com/omar | https://huggingface.co/omar" in fixed
     # idempotent
-    fixed2, restored2, removed2 = agent.preserve_contact_links(fixed, source)
+    fixed2, restored2, removed2, normalized2 = agent.preserve_contact_links(
+        fixed, source)
     assert fixed2 == fixed and restored2 == [] and removed2 == []
+    assert normalized2 == []
     # a degenerate line ("Name | N/A") is never stripped below two tokens
     thin = "# Jane Roe\nJane Roe | N/A\n\n## Summary\nx\n"
-    same, restored4, removed4 = agent.preserve_contact_links(
+    same, restored4, removed4, normalized4 = agent.preserve_contact_links(
         thin, "Jane Roe\nSUMMARY\nx\n")
     assert same == thin and restored4 == [] and removed4 == []
+    assert normalized4 == []
+
+
+def test_preserve_contact_links_normalizes_label_links_to_bare_urls():
+    """Round 7 (runs 25ff4ae5 / 1a8125f0, Nov 12 2026): both drafts emitted
+    label-form markdown links in the contact line and the renderer printed
+    the LABELS - the PDF showed the word "Portfolio" where every accepted
+    run displays huggingface.co/Omar10lfc. The contact line's [label](url)
+    tokens are unwrapped to bare URLs deterministically; body links
+    (project [Live Demo](url)) are content and stay untouched."""
+    source = (
+        "Omar Mashaly\n"
+        "[linkedin.com/in/omar | github.com/omar | huggingface.co/omar]"
+        "(https://linkedin.com/in/omar)\n"
+        "SUMMARY\n"
+        "AI engineer.\n"
+    )
+    draft = (
+        "# Omar Mashaly\n"
+        "Alexandria, Egypt | omarmashaly86@gmail.com | "
+        "[LinkedIn](https://linkedin.com/in/omar) | "
+        "[GitHub](https://github.com/omar) | "
+        "[Portfolio](https://huggingface.co/omar)\n"
+        "\n"
+        "## Professional Summary\n"
+        "**AI Resume Optimizer** [Live Demo](https://demo.example) | x\n"
+    )
+    fixed, restored, removed, normalized = agent.preserve_contact_links(
+        draft, source)
+    assert normalized == ["linkedin.com/in/omar", "github.com/omar",
+                          "huggingface.co/omar"]
+    line = fixed.splitlines()[1]
+    assert "[LinkedIn]" not in line and "[Portfolio]" not in line
+    assert line.endswith("https://huggingface.co/omar")
+    assert ("https://linkedin.com/in/omar | https://github.com/omar"
+            in line)
+    # body markdown links are content and survive untouched
+    assert "[Live Demo](https://demo.example)" in fixed
+    assert restored == [] and removed == []
+    # idempotent: a bare-URL contact line normalizes nothing
+    fixed2, restored2, removed2, normalized2 = agent.preserve_contact_links(
+        fixed, source)
+    assert fixed2 == fixed and normalized2 == []
+    assert restored2 == [] and removed2 == []
 
 
 def test_improver_postprocess_restores_dropped_contact_links():
@@ -1376,6 +1427,67 @@ def test_find_dropped_source_metrics_flags_the_wer_claim_loss():
               "- Cut Arabic transcription error rate 51.7\u202f% (WER 42.69 "
               "to 20.61) fine-tuning Whisper-small\n")
     assert agent.find_dropped_source_metrics(spaced, source) == []
+
+
+def test_find_unused_context_terms_flags_missing_context_terms():
+    """Round 7 (runs 25ff4ae5 / 1a8125f0, Nov 12 2026): both runs lost the
+    user's pasted Aegis project and nothing recorded it. The notes-side
+    mirror of find_dropped_source_metrics flags distinctive notes terms
+    that appear in NEITHER the source resume NOR the final resume;
+    function words, resume-covered terms, and metrics stay silent."""
+    source = "Jane Roe\nSUMMARY\nPython developer.\n"
+    final = "## Summary\nPython developer with cloud experience.\n"
+    notes = ("Aegis: built a heat-risk agent with FastAPI and LangGraph.\n"
+             "• Ran the deploy pipeline on a home lab\n")
+    out = agent.find_unused_context_terms(notes, final, source)
+    lowers = [t.lower() for t in out]
+    assert "aegis" in lowers and "fastapi" in lowers
+    assert "heat-risk" in lowers and "langgraph" in lowers
+    # terms the source resume or the final text already cover never warn
+    assert "python" not in lowers and "cloud" not in lowers
+    assert "developer" not in lowers and "experience" not in lowers
+    # metric-shaped and verb noise stays out
+    assert not any(t[0].isdigit() for t in out)
+    assert "ran" not in lowers and "lab" not in lowers
+    # proper-noun findings rank first (most actionable for the user)
+    assert out[0][:1].isupper()
+    # empty notes -> silent
+    assert agent.find_unused_context_terms("", final, source) == []
+
+
+def test_improver_postprocess_flags_unused_context_terms():
+    """The tripwire rides the shared writer tail, so both the improver and
+    the polisher passes surface notes-sourced terms the final draft never
+    references - the round-7 runs shipped no Aegis and no warning."""
+    source = (
+        "Jane Roe\n"
+        "[linkedin.com/in/jane | github.com/jane | huggingface.co/jane]"
+        "(https://linkedin.com/in/jane)\n"
+        "SUMMARY\n"
+        "Python developer.\n"
+    )
+    state = {"resume_text": source,
+             "human_notes": "Aegis: Autonomous Heat-Risk Operations Agent - "
+                            "built a FastAPI service around a 4-node "
+                            "LangGraph agent with bounded timeouts.",
+             "missing_skills": "", "iteration": 1,
+             "scrub_removals": [], "unevidenced_metrics": [],
+             "declined_requests": []}
+    draft = ("# Jane Roe\n"
+             "https://linkedin.com/in/jane | https://github.com/jane | "
+             "https://huggingface.co/jane\n"
+             "\n"
+             "## Summary\n"
+             "Python developer with cloud experience.\n")
+    out = agent.nodes.improver._postprocess_draft(state, draft, 1)
+    warns = out["guardrail_warnings"]
+    assert any("user-context term not in the final resume: Aegis" in w
+               for w in warns)
+    assert any("user-context term not in the final resume: Heat-Risk" in w
+               for w in warns)
+    # the tripwire is detection-only: no content change (the tail may
+    # normalize the draft's trailing newline)
+    assert out["optimized_resume"].rstrip("\n") == draft.rstrip("\n")
 
 
 def test_scanner_output_is_tamed_for_consumers(monkeypatch):

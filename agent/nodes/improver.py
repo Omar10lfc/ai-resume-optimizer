@@ -9,15 +9,18 @@ from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
 from ..helpers import (_safe_print, _strip_code_fences, _filter_hallucinated_sections,
                        _tame_unicode_bullets, find_unevidenced_metric_claims,
-                       find_dropped_source_metrics,
+                       find_dropped_source_metrics, find_unused_context_terms,
                        scrub_unsupported_content, extract_declined_requests,
                        accumulate_unique, preserve_contact_links)
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Bump when the rewrite prompt changes materially. Runners stamp this into
 # every artifact so "which prompt produced this draft" is a one-lookup
-# answer instead of a trace-scavenging exercise.
-IMPROVER_PROMPT_VERSION = "improver@2"
+# answer instead of a trace-scavenging exercise. improver@3 (round 7, Nov 12
+# 2026): the user-context contract went from advisory ("incorporate if
+# valid") to binding - both round-7 runs silently dropped the pasted Aegis
+# project (runs 25ff4ae5 / 1a8125f0), and nothing recorded the omission.
+IMPROVER_PROMPT_VERSION = "improver@3"
 
 
 def _build_improver_prompt(state: AgentState) -> str:
@@ -34,6 +37,7 @@ def _build_improver_prompt(state: AgentState) -> str:
     STRICT MARKDOWN STRUCTURE TO FOLLOW:
     # Full Candidate Name
     Location | Phone Number | Email Address | LinkedIn URL | GitHub URL | Portfolio URL
+    (Write every header link as the bare URL itself - no [label](url) markdown in the header line.)
 
     ## Professional Summary
     2-3 impactful sentences summarizing qualifications, target domain, and core strengths.
@@ -75,7 +79,12 @@ def _build_improver_prompt(state: AgentState) -> str:
        existing achievements). For genuinely conceptual items only, phrasing
        like "Conceptual Knowledge of..." is acceptable.
        Missing skills under review: {state['missing_skills']}
-    2. USE THIS USER CONTEXT: "{state['human_notes']}" (Incorporate this experience if valid).
+    2. USER CONTEXT (binding, not optional): "{state['human_notes']}".
+       Every project, role, or experience it describes MUST be woven into
+       the rewrite (Projects / Experience / Summary as fits) - silently
+       omitting one is a protocol violation. Only when you judge an item
+       unsupported or irrelevant to THIS job, refuse it with a
+       "DECLINED: <short item>" line instead (see the Decline Protocol).
     3. Do NOT invent projects, jobs, tools, integrations, credentials, or
        numbers not supported by the original resume or the user context.
     4. METRIC INTEGRITY (zero tolerance): every number in your output must
@@ -90,7 +99,9 @@ def _build_improver_prompt(state: AgentState) -> str:
        certifications, metrics - do NOT write it. Instead end the resume
        with one line per refused request, in this exact shape:
            DECLINED: <short restatement of the requested item>
-       Example: "DECLINED: Experience with n8n". These lines are removed
+       Example: "DECLINED: Experience with n8n". The same line is required
+       for any USER CONTEXT item you chose not to feature (never omit
+       context silently). These lines are removed
        automatically and shown to the user as "requests the writer
        declined"; they exist so silence can never hide an omission.
 
@@ -160,12 +171,14 @@ def _postprocess_draft(state: AgentState, draft: str, current_iter: int) -> dict
     # covers both paths. Placeholder sanitation (run bf0f7941) rides the
     # same pass: "N/A" / "TBD" tokens in the contact line are fake fields,
     # and a restored link must never land after one.
-    final_text, restored_links, removed_placeholders = preserve_contact_links(
-        final_text, state.get('resume_text') or '')
+    final_text, restored_links, removed_placeholders, normalized_links = \
+        preserve_contact_links(final_text, state.get('resume_text') or '')
     guardrail += [f"restored dropped contact link: {t}"
                   for t in restored_links]
     guardrail += [f"removed placeholder token from the contact line: {t}"
                   for t in removed_placeholders]
+    guardrail += [f"normalized contact-line link label to the URL: {t}"
+                  for t in normalized_links]
 
     # Dropped-evidence tripwire (run bf0f7941, Nov 12 2026): a rewrite that
     # loses a source accomplishment's quantified evidence (the Smart
@@ -178,6 +191,21 @@ def _postprocess_draft(state: AgentState, draft: str, current_iter: int) -> dict
         _safe_print(f"   [Integrity] Source evidence metric(s) no longer "
                     f"in the resume: {len(dropped_evidence)} finding(s)")
     guardrail += dropped_evidence
+
+    # Context-incorporation tripwire (round 7, runs 25ff4ae5 / 1a8125f0,
+    # Nov 12 2026): both runs lost the user's pasted Aegis project and no
+    # channel recorded it. Detection-only, like the dropped-evidence
+    # tripwire above: notes-sourced terms absent from the final resume
+    # surface in the integrity warning so the user can verify (or rephrase)
+    # instead of discovering the loss in the PDF.
+    unused_context = find_unused_context_terms(
+        state.get('human_notes') or '', final_text,
+        state.get('resume_text') or '')
+    if unused_context:
+        _safe_print(f"   [Integrity] User-context term(s) not in the "
+                    f"resume: {', '.join(unused_context)}")
+    guardrail += [f"user-context term not in the final resume: {t}"
+                  for t in unused_context]
 
     return {
         "optimized_resume": final_text,

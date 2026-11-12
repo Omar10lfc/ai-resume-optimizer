@@ -415,6 +415,32 @@ def test_split_composed_notes_stale_chips_under_pasted_evidence():
         assert tool not in evidence
 
 
+def test_split_composed_notes_bare_chip_openers_route_to_gap():
+    """Round 7 (runs 25ff4ae5 / 1a8125f0, Nov 12 2026): the pasted context
+    carried the scanner's MCP gap phrasings BARE (no '- ' bullet). Each
+    run's snapshot matched one variant - the scanner words chips slightly
+    differently per run - so that one went to the gap channel and was
+    declined on-record, while the OTHER variant missed the snapshot, had
+    no ASCII bullet, and fell into the evidence channel as user-confirmed
+    experience. Opener-shaped lines are gap topics whatever the snapshot
+    says; prose and '•' evidence still survive."""
+    composed = (
+        "Aegis: built a heat-risk agent with FastAPI.\n"
+        "Experience working with MCP servers (FortyGuard Temperature MCP)\n"
+        "Direct experience with MCP servers (FortyGuard Temperature MCP)\n"
+        "• Built dashboards for the ops team\n"
+    )
+    pristine = ("- Experience with n8n\n"
+                "- Experience working with MCP servers "
+                "(FortyGuard Temperature MCP)\n")
+    gaps, evidence = runners._split_composed_notes(composed, pristine)
+    assert "Experience working with MCP servers" in gaps
+    assert "Direct experience with MCP servers" in gaps
+    assert evidence == ("Aegis: built a heat-risk agent with FastAPI.\n"
+                        "• Built dashboards for the ops team")
+    assert "MCP" not in evidence and "FortyGuard" not in evidence
+
+
 def test_split_composed_notes_tolerates_chip_annotations_and_blank_lines():
     """'- Docker: ran containers in coursework' matches the pristine chip by
     its LABEL (text before the first colon)."""

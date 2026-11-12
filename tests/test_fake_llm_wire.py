@@ -54,7 +54,7 @@ RESUME_TEXT = "Jane Roe\nPython developer with cloud exposure."
 # payload merged (QW1's snapshot-pull handles the concurrent cover/prep fan-out).
 EXPECTED_PROMPT_VERSIONS = {
     "scanner": "scanner@1",
-    "improver": "improver@2",
+    "improver": "improver@3",
     "polisher": "polisher-full@1",
     "reviewer": "reviewer@2",
     "ats-semantic": "ats-semantic@1",
@@ -386,7 +386,7 @@ def test_step2_over_the_wire_survives_full_rewrite_fallback(client, wire_llms, m
     assert events[-1][0] == "result"
     result = events[-1][1]
     assert result["prompt_versions"]["polisher"] == "polisher-full@1"
-    assert "polisher-target@1" not in result["prompt_versions"].values()
+    assert "polisher-target@2" not in result["prompt_versions"].values()
     # ...and the fake server saw the polisher fall through "Rewrite..." prompts
     assert wire_llms.request_keys().count("rewrite") == 2
     assert wire_llms.request_keys().count("polish_target") == 0

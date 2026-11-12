@@ -357,6 +357,22 @@ def _norm_gap_line(s: str) -> str:
     return t
 
 
+# Gap-chip opener phrasings the scanner's missing-skills list uses (live
+# chips: "Experience with n8n (or similar workflow automation platform)",
+# "Hands-on work with Claude Code, Cursor, or Codex", "Experience working
+# with MCP servers (FortyGuard Temperature MCP)", "Direct experience with
+# MCP servers (...)"). Matched against the NORMALIZED line start, so
+# bullet markers and case do not matter.
+_CHIP_OPENERS = (
+    "experience working with", "direct experience", "hands-on",
+    "hands on", "experience with", "experience in", "experience of",
+    "familiarity with", "familiar with", "working knowledge",
+    "knowledge of", "comfortable with", "proficient in", "proficient with",
+    "proficiency in", "proficiency with", "exposure to", "understanding of",
+    "awareness of",
+)
+
+
 def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
     """Splits the composed step-2 notes into (missing_skills, human_notes).
 
@@ -387,6 +403,18 @@ def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
     laundering. Real typed evidence in this app uses "•" bullets or prose
     paragraphs - the pasted Aegis block of the same run proves the
     distinction.
+
+    Chip-opener hardening (round 7, runs 25ff4ae5 / 1a8125f0, Nov 12
+    2026): the pasted context carried the scanner's MCP gap phrasings
+    BARE (no "- " bullet). Each run's snapshot matched one variant
+    ("Experience working with MCP ..." / "Direct experience with MCP ..."
+    - the scanner words chips slightly differently per run), so that one
+    went to the gap channel and was declined on-record, while the OTHER
+    variant missed the snapshot, carried no ASCII bullet, and fell into
+    the evidence channel as "user-confirmed experience" - the 868e406d
+    laundering shape, dash-free edition. A line OPENING with the scanner's
+    gap phrasing (_CHIP_OPENERS) is a gap topic whatever the snapshot
+    says, same safe-failure direction as the ASCII rule.
     """
     chip_keys: set[str] = set()
     for line in (pristine_missing or "").splitlines():
@@ -417,6 +445,12 @@ def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
         if s.startswith("- ") or s.startswith("* "):
             # ASCII bullets are the extension's chip serialization; they are
             # gap topics whatever the snapshot says (stale-session chips).
+            gap_lines.append(s)
+            continue
+        if any(n.startswith(op) for op in _CHIP_OPENERS):
+            # Bare chip-shaped lines (round 7 runs): the scanner's gap
+            # phrasing without a bullet marker and without a snapshot
+            # match. Gap topic, never evidence - see the docstring.
             gap_lines.append(s)
             continue
         evidence_lines.append(s)

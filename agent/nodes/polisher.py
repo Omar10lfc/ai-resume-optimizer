@@ -27,10 +27,13 @@ from ..helpers import (_safe_print, _strip_code_fences, _safe_truncate,
 from .improver import _build_improver_prompt, _postprocess_draft
 from langchain_core.messages import HumanMessage, SystemMessage
 
-# Full mode reuses the improver@2 prompt builder; the version below marks the
+# Full mode reuses the improver@3 prompt builder; the version below marks the
 # polisher's own decision (which mode shipped) for the prompt_versions stamp.
+# polisher-target@2 (round 7, Nov 12 2026): section rewrites must keep
+# claims the USER CONTEXT supports - a targeted rewrite of the section
+# holding the pasted context's bullets could otherwise drop them silently.
 POLISHER_FULL_VERSION = "polisher-full@1"
-POLISHER_TARGET_VERSION = "polisher-target@1"
+POLISHER_TARGET_VERSION = "polisher-target@2"
 
 # Hard cap keeps the worst-case pass bound: a reviewer that lists five
 # sections on one pass costs five small calls, capped here.
@@ -67,7 +70,8 @@ def _build_section_prompt(state: AgentState, header_line: str, section_body: str
 
     RULES:
     1. Change as little as possible: keep every TRUE claim, tool, employer,
-       project link, and metric the current section shows. Rephrase,
+       project link, and metric the current section shows - including any
+       claim the USER CONTEXT below supports. Rephrase,
        re-order, or sharpen only what the feedback asks about.
     2. CONTEXT-AWARE BREVITY: the rest of the resume is below; do not
        repeat what other sections already state.
