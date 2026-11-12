@@ -59,6 +59,19 @@
 \addtolength{\textheight}{1.8in}
 \addtolength{\oddsidemargin}{-.05in}
 \addtolength{\textwidth}{0.1in}
+% Sheet-edge cap (run 124f40cb, Nov 12 2026): the +1.8in textheight with the
+% -0.75in topmargin put the text block bottom at 798.6pt - 6.6pt PAST the
+% 792pt letter sheet edge (\the\textheight-probed). A page-full base render
+% then printed its last line half off the paper (the 4th certification row's
+% glyph tops were the only visible part, last baseline 798.75) while the page
+% count still said "1 page", so the auto-compact containment never engaged -
+% TeX itself had room, the paper did not. Cap the block bottom at 776pt
+% (16pt of visual bottom margin, symmetric with the ~18pt top margin):
+% textheight 780.52 -> 757.93pt. The auto-compact block's own margin levers
+% are re-capped to the same bottom line (see _COMPACT_OVERRIDES_TEMPLATE);
+% with both blocks ending at the sheet-safe line, "1 page" is once again a
+% truthful containment criterion.
+\addtolength{\textheight}{-22.6pt}
 
 \urlstyle{same}
 

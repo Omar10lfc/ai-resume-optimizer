@@ -1619,5 +1619,37 @@ def test_compact_tier_falls_back_to_tight_when_airy_crosses_the_stop(tmp_path):
     assert not list(tmp_path.glob("__compact_tier*"))
 
 
+@pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
+                    reason="pdflatex/pdfplumber not installed")
+def test_full_pages_never_print_below_the_sheet_edge(tmp_path):
+    """Run 124f40cb (Nov 12 2026): the template's +1.8in textheight with the
+    -0.75in topmargin put the text block bottom at 798.6pt - 6.6pt PAST the
+    792pt letter sheet edge (\the\textheight-probed). A page-full base
+    render printed its last line half off the paper (the 4th certification
+    row's glyph tops were the only visible part, last baseline 798.75)
+    while the page count still said '1 page', so the compact containment
+    never engaged - TeX had room, the paper did not. After the sheet-edge
+    cap (block bottom 776pt in both modes) every glyph of every render
+    must end well inside the physical edge."""
+    import pdfplumber
+
+    data = parse_markdown_resume(_overflow_resume_markdown())
+    renders = [("base", {}), ("compact", {"compact": True,
+                                          "compact_tier": 2})]
+    for label, kwargs in renders:
+        pdf = latex_to_pdf(render_resume_tex(data, **kwargs),
+                           tmp_path, f"{label}.pdf")
+        assert pdf is not None and Path(pdf).exists()
+        with pdfplumber.open(pdf) as doc:
+            for page in doc.pages:
+                bots = [w["bottom"] for w in page.extract_words()]
+                assert bots, f"{label}: page without text"
+                worst = max(bots)
+                assert worst <= 786.0, (
+                    f"{label}: glyphs print to {worst:.1f}pt on a "
+                    f"{page.height:.0f}pt sheet - "
+                    f"{worst - 786.0:.1f}pt into the clip zone")
+
+
 
 

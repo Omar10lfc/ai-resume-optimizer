@@ -1222,6 +1222,75 @@ def test_tame_unicode_bullets_canonizes_percent_spacing():
     assert agent._tame_unicode_bullets("share of % growth") == "share of % growth"
 
 
+def test_preserve_contact_links_restores_links_the_rewrite_dropped():
+    """Run 124f40cb (Nov 12 2026): the source header carried the HF profile
+    only as a bare label inside a markdown link whose href pointed at the
+    LinkedIn URL; the improver's rewrite dropped it (3 of 4 stored runs
+    kept it) and shipped a dangling trailing pipe. Contact links are
+    identity - the deterministic guard re-injects any source-header link
+    the draft's header lost, cleans the separator, and is idempotent."""
+    source = (
+        "Omar Mashaly\n"
+        "AI/ML Engineer\n"
+        "[Alexandria, Egypt | +20 100 170 1821 | omarmashaly86@gmail.com |]"
+        "(https://linkedin.com/in/omar-mashaly)\n"
+        "[linkedin.com/in/omar-mashaly | github.com/Omar10lfc | "
+        "huggingface.co/Omar10lfc](https://linkedin.com/in/omar-mashaly)\n"
+        "SUMMARY\n"
+        "Experienced AI/ML engineer.\n"
+    )
+    draft = (
+        "# Omar Mashaly\n"
+        "Alexandria, Egypt | +20 100 170 1821 | omarmashaly86@gmail.com | "
+        "https://linkedin.com/in/omar-mashaly | https://github.com/Omar10lfc |\n"
+        "\n"
+        "## Professional Summary\n"
+        "Experienced AI/ML engineer.\n"
+    )
+    fixed, restored = agent.preserve_contact_links(draft, source)
+    assert restored == ["huggingface.co/Omar10lfc"]
+    assert "https://huggingface.co/Omar10lfc" in fixed
+    # the dangling separator is gone and the link sits at the line's end
+    assert "github.com/Omar10lfc | https://huggingface.co/Omar10lfc" in fixed
+    assert not fixed.splitlines()[1].rstrip().endswith("|")
+    # idempotent: a second pass restores nothing and changes nothing
+    fixed2, restored2 = agent.preserve_contact_links(fixed, source)
+    assert restored2 == [] and fixed2 == fixed
+    # a complete draft is untouched
+    complete = draft.replace(
+        "https://github.com/Omar10lfc |",
+        "https://github.com/Omar10lfc | https://huggingface.co/Omar10lfc")
+    same, restored3 = agent.preserve_contact_links(complete, source)
+    assert restored3 == [] and same == complete
+    # an email domain inside the source header can never be re-injected
+    assert "| gmail.com" not in fixed and "https://gmail.com" not in fixed
+
+
+def test_improver_postprocess_restores_dropped_contact_links():
+    """The guard rides the shared writer tail (_postprocess_draft), so both
+    the improver and the polisher passes restore identity links and surface
+    them in the guardrail channel."""
+    source = (
+        "Jane Roe\n"
+        "[linkedin.com/in/jane | github.com/jane | huggingface.co/jane]"
+        "(https://linkedin.com/in/jane)\n"
+        "SUMMARY\n"
+        "Python developer.\n"
+    )
+    state = {"resume_text": source, "human_notes": "", "missing_skills": "",
+             "iteration": 1, "scrub_removals": [], "unevidenced_metrics": [],
+             "declined_requests": []}
+    draft = ("# Jane Roe\n"
+             "https://linkedin.com/in/jane | https://github.com/jane\n"
+             "\n"
+             "## Summary\n"
+             "Python developer.\n")
+    out = agent.nodes.improver._postprocess_draft(state, draft, 1)
+    assert "https://huggingface.co/jane" in out["optimized_resume"]
+    assert any("restored dropped contact link: huggingface.co/jane" in w
+               for w in out["guardrail_warnings"])
+
+
 def test_scanner_output_is_tamed_for_consumers(monkeypatch):
     class ExoticScannerLLM:
         def invoke(self, messages):

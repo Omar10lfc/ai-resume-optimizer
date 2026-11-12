@@ -1402,8 +1402,14 @@ _COMPACT_OVERRIDES_TEMPLATE = r"""
   \vspace{-7pt}\scshape\raggedright\large
 }{}{0em}{}[\color{black}\titlerule @@AFTER_RULE@@]
 % Recover a little vertical room
+% (Sheet-edge cap, run 124f40cb, Nov 12 2026: with the template's text
+% block bottom capped at 776pt, this lever may re-open the page only UP
+% TO the same line - top margin 9.4pt + textheight 766.6pt = bottom
+% 776pt. The historic +.24in would have put the compact block bottom at
+% 784.6pt, close enough to the 792pt sheet edge to repeat the
+% half-printed-last-line defect in the tighter mode.)
 \addtolength{\topmargin}{-.12in}
-\addtolength{\textheight}{.24in}
+\addtolength{\textheight}{.12in}
 % Recover a little horizontal room (long linked project headings wrap less)
 \addtolength{\oddsidemargin}{-.05in}
 \addtolength{\evensidemargin}{-.05in}

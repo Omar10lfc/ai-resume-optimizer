@@ -800,6 +800,123 @@ def extract_declined_requests(text: str) -> tuple[str, list[str]]:
     return "\n".join(kept_lines), declined
 
 
+# Contact-link preservation (run 124f40cb, Nov 12 2026): the improver's
+# rewrite dropped the candidate's huggingface.co profile link from the
+# contact header. The source header carried it only as a bare LABEL inside
+# a markdown link whose href pointed at the LinkedIn URL - 3 of 4 stored
+# runs' rewrites reconstructed it anyway, this one stopped at GitHub and
+# left a dangling "|". Contact links are identity, not tailored content:
+# a deterministic tail re-injects any source-header link the draft's
+# header lost, on every writer pass (the polisher reassembles sections
+# around the draft's header line, so guarding the shared tail suffices).
+# A bare host only qualifies when it carries a path (github.com/x) or an
+# explicit scheme, so email domains (gmail.com inside an address) can
+# never be re-injected as fake links.
+_LINK_TOKEN_RE = re.compile(
+    r"(?:https?://|www\.)[^\s|\)\]}>,]+"
+    r"|(?:[\w-]+\.)+(?:com|net|org|io|ai|co|dev|me|app|tech|site|space)"
+    r"(?:/[^\s|\)\]}>,]+)?"
+)
+_SECTION_MARK_RE = re.compile(r"^#{1,6}\s+\S|^[A-Z][A-Z0-9 &/'\-]{3,}$")
+
+
+def _norm_link(token: str) -> str:
+    t = token.strip().lower()
+    t = re.sub(r"^(?:https?://|www\.)", "", t, flags=re.IGNORECASE)
+    return t.rstrip("/.,;:!?)\"'")
+
+
+def _header_region_lines(text: str, limit: int = 8) -> list[str]:
+    """The header block: the first nonempty lines before a section marker
+    (a '#' heading or an ALL-CAPS heading such as 'SUMMARY')."""
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if out:
+                break
+            continue
+        if _SECTION_MARK_RE.match(stripped):
+            break
+        out.append(stripped)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def preserve_contact_links(draft: str,
+                           source_resume: str) -> tuple[str, list[str]]:
+    """Re-injects source-header contact links that the rewritten draft's
+    header lost; also strips a dangling trailing "|" from the draft's
+    contact line (run 124f40cb shipped "...github.com/Omar10lfc |").
+
+    Returns (draft, restored_tokens) with tokens in display form (scheme
+    stripped). Idempotent: an already-complete header restores nothing and
+    the text passes through unchanged. Only the header REGION is compared -
+    links in the body are content and have their own integrity paths.
+    """
+    if not draft or not source_resume:
+        return draft, []
+    src_tokens: dict[str, str] = {}
+    for line in _header_region_lines(source_resume):
+        for m in _LINK_TOKEN_RE.finditer(line):
+            tok = m.group(0)
+            norm = _norm_link(tok)
+            schemeless_bare_host = (
+                "/" not in norm
+                and not tok.lower().startswith(("http://", "https://", "www.")))
+            if schemeless_bare_host:
+                continue  # an email domain or bare TLD, never a profile link
+            src_tokens.setdefault(norm, tok)
+    if not src_tokens:
+        return draft, []
+
+    lines = draft.split("\n")
+    region_idx: list[int] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            if region_idx:
+                break
+            continue
+        if stripped.startswith("#"):
+            if region_idx:
+                break  # a section heading after the header block
+            continue  # the draft's "# Name" heading
+        if _SECTION_MARK_RE.match(stripped):
+            break
+        region_idx.append(i)
+        if len(region_idx) >= 6:
+            break
+    if not region_idx:
+        return draft, []
+    present = {_norm_link(m.group(0))
+               for i in region_idx
+               for m in _LINK_TOKEN_RE.finditer(lines[i])}
+    missing = [tok for norm, tok in src_tokens.items() if norm not in present]
+    if not missing:
+        return draft, []
+
+    contact_idx = None
+    for i in region_idx:
+        if ("|" in lines[i] or "http" in lines[i].lower() or "@" in lines[i]):
+            contact_idx = i
+    if contact_idx is None:
+        contact_idx = region_idx[-1]
+    restored: list[str] = []
+    add: list[str] = []
+    for tok in missing:
+        add.append(tok if tok.lower().startswith(("http://", "https://"))
+                   else "https://" + tok)
+        restored.append(re.sub(r"^(?:https?://|www\.)", "", tok,
+                               flags=re.IGNORECASE).rstrip("/"))
+    contact = re.sub(r"\s*\|\s*$", "", lines[contact_idx].rstrip())
+    lines[contact_idx] = contact + " | " + " | ".join(add)
+    _safe_print(f"   [Contact] Restored dropped contact link(s): "
+                f"{', '.join(restored)}")
+    return "\n".join(lines), restored
+
+
 def accumulate_unique(existing: Optional[list], added: Optional[list]) -> list:
     """Order-preserving accumulation of state list values across passes."""
     out = list(existing or [])

@@ -10,7 +10,7 @@ from .. import llms as _llms
 from ..helpers import (_safe_print, _strip_code_fences, _filter_hallucinated_sections,
                        _tame_unicode_bullets, find_unevidenced_metric_claims,
                        scrub_unsupported_content, extract_declined_requests,
-                       accumulate_unique)
+                       accumulate_unique, preserve_contact_links)
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Bump when the rewrite prompt changes materially. Runners stamp this into
@@ -151,6 +151,16 @@ def _postprocess_draft(state: AgentState, draft: str, current_iter: int) -> dict
     # Removal notes surface alongside metric findings so the user sees what
     # was deterministically removed before the result landed.
     guardrail += [f"unevidenced number left in draft: {w}" for w in warnings]
+
+    # Contact-link preservation (run 124f40cb, Nov 12 2026): a rewrite that
+    # drops one of the candidate's own header links loses identity data no
+    # reviewer can see. Deterministic restore on every writer pass; the
+    # polisher reassembles around the draft's header line, so this tail
+    # covers both paths.
+    final_text, restored_links = preserve_contact_links(
+        final_text, state.get('resume_text') or '')
+    guardrail += [f"restored dropped contact link: {t}"
+                  for t in restored_links]
 
     return {
         "optimized_resume": final_text,
