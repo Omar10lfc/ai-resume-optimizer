@@ -31,6 +31,7 @@ from .nodes import (
 )
 from .nodes.reviewer import _salvage_review_output
 from .provider import (TokenUsageTracker, extract_failed_generation,
+                       extract_structured_candidate,
                        invoke_structured_with_repair)
 from .graphs import full_app, agent_app, should_continue
 

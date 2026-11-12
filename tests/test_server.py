@@ -154,6 +154,29 @@ def test_resolve_resume_source_file_wins_over_text():
 
 
 # ==========================================
+# Round 8: pasted-JD input cap (Dossier steal - MAX_POSTING_CHARACTERS)
+# ==========================================
+
+def test_capped_job_description_passthrough_and_cap(monkeypatch):
+    """URL fetches were already capped in agent.url_fetch; PASTED job
+    descriptions now hit the same cap at the stream entry. Under the cap the
+    text is byte-identical; the cut is at a word boundary."""
+    monkeypatch.setattr(agent.config, "MAX_JOB_CHARS", 50)
+    assert runners._capped_job_description("short jd") == "short jd"
+    long_text = "word " * 40          # 200 chars
+    capped = runners._capped_job_description(long_text)
+    assert len(capped) <= 50 and capped != long_text
+    assert capped.endswith("word")   # word-boundary cut, no mid-word slice
+
+
+def test_capped_job_description_uses_configured_limit(monkeypatch):
+    """The cap reads agent.config.MAX_JOB_CHARS (env-overridable), not a
+    runners-local constant."""
+    monkeypatch.setattr(agent.config, "MAX_JOB_CHARS", 10)
+    assert len(runners._capped_job_description("a" * 200)) <= 10
+
+
+# ==========================================
 # Validation (HTTP level, before streaming)
 # ==========================================
 

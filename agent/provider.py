@@ -9,21 +9,30 @@ ladder only ADDS attempts on the failure path.
   made uniform for every structured call (reviewer + ATS semantic check).
   Attempt order per failure:
     1. direct invoke;
-    2. ONE repair retry — when the failure carries the model's own prose
+    2. extract rung (FREE, no LLM call) — when the failure carries the
+       model's own prose (``failed_generation``) and that prose itself parses
+       as JSON and validates against the schema, it IS the answer the model
+       meant to package; return it directly (the Dossier study's
+       ``extractJson`` pre-parse: whole text, fenced ```json blocks, then the
+       first complete object via bracket matching);
+    3. ONE repair retry — when the failure carries the model's own prose
        (``failed_generation``), the retry shows the model its answer plus the
        required schema so it re-packages (this recovers the STRUCTURED result
        incl. ``sections``, which prose salvage loses); without prose
        (transient class) it stays the pre-MR5 plain same-payload retry;
-    3. prose salvage (caller-supplied) — the SCHEMA_REFUSED downgrade, free
+    4. prose salvage (caller-supplied) — the SCHEMA_REFUSED downgrade, free
        and deterministic; without one, raise.
   Contract preserved from the pre-MR5 reviewer: at most TWO LLM calls, then
-  give up (one retry, never more); ``extract_failed_generation`` moved here
-  from ``nodes/reviewer.py`` (re-exported there for compatibility).
+  give up (one retry, never more; the extract rung costs zero);
+  ``extract_failed_generation`` moved here from ``nodes/reviewer.py``
+  (re-exported there for compatibility).
 - ``TokenUsageTracker`` — per-task token accounting (a LangChain callback the
   runners attach to one pipeline segment). Thread-safe: the fan-out runs the
   cover-letter and interview-prep siblings concurrently.
 """
 
+import json
+import re
 import threading
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -70,6 +79,83 @@ def extract_failed_generation(exc: BaseException) -> str | None:
     return None
 
 
+# --- MR5b: the Dossier study's extractJson pre-parse (provider.ts) ----------
+# The failed generation often IS the JSON the model meant to package - it
+# just never reached the tool call (prose around it, a fenced block). Parsing
+# it BEFORE spending the repair retry is free (zero LLM calls): a candidate
+# that survives the schema is returned whole, so the structured result (incl.
+# ``sections``, which prose salvage loses) is recovered one attempt earlier.
+
+_JSON_FENCE_RE = re.compile(r"```(?:json)?[ \t]*\n?([\s\S]*?)```", re.IGNORECASE)
+
+
+def _first_json_span(text: str) -> str | None:
+    """The first complete {...} or [...] in ``text`` — bracket matching that
+    skips string literals (a brace inside a value never closes the span) —
+    or None when nothing closes."""
+    starts = [index for index in (text.find("{"), text.find("[")) if index >= 0]
+    if not starts:
+        return None
+    start = min(starts)
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+        elif in_string:
+            if char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if not stack or stack.pop() != char:
+                return None
+            if not stack:
+                return text[start:index + 1]
+    return None
+
+
+def _json_candidates(text: str) -> list[str]:
+    """Parse candidates for a failed generation, best first: the whole text
+    (a bare JSON answer), each fenced ```json block, then the first complete
+    object/array in the prose."""
+    trimmed = (text or "").strip()
+    if not trimmed:
+        return []
+    candidates = [trimmed]
+    candidates.extend(match.group(1).strip()
+                      for match in _JSON_FENCE_RE.finditer(trimmed))
+    span = _first_json_span(trimmed)
+    if span is not None:
+        candidates.append(span.strip())
+    return candidates
+
+
+def extract_structured_candidate(schema, text: str):
+    """The first candidate that parses as JSON AND validates against
+    ``schema`` (the ladder's schemas are pydantic models), else None."""
+    for candidate in _json_candidates(text):
+        try:
+            data = json.loads(candidate)
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        try:
+            if hasattr(schema, "model_validate"):
+                return schema.model_validate(data)
+            return schema(**data)
+        except Exception:
+            continue
+    return None
+
+
 def _repair_messages(messages: list, schema_name: str, answer: str) -> list:
     """The repair retry's messages: the original conversation plus the model's
     own failed answer (as its prior turn) and the fixed repair instruction.
@@ -89,11 +175,11 @@ def invoke_structured_with_repair(llm, schema, messages, *,
                                   salvage=None, label: str = ""):
     """Runs one structured-output call through the repair ladder.
 
-    Returns ``(result, method)`` with ``method`` in ``{"direct", "repair",
-    "retry", "salvage"}``; raises when every rung fails (caller decides the
-    degradation - reviewer flags review_failed, the ATS semantic check keeps
-    keywords as missing). ``salvage(exc)`` maps the LAST failure to a
-    result, or returns None.
+    Returns ``(result, method)`` with ``method`` in ``{"direct", "extract",
+    "repair", "retry", "salvage"}``; raises when every rung fails (caller
+    decides the degradation - reviewer flags review_failed, the ATS semantic
+    check keeps keywords as missing). ``salvage(exc)`` maps the LAST failure
+    to a result, or returns None.
     """
     schema_name = getattr(schema, "__name__", None) or str(schema)
     try:
@@ -101,11 +187,21 @@ def invoke_structured_with_repair(llm, schema, messages, *,
     except Exception as exc:
         _safe_print(f"   [Warning] [{label or 'provider'}] structured"
                     f" attempt 1/2 failed: {exc}")
+        answer = extract_failed_generation(exc)
+        # Attempt 1.5 - the extract rung (free, no LLM call): when the failed
+        # generation itself parses as JSON and validates against the schema,
+        # it IS the packaged answer; the repair retry is not spent on it.
+        if answer:
+            extracted = extract_structured_candidate(schema, answer)
+            if extracted is not None:
+                _safe_print(f"-> [{label or 'provider'}] recovered the"
+                            " structured result from the failed generation"
+                            " (extract; no repair call needed)")
+                return extracted, "extract"
         # Attempt 2 - the schema-repair retry: when the model's own prose is
         # available (failed_generation), show it the answer + schema so it
         # re-packages; without prose (transient class) stay on the pre-MR5
         # plain same-payload retry.
-        answer = extract_failed_generation(exc)
         second = (_repair_messages(messages, schema_name, answer)
                   if answer else messages)
         mode = "repair" if answer else "retry"

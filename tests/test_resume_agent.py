@@ -2076,6 +2076,117 @@ def test_ladder_raises_when_everything_fails():
     assert len(calls) == 2
 
 
+# ==========================================
+# MR5b: extractJson pre-parse rung (free, no LLM call)
+# ==========================================
+
+def test_extract_rung_recovers_wrapped_json_without_a_second_call():
+    """The failed generation IS the JSON (prose around a fenced block): the
+    extract rung returns the schema-valid instance and the repair retry (an
+    LLM call) is never spent."""
+    generation = ("Sure, here is the review:\n```json\n"
+                  '{"score": 85, "feedback": "Tighten bullets.",'
+                  ' "sections": ["projects"]}\n```\n'
+                  "Let me know if you need changes.")
+    exc = _tool_use_failed_exc(generation)
+    Fake, calls = _foldable_llm(exc, None, always_fail=True)
+    result, method = agent.invoke_structured_with_repair(
+        Fake(), agent.ReviewOutput, [HumanMessage(content="grade")], label="t")
+    assert method == "extract"
+    assert result.score == 85
+    assert result.sections == ["projects"]
+    assert len(calls) == 1          # zero repair calls spent
+
+
+def test_extract_rung_skips_prose_that_was_never_json():
+    """Reviewer prose (score sentences, no JSON) does not trigger the extract
+    rung - the ladder still spends the schema-repair retry (the pre-round-8
+    behavior is preserved exactly)."""
+    exc = _tool_use_failed_exc(_SALVAGE_GENERATION)
+    good = agent.ReviewOutput(score=85, feedback="ok")
+    Fake, calls = _foldable_llm(exc, good)
+    result, method = agent.invoke_structured_with_repair(
+        Fake(), agent.ReviewOutput, [HumanMessage(content="grade")], label="t")
+    assert method == "repair"
+    assert result is good
+    assert len(calls) == 2
+
+
+def test_extract_rung_rejects_json_that_fails_the_schema():
+    """A candidate that parses but violates the schema is not returned - the
+    ladder falls through to the repair retry."""
+    exc = _tool_use_failed_exc(
+        'Here you go:\n{"score": "very high", "feedback": "ok"}')
+    good = agent.ReviewOutput(score=70, feedback="ok")
+    Fake, calls = _foldable_llm(exc, good)
+    result, method = agent.invoke_structured_with_repair(
+        Fake(), agent.ReviewOutput, [HumanMessage(content="grade")], label="t")
+    assert method == "repair"
+    assert result is good
+    assert len(calls) == 2
+
+
+def test_extract_candidate_finds_first_object_and_skips_string_braces():
+    """The Dossier-study candidate order: whole text, fenced blocks, then the
+    first complete object - bracket matching that skips string literals (a
+    brace inside a value never closes the span early)."""
+    noisy = 'Preface: { "score": 88, "feedback": "has } brace" }'
+    got = agent.extract_structured_candidate(agent.ReviewOutput, noisy)
+    assert got is not None and got.score == 88
+    got = agent.extract_structured_candidate(
+        agent.ReviewOutput, '{"score": 90, "feedback": "ok"}')
+    assert got is not None and got.score == 90
+    # No JSON / empty / schema-violating -> None.
+    assert agent.extract_structured_candidate(
+        agent.ReviewOutput, "no json here") is None
+    assert agent.extract_structured_candidate(agent.ReviewOutput, "") is None
+    assert agent.extract_structured_candidate(
+        agent.ReviewOutput, '{"score": "ninety", "feedback": "ok"}') is None
+
+
+# ==========================================
+# Round 8: durable checkpoint store (Dossier steal - SqliteSaver default)
+# ==========================================
+
+def test_checkpointer_resolver_escapes_and_default():
+    from pathlib import Path
+    resolve = agent.config._resolve_checkpointer_db_path
+    assert resolve("off") == ""
+    assert resolve("none") == "" and resolve("memory") == ""
+    assert resolve(str(Path("somewhere") / "cp.sqlite3")) == str(
+        Path("somewhere") / "cp.sqlite3")
+    # Unset / whitespace-only -> the durable workspace default.
+    expected = (Path(agent.__file__).resolve().parents[1] / "data"
+                / "checkpoints" / "checkpoints.sqlite3")
+    assert Path(resolve("")) == expected
+    assert Path(resolve("  ")) == expected
+
+
+def test_create_checkpointer_opens_sqlite_and_creates_dirs(monkeypatch, tmp_path):
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    db = tmp_path / "nested" / "cp.sqlite3"
+    monkeypatch.setattr(agent.graphs, "CHECKPOINTER_DB_PATH", str(db))
+    saver = agent.graphs._create_checkpointer()
+    assert isinstance(saver, SqliteSaver)
+    assert db.exists()              # parent dirs created, file opened
+
+
+def test_create_checkpointer_memory_when_disabled(monkeypatch):
+    from langgraph.checkpoint.memory import MemorySaver
+    monkeypatch.setattr(agent.graphs, "CHECKPOINTER_DB_PATH", "")
+    assert isinstance(agent.graphs._create_checkpointer(), MemorySaver)
+
+
+def test_create_checkpointer_falls_back_when_store_unavailable(monkeypatch, tmp_path):
+    from langgraph.checkpoint.memory import MemorySaver
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    # The db's parent is a FILE -> mkdir raises -> graceful MemorySaver fallback.
+    monkeypatch.setattr(agent.graphs, "CHECKPOINTER_DB_PATH",
+                        str(blocker / "cp.sqlite3"))
+    assert isinstance(agent.graphs._create_checkpointer(), MemorySaver)
+
+
 def test_repair_recovers_structured_review_with_sections(fake_llms, monkeypatch):
     """The point of MR5: when the reviewer's structured output folds but the
     model's prose exists, the REPAIR attempt recovers the full structured

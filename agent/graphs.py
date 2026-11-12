@@ -90,18 +90,24 @@ full_app = workflow.compile()
 # before the Improver (first-class human-in-the-loop). Step 2 injects the
 # user's edited notes via update_state and resumes from the checkpoint.
 # The loader therefore runs exactly once per session (no double PDF parsing),
-# and the whole session survives in the in-memory checkpointer.
+# and the whole session survives the DURABLE checkpointer (SQLite by default
+# under data/checkpoints/; MemorySaver with CHECKPOINTER_DB_PATH=off, which
+# tests pin for hermeticity).
 def _create_checkpointer():
     """Returns a checkpointer instance.
 
-    If CHECKPOINTER_DB_PATH is configured, attempts to initialize a persistent
-    SQLite checkpointer for multi-worker / crash-resilient deployments.
-    Otherwise, defaults to MemorySaver() for zero-configuration local use.
+    CHECKPOINTER_DB_PATH defaults to the workspace's data/checkpoints/
+    checkpoints.sqlite3 (durable by default, round 8); the escape hatch
+    CHECKPOINTER_DB_PATH=off/none/memory leaves it empty, which falls back
+    to MemorySaver() for zero-configuration / hermetic (test) use. Any
+    other value is the SQLite path as-is.
     """
     if CHECKPOINTER_DB_PATH:
         try:
             import sqlite3
+            from pathlib import Path
             from langgraph.checkpoint.sqlite import SqliteSaver
+            Path(CHECKPOINTER_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(CHECKPOINTER_DB_PATH, check_same_thread=False)
             _safe_print(f"[Checkpointer] Using persistent SQLite storage at: {CHECKPOINTER_DB_PATH}")
             return SqliteSaver(conn)

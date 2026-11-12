@@ -39,7 +39,24 @@ _OUTPUT_ROOT_RAW = os.environ.get("OUTPUT_ROOT", "").strip()
 OUTPUT_ROOT = (Path(_OUTPUT_ROOT_RAW) if _OUTPUT_ROOT_RAW
                else Path(__file__).resolve().parents[1] / "data" / "artifacts")
 OUTPUT_RETENTION_HOURS = 24
-CHECKPOINTER_DB_PATH = os.environ.get("CHECKPOINTER_DB_PATH", "").strip()
+# Durable session checkpoints (the Dossier study's crash-resilient job store,
+# consumed by graphs._create_checkpointer's SqliteSaver hook): DEFAULTS ON
+# under the gitignored data/ dir, so a server restart no longer loses step
+# state (the Nov 12-13 forensics gap: run-time notes payloads were
+# unrecoverable with the MemorySaver default). Escape hatches:
+# CHECKPOINTER_DB_PATH=off (or none/memory) restores the zero-configuration
+# in-memory checkpointer (tests pin this in tests/conftest.py); any other
+# value is used as the SQLite path as-is.
+def _resolve_checkpointer_db_path(raw: str) -> str:
+    raw = (raw or "").strip()
+    if raw.lower() in {"off", "none", "memory"}:
+        return ""
+    return raw or str(Path(__file__).resolve().parents[1] / "data"
+                      / "checkpoints" / "checkpoints.sqlite3")
+
+
+CHECKPOINTER_DB_PATH = _resolve_checkpointer_db_path(
+    os.environ.get("CHECKPOINTER_DB_PATH", ""))
 # MR3 durable runs: SQLite ledger of run status/results (per-step progress,
 # step-1 chips for mid-pipeline recovery, done-run result payloads for
 # reattach). Defaults next to the artifacts; env-overridable (tests point it

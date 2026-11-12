@@ -40,6 +40,7 @@ from langchain_core.runnables import RunnableLambda
 
 from agent import TRACE_CALLBACKS, agent_app
 from agent import config as agent_config
+from agent.helpers import _safe_truncate
 from agent.llms import groq_key_override
 from agent.provider import TokenUsageTracker
 from agent.tracing import (
@@ -202,6 +203,15 @@ def _recorded(runner):
     return wrapper
 
 
+def _capped_job_description(job_input: str) -> str:
+    """Input cap (the Dossier study's MAX_POSTING_CHARACTERS pattern): URL
+    fetches are already truncated in ``agent.url_fetch``; PASTED job
+    descriptions were not. One deterministic cap at the stream entry so both
+    steps, the ledgers, and the profile store see the same text."""
+    return _safe_truncate(job_input, agent_config.MAX_JOB_CHARS,
+                          "Job description")
+
+
 def _initial_inputs(job_input: str, resume_source: str) -> dict:
     return {
         "job_description": job_input.strip(),
@@ -261,6 +271,7 @@ def _stream_step1(job_description: str, resume_source: str,
     if not resume_source:
         yield {"type": "error", "message": "Please upload a resume PDF or paste your resume text."}
         return
+    job_description = _capped_job_description(job_description)
 
     with groq_key_override(groq_api_key):
         premask_resume_name(resume_source)
@@ -502,6 +513,7 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
     if not resume_source:
         yield {"type": "error", "message": "Please upload a resume PDF or paste your resume text."}
         return
+    job_description = _capped_job_description(job_description)
 
     with groq_key_override(groq_api_key):
         premask_resume_name(resume_source)
