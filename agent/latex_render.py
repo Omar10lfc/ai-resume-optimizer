@@ -439,6 +439,24 @@ def _should_split_on_comma(s: str) -> bool:
     return True
 
 
+def _date_match_to_field(m: "re.Match") -> tuple[str, str]:
+    """Splits a date-range match into (clean date, post-date field tail).
+
+    _DATE_RANGE_RE's tail is ``(.+?)\\s*$`` - it swallows everything up to the
+    end of the line. On 'Title | Feb 2026 - Jun 2026 | BM25, ...' that glued
+    the tech stack INTO the date column (live run 28e2e56f, Nov 12 2026:
+    three project entries printed the stack right-aligned inside the date
+    argument, running 123pt past the physical page edge at x1=735 on a
+    612pt sheet). A pipe inside the match is a field boundary, never date
+    content, so the tail is handed back for the pipe-split logic to route.
+    """
+    matched = m.group(0)
+    if "|" in matched:
+        date, _, tail = matched.partition("|")
+        return _clean_field(date), tail.strip()
+    return _clean_field(matched), ""
+
+
 def _split_header_and_dates(heading_line: str) -> tuple[str, str, str, str]:
     """Best-effort split of a subheading line into left/right columns.
 
@@ -463,7 +481,13 @@ def _split_header_and_dates(heading_line: str) -> tuple[str, str, str, str]:
     left = line
     if m:
         left = line[:m.start()].strip().rstrip('|').strip()
-        dates = _clean_field(m.group(0).strip())
+        dates, tail = _date_match_to_field(m)
+        if tail:
+            # "Title | <date> | more fields" - the date is a mid-line column,
+            # not a trailing annotation. Rejoin the post-date fields so the
+            # pipe-split below routes every one of them instead of the tail
+            # being swallowed into (or dropped after) the date.
+            left = f"{left} | {tail}" if left else tail
 
     # "Role | Company" or "Role | Company | Location" or "Degree | University | Location"
     if '|' in left:
@@ -581,11 +605,19 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
     last = header_lines[-1]
     last_dates = _DATE_RANGE_RE.search(last)
     if last_dates:
-        entry.sub_right = _clean_field(last_dates.group(0))
-        if last_dates.start() > 0:
-            header_lines[-1] = last[:last_dates.start()].strip()
+        date_str, tail = _date_match_to_field(last_dates)
+        if tail:
+            # Mid-line date column ("Title | <date> | stack"): leave the line
+            # whole so the split below routes every field; the date is
+            # re-extracted there instead of being glued with the tail into
+            # sub_right (run 28e2e56f: that glue overflowed the page).
+            pass
         else:
-            header_lines = header_lines[:-1]
+            entry.sub_right = date_str
+            if last_dates.start() > 0:
+                header_lines[-1] = last[:last_dates.start()].strip()
+            else:
+                header_lines = header_lines[:-1]
 
     if not header_lines:
         return None, idx
@@ -1069,6 +1101,18 @@ def _render_section(section: Section, compact: bool = False) -> str:
                         date_field = sub_right or (_clean_field(headers_right) if _DATE_RANGE_RE.search(headers_right) else "")
                         tech_stack_raw = headers_right if not _DATE_RANGE_RE.search(headers_right) else sub_left
 
+                    # Last-line defense (run 28e2e56f): a date column that
+                    # still carries "| more fields" would print the whole
+                    # string right-aligned and run off the page (measured
+                    # x1=735 on a 612pt sheet). Split it: the date is left of
+                    # the pipe; the rest becomes the tech stack when none was
+                    # parsed.
+                    m_glue = re.match(r"^(.*\d{4})\s*\|\s*(\S.*)$", date_field)
+                    if m_glue:
+                        date_field = m_glue.group(1).strip()
+                        if not tech_stack_raw:
+                            tech_stack_raw = m_glue.group(2).strip()
+
                     # Universally extract project title and links
                     other_fields = [f for f in (headers_right, sub_left) if f and f != date_field]
                     clean_title, extracted_links = _extract_project_links_and_title(
@@ -1314,20 +1358,49 @@ _COMPACT_BLOCK_TOKEN = "<!--COMPACT_BLOCK-->"
 # and margins - so the compact PDF prints the same information denser.
 # \renewcommand is safe here because the macros were defined
 # unconditionally earlier in this same preamble.
-_COMPACT_OVERRIDES = r"""
+#
+# Two severities ship (layout spec B, Nov 11/12 2026), selected by
+# render_compact_tiers:
+#   tier 1 "airy" (run 28e2e56f, Nov 12 2026): the tier-2 values crushed
+#       the rule-to-content air to ~2.2pt of visible ink under EVERY
+#       section rule (user-reported crowding). Tier 1 restores ~3pt per
+#       section (~+18pt/page) - list-start glue -1.0pt and after-rule
+#       -6.0pt put the air back at base mode's ~4.7pt - and is adopted
+#       only when the render stays one page AND the last baseline stops
+#       above _COMPACT_BOTTOM_STOP.
+#   tier 2 "tight": the shipped values - the only unclaimed vertical
+#       levers after the entry-gap floors consumed the page slack.
+#       Adopted whenever they yield one page (today's acceptance rule).
+_COMPACT_TIER_VALUES = {
+    1: {"list_start_glue": r"\vspace{-1.0pt}", "after_rule": r"\vspace{-6.0pt}"},
+    2: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-8.5pt}"},
+}
+
+
+def _compact_overrides(tier: int) -> str:
+    """The auto-compact preamble block for one tier. Tokens are filled with
+    str.replace - str.format is unusable on LaTeX (brace soup)."""
+    values = _COMPACT_TIER_VALUES[tier]
+    return (_COMPACT_OVERRIDES_TEMPLATE
+            .replace("@@LIST_START_GLUE@@", values["list_start_glue"])
+            .replace("@@AFTER_RULE@@", values["after_rule"]))
+
+
+_COMPACT_OVERRIDES_TEMPLATE = r"""
 % ---- AUTO-COMPACT PASS (activated after a >1-page first render) ----
 % Tighter bullet spacing (enumitem is loaded in this preamble)
 \setlist[itemize]{itemsep=0pt, parsep=0pt, topsep=2pt, leftmargin=*}
 % Entry-list start glue (layout spec B, Nov 11 2026): the compact pass
-% pulls each section rule 1.5pt closer to its first entry - probe-calibrated
+% pulls each section rule closer to its first entry - probe-calibrated
 % (topsep is swallowed at list start; enumitem's before=\vspace lands 1:1).
-\renewcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}, topsep=0pt, before=\vspace{-1.5pt}]}
-% Tighter section heading + rule spacing (ar -8.5: the rule-to-content air
-% drops from ~6pt to ~3.5pt; the last unclaimed vertical lever paired with
-% the before= start glue above)
+% Tier-dependent value (see _COMPACT_TIER_VALUES in latex_render.py).
+\renewcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}, topsep=0pt, before=@@LIST_START_GLUE@@]}
+% Tighter section heading + rule spacing (tier-dependent after-rule value,
+% paired with the before= start glue above; -8.5 is the tier-2 tight lever
+% that leaves only ~2.2pt of ink air under the rule)
 \titleformat{\section}{
   \vspace{-7pt}\scshape\raggedright\large
-}{}{0em}{}[\color{black}\titlerule \vspace{-8.5pt}]
+}{}{0em}{}[\color{black}\titlerule @@AFTER_RULE@@]
 % Recover a little vertical room
 \addtolength{\topmargin}{-.12in}
 \addtolength{\textheight}{.24in}
@@ -1399,12 +1472,99 @@ def pdf_page_count(pdf_path) -> Optional[int]:
         return None
 
 
-def render_resume_tex(data: ResumeData, compact: bool = False) -> str:
+# Bottom-margin stop for the airy compact tier (layout spec B, Nov 11 2026):
+# the compact pass must keep the last text baseline AT or above this line;
+# the airy tier is only adopted when it stays inside it. The tight tier-2
+# may still cross it on pathologically long resumes (one page beats two).
+_COMPACT_BOTTOM_STOP = 763.2
+
+
+def pdf_last_baseline(pdf_path) -> Optional[float]:
+    """Baseline (top + font size) of the lowest text line, or None when
+    pdfplumber is unavailable or the PDF is unreadable.
+
+    Same measuring convention as the layout-spec B tests (_pdf_lines:
+    line baseline = glyph top + font size), so the constant above and the
+    test pins describe the same geometry.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return None
+    try:
+        worst = None
+        with pdfplumber.open(str(pdf_path)) as doc:
+            for page in doc.pages:
+                for w in page.extract_words(extra_attrs=["size"]):
+                    v = w["top"] + w["size"]
+                    if worst is None or v > worst:
+                        worst = v
+        return worst
+    except Exception:
+        return None
+
+
+def render_compact_tiers(data: ResumeData, output_dir,
+                         filename: str = "Optimized_Resume.pdf") -> Optional[dict]:
+    """Auto-compact tier pass for the >1-page containment (pdf_exporter).
+
+    Compiles the airy tier-1 first and adopts it only when the render stays
+    one page AND the last baseline stops above _COMPACT_BOTTOM_STOP; only
+    then does it pay the +18pt/page air cost. Otherwise the shipped tight
+    tier-2 renders and is adopted whenever it yields one page (today's
+    rule). A one-page tier-1 render that crosses the stop is kept as a
+    last-resort fallback - one deep-margin page beats a two-page resume.
+
+    Tiers compile to probe filenames first and the winner is copied onto
+    ``filename``: a losing tier must never leave its (overflowing) PDF
+    behind under the shipped name.
+
+    Returns {"pdf_path", "tex", "tier", "pages"} for the adopted render, or
+    None when no tier produced a one-page PDF (the caller keeps the base
+    render and surfaces the overflow warning).
+    """
+    output_dir = Path(output_dir)
+    probes: dict[int, tuple[str, Optional[str]]] = {}
+    fallback_tier = None
+    chosen_tier = None
+    for tier in (1, 2):
+        tex = render_resume_tex(data, compact=True, compact_tier=tier)
+        probe = latex_to_pdf(tex, output_dir, f"__compact_tier{tier}.pdf")
+        probes[tier] = (tex, probe)
+        if not probe or (pdf_page_count(probe) or 99) != 1:
+            continue
+        if tier == 1:
+            last = pdf_last_baseline(probe)
+            if last is not None and last > _COMPACT_BOTTOM_STOP:
+                fallback_tier = fallback_tier or tier
+                continue
+        chosen_tier = tier
+        break
+    winner = chosen_tier if chosen_tier is not None else fallback_tier
+    if winner is None:
+        for _, probe in probes.values():
+            if probe:
+                Path(probe).unlink(missing_ok=True)
+        return None
+    tex, probe = probes[winner]
+    dest = output_dir / filename
+    shutil.copyfile(probe, dest)
+    for tier_probe in (p for _, p in probes.values() if p):
+        probe_path = Path(tier_probe)
+        if probe_path != dest:
+            probe_path.unlink(missing_ok=True)
+    return {"pdf_path": str(dest), "tex": tex, "tier": winner, "pages": 1}
+
+
+def render_resume_tex(data: ResumeData, compact: bool = False,
+                      compact_tier: int = 2) -> str:
     """Fill the bundled LaTeX template with the structured resume data.
 
     compact=True activates the auto-compact spacing block (tighter itemize
-    spacing, trimmed section/entry vspaces, slightly larger text area).
-    Content itself is never altered - compaction is a spacing-mode only.
+    spacing, trimmed section/entry vspaces, slightly larger text area);
+    compact_tier selects the severity (1 = airy, restores rule-to-content
+    air while the page budget allows; 2 = the shipped tight values, the
+    default). Content itself is never altered - compaction is spacing-only.
     """
     template_path = Path(__file__).resolve().parent / "templates" / "resume_template.tex"
     template = template_path.read_text(encoding="utf-8")
@@ -1448,7 +1608,9 @@ def render_resume_tex(data: ResumeData, compact: bool = False) -> str:
     # Replace the placeholder comment with the rendered body
     template = template.replace("<!--RESUME_BODY-->", body)
     # Compact pass: injected only when the first render overflowed one page
-    template = template.replace(_COMPACT_BLOCK_TOKEN, _COMPACT_OVERRIDES if compact else "")
+    template = template.replace(
+        _COMPACT_BLOCK_TOKEN,
+        _compact_overrides(compact_tier) if compact else "")
     return template
 
 

@@ -21,9 +21,11 @@ import agent  # noqa: E402
 from agent.latex_render import (  # noqa: E402
     parse_markdown_resume,
     render_resume_tex,
+    render_compact_tiers,
     latex_to_pdf,
     latex_to_docx,
     pdf_page_count,
+    pdf_last_baseline,
     HAVE_PDFLATEX,
     HAVE_PANDOC,
     _latex_escape,
@@ -1461,6 +1463,160 @@ def test_label_rows_hang_wrapped_tails(tmp_path):
             prev_in_block = ln
         assert wraps >= 1, (
             f"{mode}: no wrapped label row found - stale fixture")
+
+
+# ==========================================
+# Compact tiers + project date/stack glue
+# (live run 28e2e56f, Nov 12 2026)
+# ==========================================
+
+def _rule_content_air(pdf):
+    """Per long section rule: (baseline-dist, top-gap) of the FIRST content
+    line under it, in the _pdf_lines measuring convention (baseline = glyph
+    top + font size). Section headings (>= 10.5pt) are excluded; 10pt body
+    lines (entry titles, right-column dates) count as content.
+    """
+    import pdfplumber
+    out = []
+    with pdfplumber.open(str(pdf)) as doc:
+        page = doc.pages[0]
+        rules = sorted(
+            (r for r in page.lines + page.rects
+             if abs(r["top"] - r["bottom"]) < 1.5 and (r["x1"] - r["x0"]) > 300),
+            key=lambda r: r["top"])
+        words = page.extract_words(extra_attrs=["size"])
+        lines = []
+        for w in sorted(words, key=lambda x: (round(x["top"], 1), x["x0"])):
+            for ln in lines:
+                if abs(ln["top"] - w["top"]) <= 2.0:
+                    ln["words"].append(w)
+                    break
+            else:
+                lines.append({"top": w["top"], "words": [w]})
+        lines.sort(key=lambda l: (l["top"], min(x["x0"] for x in l["words"])))
+        for r in rules:
+            cands = [ln for ln in lines
+                     if -12 < ln["top"] - r["top"] < 16
+                     and max(x["size"] for x in ln["words"]) < 10.5]
+            if not cands:
+                continue
+            ln = min(cands, key=lambda l: l["top"])
+            base = max(x["top"] + x["size"] for x in ln["words"])
+            out.append((round(base - r["top"], 2), round(ln["top"] - r["top"], 2)))
+    return out
+
+
+def test_project_stack_after_date_never_glues_into_the_date_column():
+    """Live run 28e2e56f (Nov 12 2026): '**Title** | Mar 2026 - May 2026 |
+    Whisper, ...' one-liners glued the tech stack INTO the date column -
+    _DATE_RANGE_RE's (.+?)$ tail swallows the post-date fields - which then
+    printed the whole string right-aligned 123pt past the physical page
+    edge (x1=735 on a 612pt sheet, date glued to the title, stack clipped).
+    The parser must route the stack to the tech column and the date to the
+    date column, in both parse fields and emitted TeX."""
+    md = (
+        "# Candidate\n\n"
+        "## Projects\n"
+        "**Smart Lecture Assistant: Arabic Audio Understanding and "
+        "Retrieval** | Mar 2026 - May 2026 | Whisper, AraBART, CAMeL-BERT, "
+        "FAISS, Gradio, FastAPI\n"
+        "- Reduced Arabic transcription error rate with fine-tuned Whisper\n\n"
+        "**Port Digital Twin: Live AIS-Fed Optimization** "
+        "[Live](https://x.example) | OR-Tools CP-SAT | Sep 2025 - Jun 2026\n"
+        "- Engineered a CP-SAT berth-allocation solver\n\n"
+        "**Fil-RAG-Goal: Arabic Football Q&A (Hybrid RAG)** "
+        "| Feb 2026 - Jun 2026 | BM25, Dense Retrieval, Groq, CI Pipeline\n"
+        "- Boosted retrieval relevance with weighted RRF\n"
+    )
+    data = parse_markdown_resume(md)
+    projects = {e.header.split(":")[0]: e for e in data.sections[0].entries}
+
+    sl = projects["Smart Lecture Assistant"]
+    assert sl.right == "Whisper, AraBART, CAMeL-BERT, FAISS, Gradio, FastAPI"
+    assert sl.sub_right == "Mar 2026 - May 2026"
+    fr = projects["Fil-RAG-Goal"]
+    assert fr.right == "BM25, Dense Retrieval, Groq, CI Pipeline"
+    assert fr.sub_right == "Feb 2026 - Jun 2026"
+    # control: the stack-before-date shape keeps its (already-working) routing
+    port = projects["Port Digital Twin"]
+    assert port.right == "OR-Tools CP-SAT"
+    assert port.sub_right == "Sep 2025 - Jun 2026"
+
+    tex = render_resume_tex(data)
+    assert (r"\resumeSubheading{Smart Lecture Assistant: Arabic Audio "
+            r"Understanding and Retrieval}{Mar 2026 - May 2026}"
+            r"{Whisper, AraBART, CAMeL-BERT, FAISS, Gradio, FastAPI}{}") in tex
+    assert (r"\resumeSubheading{Fil-RAG-Goal: Arabic Football Q\&A (Hybrid "
+            r"RAG)}{Feb 2026 - Jun 2026}{BM25, Dense Retrieval, Groq, CI "
+            r"Pipeline}{}") in tex
+    glued = re.findall(r"\}\{[^{}]*\d{4}[^{}]*\|[^{}]*\}", tex)
+    assert not glued, f"date argument still carries glued fields: {glued[:2]}"
+
+    # Last line of defense: a sub_right that still carries "| fields" (the
+    # 3-header-line path) is split at emission - clean date argument, stack
+    # into the heading line - so nothing prints off the page.
+    glue_md = (
+        "# Candidate\n\n"
+        "## Projects\n"
+        "**Glue Probe: Title Only**\n"
+        "Somewhere\n"
+        "Mar 2026 - May 2026 | Redis, FastAPI\n"
+        "- Did a thing\n"
+    )
+    gtex = render_resume_tex(parse_markdown_resume(glue_md))
+    assert (r"\resumeProjectHeading{\textbf{Glue Probe: Title Only} $|$ "
+            r"\emph{Redis, FastAPI}}{Mar 2026 - May 2026}") in gtex
+
+
+@pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
+                    reason="pdflatex/pdfplumber not installed")
+def test_compact_tier1_airy_restores_rule_air_inside_the_page_budget(tmp_path):
+    """Run 28e2e56f (Nov 12 2026): the tight tier-2 values left ~2.2pt of
+    visible ink under EVERY section rule, with first content lines' glyph
+    boxes printed up INTO the rule band (top gaps of -0.4 to -0.95pt).
+    Tier 1 'airy' restores ~3pt per section (list-start glue -1.0pt,
+    after-rule -6.0pt) and render_compact_tiers adopts it whenever the
+    render stays one page and the last baseline stops above the 763.2pt
+    bottom-margin line. The spec-B fixture has that slack, so the airy
+    tier must win and lift every rule-to-content distance."""
+    data = parse_markdown_resume(_layout_spec_b_markdown())
+    tiered = render_compact_tiers(data, tmp_path, "Optimized_Resume.pdf")
+    assert tiered and tiered["tier"] == 1, (
+        f"expected the airy tier on a slack-rich fixture, got {tiered}")
+    assert pdf_page_count(tiered["pdf_path"]) == 1
+    last = pdf_last_baseline(tiered["pdf_path"])
+    assert last is not None and last <= 763.2, (
+        f"airy tier adopted past the bottom-margin stop: {last:.1f}pt")
+    air = _rule_content_air(tiered["pdf_path"])
+    assert len(air) == 6, f"section rules found: {len(air)}"
+    assert min(d for d, _ in air) >= 10.0, f"rule air still tight: {air}"
+    assert min(g for _, g in air) >= 1.0, (
+        f"first content line still overlaps the rule band: {air}")
+    # adoption contract: winner copied onto the shipped name, probes gone
+    assert (tmp_path / "Optimized_Resume.pdf").exists()
+    assert not list(tmp_path.glob("__compact_tier*"))
+
+
+@pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
+                    reason="pdflatex/pdfplumber not installed")
+def test_compact_tier_falls_back_to_tight_when_airy_crosses_the_stop(tmp_path):
+    """The airy tier costs ~+18pt/page; on a page-full resume it would push
+    the last baseline past the 763.2pt bottom-margin stop (or onto a second
+    page), so the decision must fall back to the shipped tight tier-2 -
+    which is adopted whenever it yields one page, even marginally past the
+    stop (one page beats two). The tight tier must also stay tight: its
+    rule-to-content air must not inherit the airy values."""
+    data = parse_markdown_resume(_overflow_resume_markdown())
+    tiered = render_compact_tiers(data, tmp_path, "Optimized_Resume.pdf")
+    assert tiered and tiered["tier"] == 2, (
+        f"expected the tight tier fallback, got {tiered and tiered['tier']}")
+    assert pdf_page_count(tiered["pdf_path"]) == 1
+    last = pdf_last_baseline(tiered["pdf_path"])
+    assert last is not None and last <= 768.0, (
+        f"tight tier regressed: last baseline {last:.1f}pt")
+    air = _rule_content_air(tiered["pdf_path"])
+    assert min(d for d, _ in air) <= 9.5, f"tier-2 unexpectedly airy: {air}"
+    assert not list(tmp_path.glob("__compact_tier*"))
 
 
 

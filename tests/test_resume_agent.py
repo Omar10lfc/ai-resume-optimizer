@@ -1208,6 +1208,20 @@ def test_tame_unicode_bullets_untouched_input():
     assert agent._tame_unicode_bullets(plain) == "- Kubernetes\n- Terraform"
 
 
+def test_tame_unicode_bullets_canonizes_percent_spacing():
+    """Run 28e2e56f (Nov 12 2026): one resume printed '62 %', '70 % to
+    97.2 %' AND '47%', '98.6%' - LLM source-text variance. Digit-adjacent
+    '62%' is the dominant form, and whitespace before % is never
+    meaningful in resume prose."""
+    assert agent._tame_unicode_bullets(
+        "cut costs by 62 % versus a 70 % baseline") == \
+        "cut costs by 62% versus a 70% baseline"
+    assert agent._tame_unicode_bullets(
+        "from 70 % to 97.2 % and 47% accuracy") == \
+        "from 70% to 97.2% and 47% accuracy"
+    assert agent._tame_unicode_bullets("share of % growth") == "share of % growth"
+
+
 def test_scanner_output_is_tamed_for_consumers(monkeypatch):
     class ExoticScannerLLM:
         def invoke(self, messages):

@@ -59,24 +59,27 @@ def export_documents(resume_text: str, cover_text: str, request_dir: Path) -> di
             resume_pages = _latex.pdf_page_count(resume_pdf_path)
             if resume_pages and resume_pages > 1:
                 _safe_print(
-                    f"   [LaTeX] Compiled {resume_pages} pages - retrying with auto-compact spacing.")
-                compact_tex = _latex.render_resume_tex(data, compact=True)
-                compact_pdf = _latex.latex_to_pdf(
-                    compact_tex, request_dir, "Optimized_Resume.pdf")
-                if compact_pdf and (_latex.pdf_page_count(compact_pdf) or 99) == 1:
-                    # Compact fits: adopt it everywhere (tex source, DOCX).
+                    f"   [LaTeX] Compiled {resume_pages} pages - "
+                    "trying auto-compact tiers (airy first).")
+                tiered = _latex.render_compact_tiers(
+                    data, request_dir, "Optimized_Resume.pdf")
+                if tiered:
+                    # Adopt the winning tier everywhere (tex source, DOCX).
                     if tex_file is not None:
-                        tex_file.write_text(compact_tex, encoding="utf-8")
+                        tex_file.write_text(tiered["tex"], encoding="utf-8")
                     compact_docx = _latex.latex_to_docx(
-                        compact_tex, request_dir, "Optimized_Resume.docx")
+                        tiered["tex"], request_dir, "Optimized_Resume.docx")
                     if compact_docx:
                         resume_docx_path = compact_docx
-                    resume_pdf_path = compact_pdf
+                    resume_pdf_path = tiered["pdf_path"]
                     resume_compacted = True
                     resume_pages = 1
+                    _safe_print(
+                        f"   [LaTeX] Adopted auto-compact tier {tiered['tier']} "
+                        f"({'airy' if tiered['tier'] == 1 else 'tight'} spacing).")
                 else:
-                    # Compact recompile failed or still overflows: keep the
-                    # first (good-compiling) render and surface the overflow.
+                    # No tier reclaimed one page: keep the first
+                    # (good-compiling) render and surface the overflow.
                     page_overflow_warning = (
                         f"Optimized resume is {resume_pages} pages after compaction attempt. "
                         "Internal target is 1 page - trim content in Step 2 review or hide low-value sections.")

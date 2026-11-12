@@ -250,6 +250,11 @@ def _tame_unicode_bullets(text: str) -> str:
     for ch in _HYPHEN_CLASS:
         t = t.replace(ch, "-")
     t = "\n".join(line.rstrip() for line in t.split("\n"))
+    # Canon percent spacing (run 28e2e56f, Nov 12 2026): the same resume
+    # printed "62 %", "70 % to 97.2 %" AND "47%", "98.6%" - LLM source-text
+    # variance. Digit-adjacent "62%" is the dominant form, so collapse the
+    # space (whitespace before % is never meaningful in resume prose).
+    t = re.sub(r"(?<=\d)\s+(?=%)", "", t)
     return t
 
 

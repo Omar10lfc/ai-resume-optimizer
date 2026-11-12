@@ -210,7 +210,12 @@ def test_fake_groq_server_handles_concurrent_completion_requests(fake_groq):
     assert results["prep"] == FAKE_INTERVIEW_PREP
     assert results["scan"] == FAKE_MISSING_SKILLS
     assert results["noop"] == "OK."
-    assert fake_groq.request_keys() == ["cover", "prep", "missing_skills", "default"]
+    # 4 threads POST concurrently: arrival order at the server is OS thread
+    # scheduling, not semantics (measured flake on a clean AND a modified
+    # tree, Nov 12 2026: 'default' can record before 'missing_skills').
+    # The contract is the multiset of branch keys: all four seen, none extra.
+    assert sorted(fake_groq.request_keys()) == sorted(
+        ["cover", "prep", "missing_skills", "default"])
 
 
 # ==========================================
