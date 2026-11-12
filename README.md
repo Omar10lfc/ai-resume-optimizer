@@ -762,6 +762,33 @@ Live run `124f40cb` (score 73, ATS 62.5, same FortyGuard JD re-optimized): the r
 
 > Status: `venv\Scripts\python.exe -m pytest -q` → **317 passed** — **restart the FastAPI backend and re-run to regenerate PDFs** (existing artifacts keep the old geometry; the cap and the guard apply at render/rewrite time). Documented survivors (out of scope until they recur): a bare source-header host WITHOUT a path (e.g. `omarmashaly.dev`) is not re-injected (needs a path or a scheme); an ALL-CAPS name line in a source header truncates the scanned header region; the cap costs ~2–3 lines per page in base mode, so page-full base renders now break earlier and the tier ladder engages (by design).
 
+### Session — Nov 12 2026 (run pair `bf0f7941` / `03a3ffc1`: cramped rule air, a literal "N/A" in the header, a silently swallowed bullet fragment)
+
+Two fresh runs on the user's resume — same FortyGuard JD, one WITHOUT and one WITH pasted Aegis-project context (`03a3ffc1` = with, score 55/ATS 50; `bf0f7941` = without, score 59/ATS 56; both 8 LLM calls, all 7 prompt stamps incl. `polisher-target@1`, decline protocol fired, integrity channels clean). Three user-reported defects.
+
+**Defect 1 (with-context run) — "no minimal space" under every section rule.** pdfplumber on the shipped PDF: it rendered **tier-2 (the tight floor, `−1.5/−8.5`)** — first content lines' glyph boxes printed −0.85..+0.44pt relative to the rule tops (ink ~0.2pt from the rules). The ladder was *working*: the with-context resume is genuinely longer (Aegis project added), base = 2 pages, airy tier-1 = **2 pages** (its ~+18pt/page air cost does not fit), so the tight floor shipped with 1 page ending 769.80 — **6.2pt of unused slack** above the 776pt block bottom. Measured above-rule air was 4.38pt in *every* render mode — no free rebalance exists. The floor's `−8.5pt` after-rule sat a full point past the base template's own `−7.5pt` for no page gain on most resumes.
+
+| Change | Why | Impact |
+|--------|-----|--------|
+| **Balanced middle tier** (`_COMPACT_TIER_VALUES` gains tier-2 `−1.5/−7.5`; the old tight floor becomes tier-3 `−1.5/−8.5`; ladder order 1→2→3, tier-1's 763.2pt stop unchanged) | Spend the floor's unclaimed point back: +1.0pt air per rule costs +6pt/page | With-content now ships **tier-2 balanced: 1 page, last baseline 771.78 (4.2pt inside the block), top-gaps +0.14..+1.44** — no glyph box crosses the rule band anymore. Floor tier-3 remains the last resort for resumes even the balanced tier cannot hold (1 page wins over 2). Physics residual, documented: a page-filling resume cannot reach base-level air (~+2.5pt) at 1 page — the alternatives (2 pages, shorter content, wider text) are user-discussion items |
+| **Acceptance tests** (fallback test renamed/re-pinned to the balanced tier; floor pinned at tex level; sheet-edge test now covers both compact tiers) | Pin the new ladder | Overflow fixture ships tier-2 (last ≤ 774, air bounded ≤ 9.5 base-dist); tier-3 keeps `−1.5/−8.5`; every glyph of base/balanced/floor ≤ 786pt |
+
+**Defect 2 (without-context run) — literal "N/A" printed in the contact header.** The stored draft header was `…github.com/Omar10lfc | N/A | https://huggingface.co/Omar10lfc`: the writer emitted **`N/A` as a placeholder for a field with no value**, and round-5's link restoration then appended right after the fake token (the guard restored HF correctly — it just didn't sanitize the placeholder).
+
+| Change | Why | Impact |
+|--------|-----|--------|
+| **Placeholder sanitation** in `preserve_contact_links` (now returns `(draft, restored, removed_placeholders)`; runs before restoration so a restored link never lands after a fake token; a contact line keeps ≥2 tokens; idempotent) | Placeholder tokens are fake fields, not content | `N/A` / `NA` / `TBD` / `None` / `Null` stripped from the contact line, surfaced as `removed placeholder token from the contact line: …` in the guardrail channel. 2 new tests |
+
+**Defect 3 (without-context run) — a Smart Lecture bullet "removed" vs the original.** Two stacked defects. (a) *Writer*: the rewrite of the WER/transcription bullet shipped only the ROUGE-L half, as a **fragment without its `- ` marker** (`removals` was `[]` — no deterministic step recorded it; the half with `51.7%`, WER 42.69→20.61 is unrecoverable — the LLM never wrote it). (b) *Parser*: the fragment line was gathered as a **second header line**, which took the `sub` slot (which the project emission never renders → **silently swallowed**) AND triggered the ≥2-header-line path that **dropped the entry's date column** (`Mar 2026 – May 2026` gone from the PDF too).
+
+| Change | Why | Impact |
+|--------|-----|--------|
+| **Orphan salvage** (`_is_orphan_continuation` in `latex_render.py`: first alphabetic char lowercase, no `\|`; mid-sentence lines are never header fields) | One malformed writer line must not cascade into silent data loss | Fragments render as entry content: joined onto the previous bullet (hard-wrapped tails) or kept as their own item (broken heads). The stored without-run md now parses exactly like the healthy with-run shape: date restored + the fragment visible; verified in the shipped PDF (`doubled` present) |
+| **Trailing-date column** kept on ≥2-header-line entries (`Title \| stack \| dates` first lines) | The ad-hoc `p[0]/p[1]` extraction dropped any 3rd+ field | Date survives on every multi-header-line entry shape |
+| **Dropped-evidence tripwire** (`find_dropped_source_metrics`, mirror of the unevidenced-metric tripwire, same `_METRIC_TOKEN_RE` token class; rides the shared writer tail) | A rewrite that loses a source accomplishment's quantified evidence weakens the resume silently | `source evidence metric(s) 51.7% no longer in the resume (from: 'Cut Arabic transcription…')` surfaces in the guardrail channel. Detection-only by design: tailoring legitimately condenses, and a deterministic re-insertion could not reconstruct the sentence around the number. Writer-level fragmenting itself is prompt territory (would bump `polisher@` stamps) — flagged for discussion |
+
+> Status: `venv\Scripts\python.exe -m pytest -q` → **323 passed** — **restart the FastAPI backend and re-run to regenerate PDFs** (existing artifacts keep the old renders; all fixes apply at rewrite/render time). Documented survivors (out of scope until they recur): a page-filling resume still cannot reach base-level rule air at 1 page (balanced tier = +1pt/rule; the rest is content physics); short lowercase sub-lines (<25 chars, e.g. "iOS Developer") stay header fields by design; the writer emitting malformed bullets is prompt territory, surfaced by the tripwire meanwhile.
+
 ### UI Fixes
 
 | Change | Reason |
