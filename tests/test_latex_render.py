@@ -553,6 +553,68 @@ def test_parse_education_four_columns_university_location_degree_dates():
     assert edu.sub_right == "Oct 2022 - Jun 2026"
 
 
+def test_parse_orphan_bullet_fragment_never_swallowed_nor_dateless():
+    """Run bf0f7941 (Nov 12 2026): the writer emitted a bullet FRAGMENT
+    without its '- ' marker ('doubled summarization ROUGE-L ... with
+    AraBART.') right under an entry header. It used to be gathered as a
+    second header line, which took the never-rendered sub slot AND dropped
+    the entry's date column - the PDF silently lost both the fragment and
+    'Mar 2026 - May 2026'. The fragment must render as entry content and
+    the date must survive."""
+    md = (
+        "## Projects\n"
+        "**Smart Lecture Assistant** | Python, Whisper | Mar 2026 - May 2026\n"
+        "doubled summarization ROUGE-L (13.48 to 29.56) with AraBART.\n"
+        "- Increased semantic search precision by 34 points\n"
+    )
+    entry = parse_markdown_resume(md).sections[0].entries[0]
+    assert entry.header == "Smart Lecture Assistant"
+    assert entry.right == "Python, Whisper"
+    assert entry.sub == ""
+    assert entry.sub_right == "Mar 2026 - May 2026"
+    assert len(entry.items) == 2
+    assert entry.items[0] == ("doubled summarization ROUGE-L (13.48 to 29.56) "
+                              "with AraBART.")
+    assert entry.items[1] == "Increased semantic search precision by 34 points"
+
+
+def test_parse_hardwrapped_bullet_tail_joins_its_bullet():
+    """A hard-wrapped bullet continuation (the source resume wraps mid-
+    sentence) must rejoin its bullet instead of becoming a header field or
+    a separate paragraph."""
+    md = (
+        "## Projects\n"
+        "**Smart Lecture Assistant** | Whisper | Mar 2026 - May 2026\n"
+        "- Cut transcription error rate 51.7% fine-tuning Whisper, and more\n"
+        "than doubled summarization quality (ROUGE-L 13.48 to 29.56)\n"
+        "- Boosted semantic search precision\n"
+    )
+    entry = parse_markdown_resume(md).sections[0].entries[0]
+    assert entry.sub_right == "Mar 2026 - May 2026"
+    assert len(entry.items) == 2
+    assert entry.items[0] == ("Cut transcription error rate 51.7% "
+                              "fine-tuning Whisper, and more than doubled "
+                              "summarization quality (ROUGE-L 13.48 to "
+                              "29.56)")
+
+
+def test_parse_multi_header_line_keeps_trailing_date_column():
+    """Any >=2-header-line entry whose first line carries a trailing date
+    column ('Title | stack | dates') must keep the date - the ad-hoc
+    p[0]/p[1] extraction used to drop it."""
+    md = (
+        "## Projects\n"
+        "**Port Digital Twin** | OR-Tools, FastAPI | Sep 2025 - Jun 2026\n"
+        "Live Demo\n"
+        "- Engineered a CP-SAT berth-allocation solver\n"
+    )
+    entry = parse_markdown_resume(md).sections[0].entries[0]
+    assert entry.header == "Port Digital Twin"
+    assert entry.right == "OR-Tools, FastAPI"
+    assert entry.sub_right == "Sep 2025 - Jun 2026"
+    assert entry.sub == "Live Demo"
+
+
 def test_long_project_heading_uses_two_line_subheading_no_collision():
     """Long project titles (> 70 chars with stack + date) must use \resumeSubheading
     to place tech stack on Row 2, preventing column overflow and date collision."""
@@ -1599,24 +1661,39 @@ def test_compact_tier1_airy_restores_rule_air_inside_the_page_budget(tmp_path):
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
                     reason="pdflatex/pdfplumber not installed")
-def test_compact_tier_falls_back_to_tight_when_airy_crosses_the_stop(tmp_path):
+def test_compact_tier_falls_back_to_balanced_when_airy_crosses_the_stop(tmp_path):
     """The airy tier costs ~+18pt/page; on a page-full resume it would push
     the last baseline past the 763.2pt bottom-margin stop (or onto a second
-    page), so the decision must fall back to the shipped tight tier-2 -
-    which is adopted whenever it yields one page, even marginally past the
-    stop (one page beats two). The tight tier must also stay tight: its
-    rule-to-content air must not inherit the airy values."""
+    page), so the decision must fall back to the balanced tier-2 (run
+    03a3ffc1, Nov 12 2026: the old tight floor shipped ~0.2pt of ink under
+    every rule - the user's 'no minimal space' defect - while its
+    after-rule -8.5pt sat a full point past the base template's -7.5pt for
+    no page gain on most resumes). The balanced tier is adopted whenever it
+    yields one page; the floor tier-3 remains the last resort for resumes
+    even the balanced tier cannot hold. The balanced tier must also stay
+    bounded: its rule-to-content air must not inherit the airy values."""
     data = parse_markdown_resume(_overflow_resume_markdown())
     tiered = render_compact_tiers(data, tmp_path, "Optimized_Resume.pdf")
     assert tiered and tiered["tier"] == 2, (
-        f"expected the tight tier fallback, got {tiered and tiered['tier']}")
+        f"expected the balanced tier fallback, got {tiered and tiered['tier']}")
     assert pdf_page_count(tiered["pdf_path"]) == 1
     last = pdf_last_baseline(tiered["pdf_path"])
-    assert last is not None and last <= 768.0, (
-        f"tight tier regressed: last baseline {last:.1f}pt")
+    assert last is not None and last <= 774.0, (
+        f"balanced tier regressed past the block bottom: {last:.1f}pt")
     air = _rule_content_air(tiered["pdf_path"])
     assert min(d for d, _ in air) <= 9.5, f"tier-2 unexpectedly airy: {air}"
     assert not list(tmp_path.glob("__compact_tier*"))
+
+
+def test_compact_floor_tier3_keeps_the_tight_values():
+    """The floor tier-3 (the former tight values, run 28e2e56f's fallback)
+    must keep the -1.5pt glue and -8.5pt after-rule levers for resumes even
+    the balanced tier cannot hold on one page - checked at the tex level so
+    the floor's contract is pinned without a compile."""
+    tex = render_resume_tex(parse_markdown_resume("# T\n\n## Skills\n\n- x\n"),
+                            compact=True, compact_tier=3)
+    assert r"before=\vspace{-1.5pt}" in tex
+    assert r"\titlerule \vspace{-8.5pt}" in tex
 
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
@@ -1634,8 +1711,9 @@ def test_full_pages_never_print_below_the_sheet_edge(tmp_path):
     import pdfplumber
 
     data = parse_markdown_resume(_overflow_resume_markdown())
-    renders = [("base", {}), ("compact", {"compact": True,
-                                          "compact_tier": 2})]
+    renders = [("base", {}), ("compact_balanced", {"compact": True,
+                                                   "compact_tier": 2}),
+               ("compact_floor", {"compact": True, "compact_tier": 3})]
     for label, kwargs in renders:
         pdf = latex_to_pdf(render_resume_tex(data, **kwargs),
                            tmp_path, f"{label}.pdf")

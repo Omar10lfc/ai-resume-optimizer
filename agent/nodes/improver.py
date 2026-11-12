@@ -9,6 +9,7 @@ from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
 from ..helpers import (_safe_print, _strip_code_fences, _filter_hallucinated_sections,
                        _tame_unicode_bullets, find_unevidenced_metric_claims,
+                       find_dropped_source_metrics,
                        scrub_unsupported_content, extract_declined_requests,
                        accumulate_unique, preserve_contact_links)
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -156,11 +157,27 @@ def _postprocess_draft(state: AgentState, draft: str, current_iter: int) -> dict
     # drops one of the candidate's own header links loses identity data no
     # reviewer can see. Deterministic restore on every writer pass; the
     # polisher reassembles around the draft's header line, so this tail
-    # covers both paths.
-    final_text, restored_links = preserve_contact_links(
+    # covers both paths. Placeholder sanitation (run bf0f7941) rides the
+    # same pass: "N/A" / "TBD" tokens in the contact line are fake fields,
+    # and a restored link must never land after one.
+    final_text, restored_links, removed_placeholders = preserve_contact_links(
         final_text, state.get('resume_text') or '')
     guardrail += [f"restored dropped contact link: {t}"
                   for t in restored_links]
+    guardrail += [f"removed placeholder token from the contact line: {t}"
+                  for t in removed_placeholders]
+
+    # Dropped-evidence tripwire (run bf0f7941, Nov 12 2026): a rewrite that
+    # loses a source accomplishment's quantified evidence (the Smart
+    # Lecture WER claim) weakened the resume silently - removals were []
+    # and nothing recorded it. Tailoring may condense, so this surfaces
+    # the loss for the user instead of deciding for them.
+    dropped_evidence = find_dropped_source_metrics(
+        final_text, state.get('resume_text') or '')
+    if dropped_evidence:
+        _safe_print(f"   [Integrity] Source evidence metric(s) no longer "
+                    f"in the resume: {len(dropped_evidence)} finding(s)")
+    guardrail += dropped_evidence
 
     return {
         "optimized_resume": final_text,

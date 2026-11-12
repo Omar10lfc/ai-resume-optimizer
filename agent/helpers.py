@@ -315,6 +315,53 @@ def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
     return claims
 
 
+def find_dropped_source_metrics(final_text: str, source_resume: str,
+                                max_findings: int = 6) -> list[str]:
+    """The mirror of find_unevidenced_metric_claims: metric-shaped evidence
+    (percentages / X-factors / ms rates - same token class) that a SOURCE
+    accomplishment bullet carries but the final resume no longer mentions.
+
+    Run bf0f7941 (Nov 12 2026): the writer's rewrite of the Smart Lecture
+    entry shipped only the semantic-search half; the WER/transcription
+    accomplishment (51.7%, WER 42.69 -> 20.61) vanished without a trace -
+    removals were [], so no deterministic step recorded it, and the PDF
+    could not be told apart from a resume that never had the claim. Tailoring
+    legitimately condenses, so this only SURFACES the loss in the integrity
+    channel (a deterministic re-insertion could not reconstruct the sentence
+    around the number); the user decides whether the condensed form is
+    acceptable.
+
+    Only source BULLET lines count (accomplishments, not headers or contact
+    lines). Same whitespace-insensitive matching as the added-metric
+    tripwire so spaced variants never read as present/absent by accident.
+    """
+    if not final_text or not source_resume:
+        return []
+    final_compact = re.sub(r"\s+", "", (final_text or "").lower())
+    findings: list[str] = []
+    for raw in source_resume.splitlines():
+        line = raw.strip()
+        if not _BULLET_MARKER_RE.match(line):
+            continue
+        metrics = [m.group(1) for m in _METRIC_TOKEN_RE.finditer(line)]
+        if not metrics:
+            continue
+        missing = sorted({m for m in metrics
+                          if re.sub(r"\s+", "", m.lower()) not in
+                          final_compact})
+        if not missing:
+            continue
+        quote = line
+        if len(quote) > 60:
+            quote = quote[:57].rstrip() + "..."
+        findings.append(
+            f"source evidence metric(s) {', '.join(missing)} no longer in "
+            f"the resume (from: '{quote}')")
+        if len(findings) >= max_findings:
+            break
+    return findings
+
+
 # ============================================================
 # Deterministic fabrication scrubber
 # ============================================================
@@ -844,32 +891,31 @@ def _header_region_lines(text: str, limit: int = 8) -> list[str]:
     return out
 
 
-def preserve_contact_links(draft: str,
-                           source_resume: str) -> tuple[str, list[str]]:
+def _contact_placeholder_tokens() -> list[str]:
+    """Placeholder tokens a writer pass can emit in a contact line when a
+    field has no value (run bf0f7941, Nov 12 2026: the draft shipped
+    "...github.com/Omar10lfc | N/A | ..." and the link restoration then
+    appended right after the fake token). Pipe-delimited tokens only."""
+    return ["n/a", "na", "n.a.", "tbd", "none", "null"]
+
+
+def preserve_contact_links(
+        draft: str,
+        source_resume: str) -> tuple[str, list[str], list[str]]:
     """Re-injects source-header contact links that the rewritten draft's
     header lost; also strips a dangling trailing "|" from the draft's
-    contact line (run 124f40cb shipped "...github.com/Omar10lfc |").
+    contact line (run 124f40cb shipped "...github.com/Omar10lfc |") and
+    placeholder tokens (N/A / TBD / ...) standing in for an absent field
+    (run bf0f7941 shipped "...github.com/Omar10lfc | N/A | ...").
 
-    Returns (draft, restored_tokens) with tokens in display form (scheme
-    stripped). Idempotent: an already-complete header restores nothing and
-    the text passes through unchanged. Only the header REGION is compared -
-    links in the body are content and have their own integrity paths.
+    Returns (draft, restored_tokens, removed_placeholders) with tokens in
+    display form (scheme stripped). Idempotent: an already-complete header
+    restores nothing and the text passes through unchanged. Only the header
+    REGION is compared - links in the body are content and have their own
+    integrity paths.
     """
     if not draft or not source_resume:
-        return draft, []
-    src_tokens: dict[str, str] = {}
-    for line in _header_region_lines(source_resume):
-        for m in _LINK_TOKEN_RE.finditer(line):
-            tok = m.group(0)
-            norm = _norm_link(tok)
-            schemeless_bare_host = (
-                "/" not in norm
-                and not tok.lower().startswith(("http://", "https://", "www.")))
-            if schemeless_bare_host:
-                continue  # an email domain or bare TLD, never a profile link
-            src_tokens.setdefault(norm, tok)
-    if not src_tokens:
-        return draft, []
+        return draft, [], []
 
     lines = draft.split("\n")
     region_idx: list[int] = []
@@ -889,32 +935,63 @@ def preserve_contact_links(draft: str,
         if len(region_idx) >= 6:
             break
     if not region_idx:
-        return draft, []
-    present = {_norm_link(m.group(0))
-               for i in region_idx
-               for m in _LINK_TOKEN_RE.finditer(lines[i])}
-    missing = [tok for norm, tok in src_tokens.items() if norm not in present]
-    if not missing:
-        return draft, []
+        return draft, [], []
 
+    # Placeholder sanitation first, so a restored link never lands after a
+    # fake "N/A" token. A contact line keeps at least two tokens.
+    removed: list[str] = []
+    changed = False
     contact_idx = None
     for i in region_idx:
         if ("|" in lines[i] or "http" in lines[i].lower() or "@" in lines[i]):
             contact_idx = i
     if contact_idx is None:
         contact_idx = region_idx[-1]
+    placeholders = set(_contact_placeholder_tokens())
+    parts = [p.strip() for p in lines[contact_idx].split("|")]
+    kept = [p for p in parts if p and p.lower() not in placeholders]
+    if len(kept) != len(parts) and len(kept) >= 2:
+        removed = [p for p in parts if p and p.lower() in placeholders]
+        lines[contact_idx] = " | ".join(kept)
+        changed = True
+        if removed:
+            _safe_print(f"   [Contact] Removed placeholder token(s) from "
+                        f"the contact line: {', '.join(removed)}")
+
+    src_tokens: dict[str, str] = {}
+    for line in _header_region_lines(source_resume):
+        for m in _LINK_TOKEN_RE.finditer(line):
+            tok = m.group(0)
+            norm = _norm_link(tok)
+            schemeless_bare_host = (
+                "/" not in norm
+                and not tok.lower().startswith(("http://", "https://", "www.")))
+            if schemeless_bare_host:
+                continue  # an email domain or bare TLD, never a profile link
+            src_tokens.setdefault(norm, tok)
+
+    present = {_norm_link(m.group(0))
+               for i in region_idx
+               for m in _LINK_TOKEN_RE.finditer(lines[i])}
+    missing = [tok for norm, tok in src_tokens.items() if norm not in present]
+
     restored: list[str] = []
-    add: list[str] = []
-    for tok in missing:
-        add.append(tok if tok.lower().startswith(("http://", "https://"))
-                   else "https://" + tok)
-        restored.append(re.sub(r"^(?:https?://|www\.)", "", tok,
-                               flags=re.IGNORECASE).rstrip("/"))
-    contact = re.sub(r"\s*\|\s*$", "", lines[contact_idx].rstrip())
-    lines[contact_idx] = contact + " | " + " | ".join(add)
-    _safe_print(f"   [Contact] Restored dropped contact link(s): "
-                f"{', '.join(restored)}")
-    return "\n".join(lines), restored
+    if missing:
+        add: list[str] = []
+        for tok in missing:
+            add.append(tok if tok.lower().startswith(("http://", "https://"))
+                       else "https://" + tok)
+            restored.append(re.sub(r"^(?:https?://|www\.)", "", tok,
+                                   flags=re.IGNORECASE).rstrip("/"))
+        contact = re.sub(r"\s*\|\s*$", "", lines[contact_idx].rstrip())
+        lines[contact_idx] = contact + " | " + " | ".join(add)
+        changed = True
+        if restored:
+            _safe_print(f"   [Contact] Restored dropped contact link(s): "
+                        f"{', '.join(restored)}")
+    if not changed:
+        return draft, [], []
+    return "\n".join(lines), restored, removed
 
 
 def accumulate_unique(existing: Optional[list], added: Optional[list]) -> list:

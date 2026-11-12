@@ -1247,48 +1247,135 @@ def test_preserve_contact_links_restores_links_the_rewrite_dropped():
         "## Professional Summary\n"
         "Experienced AI/ML engineer.\n"
     )
-    fixed, restored = agent.preserve_contact_links(draft, source)
+    fixed, restored, placeholders = agent.preserve_contact_links(draft, source)
     assert restored == ["huggingface.co/Omar10lfc"]
+    assert placeholders == []
     assert "https://huggingface.co/Omar10lfc" in fixed
     # the dangling separator is gone and the link sits at the line's end
     assert "github.com/Omar10lfc | https://huggingface.co/Omar10lfc" in fixed
     assert not fixed.splitlines()[1].rstrip().endswith("|")
     # idempotent: a second pass restores nothing and changes nothing
-    fixed2, restored2 = agent.preserve_contact_links(fixed, source)
-    assert restored2 == [] and fixed2 == fixed
+    fixed2, restored2, placeholders2 = agent.preserve_contact_links(fixed,
+                                                                   source)
+    assert restored2 == [] and placeholders2 == [] and fixed2 == fixed
     # a complete draft is untouched
     complete = draft.replace(
         "https://github.com/Omar10lfc |",
         "https://github.com/Omar10lfc | https://huggingface.co/Omar10lfc")
-    same, restored3 = agent.preserve_contact_links(complete, source)
-    assert restored3 == [] and same == complete
+    same, restored3, placeholders3 = agent.preserve_contact_links(complete,
+                                                                 source)
+    assert restored3 == [] and placeholders3 == [] and same == complete
     # an email domain inside the source header can never be re-injected
     assert "| gmail.com" not in fixed and "https://gmail.com" not in fixed
 
 
+def test_preserve_contact_links_strips_placeholder_tokens():
+    """Run bf0f7941 (Nov 12 2026): the writer's draft emitted a literal
+    "N/A" placeholder in the contact line where a field had no value, and
+    the link restoration then appended right after it - the PDF printed
+    "...github.com/Omar10lfc | N/A | huggingface.co/Omar10lfc". Placeholder
+    tokens are fake fields: stripped before restoration, surfaced in the
+    return, idempotent, and a line keeps at least two tokens."""
+    source = (
+        "Omar Mashaly\n"
+        "[linkedin.com/in/omar | github.com/omar | huggingface.co/omar]"
+        "(https://linkedin.com/in/omar)\n"
+        "SUMMARY\n"
+        "AI engineer.\n"
+    )
+    draft = (
+        "# Omar Mashaly\n"
+        "Alexandria, Egypt | omarmashaly86@gmail.com | "
+        "https://linkedin.com/in/omar | https://github.com/omar | N/A |\n"
+        "\n"
+        "## Professional Summary\n"
+        "AI engineer.\n"
+    )
+    fixed, restored, removed = agent.preserve_contact_links(draft, source)
+    assert removed == ["N/A"]
+    assert restored == ["huggingface.co/omar"]
+    assert " | N/A" not in fixed and "N/A |" not in fixed
+    # the restored link lands directly after the last real token
+    assert "https://github.com/omar | https://huggingface.co/omar" in fixed
+    # idempotent
+    fixed2, restored2, removed2 = agent.preserve_contact_links(fixed, source)
+    assert fixed2 == fixed and restored2 == [] and removed2 == []
+    # a degenerate line ("Name | N/A") is never stripped below two tokens
+    thin = "# Jane Roe\nJane Roe | N/A\n\n## Summary\nx\n"
+    same, restored4, removed4 = agent.preserve_contact_links(
+        thin, "Jane Roe\nSUMMARY\nx\n")
+    assert same == thin and restored4 == [] and removed4 == []
+
+
 def test_improver_postprocess_restores_dropped_contact_links():
     """The guard rides the shared writer tail (_postprocess_draft), so both
-    the improver and the polisher passes restore identity links and surface
-    them in the guardrail channel."""
+    the improver and the polisher passes restore identity links, strip
+    placeholder tokens, and surface dropped source evidence in the
+    guardrail channel."""
     source = (
         "Jane Roe\n"
         "[linkedin.com/in/jane | github.com/jane | huggingface.co/jane]"
         "(https://linkedin.com/in/jane)\n"
         "SUMMARY\n"
         "Python developer.\n"
+        "- Cut inference cost 40% with response caching\n"
     )
     state = {"resume_text": source, "human_notes": "", "missing_skills": "",
              "iteration": 1, "scrub_removals": [], "unevidenced_metrics": [],
              "declined_requests": []}
     draft = ("# Jane Roe\n"
-             "https://linkedin.com/in/jane | https://github.com/jane\n"
+             "https://linkedin.com/in/jane | https://github.com/jane | N/A\n"
              "\n"
              "## Summary\n"
              "Python developer.\n")
     out = agent.nodes.improver._postprocess_draft(state, draft, 1)
-    assert "https://huggingface.co/jane" in out["optimized_resume"]
+    body = out["optimized_resume"]
+    assert "https://huggingface.co/jane" in body
+    assert " | N/A" not in body and "N/A" not in body.splitlines()[1]
+    assert "40%" not in body  # the draft dropped the source metric
     assert any("restored dropped contact link: huggingface.co/jane" in w
                for w in out["guardrail_warnings"])
+    assert any("removed placeholder token from the contact line: N/A" in w
+               for w in out["guardrail_warnings"])
+    assert any("source evidence metric(s) 40% no longer in the resume" in w
+               for w in out["guardrail_warnings"])
+
+
+def test_find_dropped_source_metrics_flags_the_wer_claim_loss():
+    """Run bf0f7941 (Nov 12 2026): the Smart Lecture WER/transcription
+    accomplishment vanished from the rewrite while its ROUGE-L half
+    survived as a fragment - removals were [], so nothing recorded the
+    loss. The tripwire flags only metric evidence that is genuinely gone
+    from the whole final text, and stays silent when the rewrite keeps
+    every quantified claim (the with-context run of the same pair)."""
+    source = (
+        "## Projects\n"
+        "**Smart Lecture Assistant** | Whisper | Mar 2026 - May 2026\n"
+        "- Cut Arabic transcription error rate 51.7% (WER 42.69 to 20.61) "
+        "fine-tuning Whisper-small\n"
+        "- Boosted semantic search precision 34 points (P@1 0.64 to 0.86)\n"
+    )
+    dropped = ("## Projects\n"
+               "**Smart Lecture Assistant** | Whisper | Mar 2026 - May 2026\n"
+               "- Increased semantic search precision by 34 points "
+               "(P@1 0.64 -> 0.86)\n")
+    kept = ("## Projects\n"
+            "**Smart Lecture Assistant** | Whisper | Mar 2026 - May 2026\n"
+            "- Reduced Arabic transcription error rate 51.7% "
+            "(WER 42.69 -> 20.61) by fine-tuning Whisper-small\n"
+            "- Boosted semantic search precision 34 points\n")
+    findings = agent.find_dropped_source_metrics(dropped, source)
+    assert len(findings) == 1
+    assert "51.7%" in findings[0]
+    assert "Cut Arabic transcription" in findings[0]
+    assert agent.find_dropped_source_metrics(kept, source) == []
+    # spaced variants never read as absent (same contract as the
+    # added-metric tripwire: the LLM drafts carry U+202F the source lacks)
+    spaced = ("## Projects\n"
+              "**Smart Lecture Assistant** | Whisper | Mar 2026 - May 2026\n"
+              "- Cut Arabic transcription error rate 51.7\u202f% (WER 42.69 "
+              "to 20.61) fine-tuning Whisper-small\n")
+    assert agent.find_dropped_source_metrics(spaced, source) == []
 
 
 def test_scanner_output_is_tamed_for_consumers(monkeypatch):

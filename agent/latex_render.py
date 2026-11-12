@@ -144,6 +144,27 @@ _STANDALONE_DATE_RE = re.compile(
 # — typically a leaf line under a Technical Skills (or similar) section.
 _BOLD_LABEL_RE = re.compile(r'^\s{0,3}\*\*(.+?)\*\*\s*:\s*(.*)$')
 
+# First alphabetic character lowercase = the line starts mid-sentence.
+# Bracket-led lines ('[Live Demo](...)' headers) are excluded - they are
+# header shapes, never bullet fragments.
+_ORPHAN_CONTINUATION_RE = re.compile(r"^[^A-Za-z\[\(]*[a-z]")
+
+
+def _is_orphan_continuation(stripped: str, min_len: int = 1) -> bool:
+    """True when a non-bullet line reads as a mid-sentence fragment a writer
+    pass emitted without its bullet marker (run bf0f7941, Nov 12 2026:
+    'doubled summarization ROUGE-L (13.48 -> 29.56) with AraBART.' right
+    under an entry header - it used to be gathered as a header field,
+    take the never-rendered sub slot AND drop the entry's date column).
+
+    Guards: no '|' (a wrapped header tail carries pipes and stays a header
+    field), and - for header gathering (min_len=25) - long enough that a
+    short lowercase Title-ish sub-line ('iOS Developer') is never diverted.
+    """
+    if len(stripped) < min_len or "|" in stripped:
+        return False
+    return bool(_ORPHAN_CONTINUATION_RE.match(stripped))
+
 
 def _is_plain_label_line(s: str) -> bool:
     """True for a non-bold 'label: value' leaf line (e.g. a skill row like
@@ -567,6 +588,15 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
 
     or a single combined line. Fields map to the template macro arguments:
     header / right (bold columns) and sub / sub_right (italic columns).
+
+    Orphan salvage (run bf0f7941, Nov 12 2026): a writer pass can emit a
+    bullet FRAGMENT without its "- " marker (a hard-wrapped tail or a
+    half-merged accomplishment). Such a line must never be gathered as a
+    header field: it used to take the sub slot (which the project emission
+    drops) AND trigger the >=2-header-line path that dropped the entry's
+    date column - content silently vanished from the PDF. Mid-sentence
+    lines are salvaged as entry content instead: joined onto the previous
+    bullet, or kept as their own item when no bullet exists yet.
     """
     header_lines = []
     idx = 0
@@ -588,6 +618,8 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
             # a decorative divider (---): skip it, don't treat as content
             idx += 1
             continue
+        if _is_orphan_continuation(stripped, min_len=25):
+            break  # a mid-sentence fragment - never a header field
         header_lines.append(_strip_inline(stripped))
         idx += 1
 
@@ -630,6 +662,14 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
             p = [x.strip() for x in first.split('|')]
             entry.header = _clean_field(p[0])
             entry.right = _clean_field(p[1]) if len(p) > 1 else ""
+            if len(p) > 2 and not entry.sub_right and _STANDALONE_DATE_RE.match(
+                    _clean_field(p[-1])):
+                # A trailing standalone DATE column on the first header line
+                # ("Title | stack | Mar 2026 - May 2026"): the ad-hoc
+                # p[0]/p[1] extraction used to drop it (any >=2-header-line
+                # entry lost its date - run bf0f7941's Smart Lecture row
+                # shipped dateless).
+                entry.sub_right = _clean_field(p[-1])
         elif _should_split_on_comma(first):
             p = [x.strip() for x in first.split(',')]
             entry.header = _clean_field(p[0])
@@ -680,6 +720,18 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
                 idx += 1
                 continue
             break
+        elif _is_orphan_continuation(lines[idx].strip()):
+            # Salvage (run bf0f7941): a writer pass emitted a bullet
+            # fragment without its "- " marker. Join it onto the previous
+            # bullet when one exists (a hard-wrapped tail), otherwise keep
+            # it as its own item (a broken head) - either way it renders
+            # instead of vanishing.
+            text = _strip_inline(lines[idx].strip())
+            if entry.items:
+                entry.items[-1] = f"{entry.items[-1]} {text}"
+            else:
+                entry.items.append(text)
+            idx += 1
         else:
             break
 
@@ -1361,19 +1413,29 @@ _COMPACT_BLOCK_TOKEN = "<!--COMPACT_BLOCK-->"
 #
 # Two severities ship (layout spec B, Nov 11/12 2026), selected by
 # render_compact_tiers:
-#   tier 1 "airy" (run 28e2e56f, Nov 12 2026): the tier-2 values crushed
+#   tier 1 "airy" (run 28e2e56f, Nov 12 2026): the tight values crushed
 #       the rule-to-content air to ~2.2pt of visible ink under EVERY
 #       section rule (user-reported crowding). Tier 1 restores ~3pt per
 #       section (~+18pt/page) - list-start glue -1.0pt and after-rule
 #       -6.0pt put the air back at base mode's ~4.7pt - and is adopted
 #       only when the render stays one page AND the last baseline stops
 #       above _COMPACT_BOTTOM_STOP.
-#   tier 2 "tight": the shipped values - the only unclaimed vertical
+#   tier 2 "balanced" (run 03a3ffc1, Nov 12 2026): with the Aegis context
+#       the resume grew long enough that tier-1 no longer fit one page
+#       and the old floor shipped with ~0.2pt of ink under every rule -
+#       the user's "no minimal space" defect. The floor's after-rule
+#       -8.5pt was 1.0pt past the base template's -7.5pt for zero page
+#       gain on most resumes: the balanced tier spends that point back
+#       (+6pt/page over the floor) and still fits one page on the
+#       page-full with-context resume (last baseline 775.8 of a 776pt
+#       block).
+#   tier 3 "floor": the former tight tier - the only unclaimed vertical
 #       levers after the entry-gap floors consumed the page slack.
-#       Adopted whenever they yield one page (today's acceptance rule).
+#       Adopted whenever it yields one page (today's acceptance rule).
 _COMPACT_TIER_VALUES = {
     1: {"list_start_glue": r"\vspace{-1.0pt}", "after_rule": r"\vspace{-6.0pt}"},
-    2: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-8.5pt}"},
+    2: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-7.5pt}"},
+    3: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-8.5pt}"},
 }
 
 
@@ -1396,7 +1458,7 @@ _COMPACT_OVERRIDES_TEMPLATE = r"""
 % Tier-dependent value (see _COMPACT_TIER_VALUES in latex_render.py).
 \renewcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}, topsep=0pt, before=@@LIST_START_GLUE@@]}
 % Tighter section heading + rule spacing (tier-dependent after-rule value,
-% paired with the before= start glue above; -8.5 is the tier-2 tight lever
+% paired with the before= start glue above; -8.5 is the tier-3 floor lever
 % that leaves only ~2.2pt of ink air under the rule)
 \titleformat{\section}{
   \vspace{-7pt}\scshape\raggedright\large
@@ -1480,8 +1542,10 @@ def pdf_page_count(pdf_path) -> Optional[int]:
 
 # Bottom-margin stop for the airy compact tier (layout spec B, Nov 11 2026):
 # the compact pass must keep the last text baseline AT or above this line;
-# the airy tier is only adopted when it stays inside it. The tight tier-2
-# may still cross it on pathologically long resumes (one page beats two).
+# the airy tier is only adopted when it stays inside it. The balanced tier-2
+# and the floor tier-3 may still cross it on long resumes (one page beats
+# two); their renders stay sheet-safe by construction (one page = inside
+# the 776pt block bottom).
 _COMPACT_BOTTOM_STOP = 763.2
 
 
@@ -1516,10 +1580,12 @@ def render_compact_tiers(data: ResumeData, output_dir,
 
     Compiles the airy tier-1 first and adopts it only when the render stays
     one page AND the last baseline stops above _COMPACT_BOTTOM_STOP; only
-    then does it pay the +18pt/page air cost. Otherwise the shipped tight
-    tier-2 renders and is adopted whenever it yields one page (today's
-    rule). A one-page tier-1 render that crosses the stop is kept as a
-    last-resort fallback - one deep-margin page beats a two-page resume.
+    then does it pay the +18pt/page air cost. Otherwise the balanced tier-2
+    renders and is adopted whenever it yields one page; the floor tier-3
+    (the former tight values) is the last resort for resumes even the
+    balanced tier cannot hold on one page. A one-page airy render that
+    crosses the stop is kept as a last-resort fallback - one deep-margin
+    page beats a two-page resume.
 
     Tiers compile to probe filenames first and the winner is copied onto
     ``filename``: a losing tier must never leave its (overflowing) PDF
@@ -1533,7 +1599,7 @@ def render_compact_tiers(data: ResumeData, output_dir,
     probes: dict[int, tuple[str, Optional[str]]] = {}
     fallback_tier = None
     chosen_tier = None
-    for tier in (1, 2):
+    for tier in (1, 2, 3):
         tex = render_resume_tex(data, compact=True, compact_tier=tier)
         probe = latex_to_pdf(tex, output_dir, f"__compact_tier{tier}.pdf")
         probes[tier] = (tex, probe)

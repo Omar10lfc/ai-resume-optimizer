@@ -2,6 +2,7 @@
 from .state import AgentState, ReviewOutput, SemanticVerdict, SemanticReview, SYSTEM_GUARDRAIL, _untrusted
 from .helpers import (_force_ascii, _strip_emoji_for_pdf, _strip_emoji_from_html, _strip_code_fences, _filter_hallucinated_sections, _sanitize_html_for_pdf, _html_to_pdf,
                       _tame_unicode_bullets, find_unevidenced_metric_claims,
+                      find_dropped_source_metrics,
                       scrub_unsupported_content, preserve_contact_links,
                       split_markdown_sections, canonical_feedback_section,
                       merge_rewritten_sections, extract_declined_requests)
