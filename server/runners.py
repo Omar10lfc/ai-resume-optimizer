@@ -297,6 +297,7 @@ def _stream_step1(job_description: str, resume_source: str,
 
         yield {"type": "done", "session": session, "missing_skills": missing,
                "token_usage": usage.totals(),
+               "task_usage": usage.task_totals(),
                "status": "Analysis complete - review & edit the gaps below, then run Step 2."}
 
 
@@ -712,6 +713,7 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                # lands in the runs ledger for free, since done-run payloads
                # are persisted wholesale).
                "token_usage": usage.totals(),
+               "task_usage": usage.task_totals(),
                **results_payload}
 
         # BB1: record the completed run into the persistent profile store

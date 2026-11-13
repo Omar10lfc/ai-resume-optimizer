@@ -16,6 +16,7 @@ import {
   Prohibit,
   Target,
   X,
+  Lightning,
 } from "@phosphor-icons/react";
 import type { OptimizationResult, RequirementMatch } from "../types";
 import { resolveArtifactUrl } from "../api";
@@ -23,7 +24,7 @@ import { ScoreGauge } from "./ScoreGauge";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 
-type TabId = "resume" | "cover" | "ats" | "fit" | "interview" | "integrity";
+type TabId = "resume" | "cover" | "ats" | "fit" | "interview" | "integrity" | "usage";
 
 interface ResultsDashboardProps {
   result: OptimizationResult;
@@ -83,8 +84,21 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
     ...(result.cover_letter_metrics ?? []),
   ];
   // Tabs beyond the core four exist only when this run has their content:
-  // Fit (MR2 requirement table) and Integrity (QW2/QW3 channels).
+  // Fit (MR2 requirement table), Integrity (QW2/QW3 channels), Usage (MR5
+  // per-task token accounting).
   const fitRows = (result.requirement_matches ?? []) as RequirementMatch[];
+  const taskUsage = result.task_usage ?? {};
+  const usageRows = Object.entries(taskUsage);
+  const usageTotals = usageRows.length
+    ? usageRows.reduce(
+        (acc, [, s]) => ({
+          prompt_tokens: acc.prompt_tokens + s.prompt_tokens,
+          completion_tokens: acc.completion_tokens + s.completion_tokens,
+          total_tokens: acc.total_tokens + s.total_tokens,
+          llm_calls: acc.llm_calls + s.llm_calls,
+        }),
+        { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, llm_calls: 0 })
+    : null;
   const effectiveTabs: Array<{ id: TabId; label: string; icon: React.ElementType }> = [
     ...TABS,
   ];
@@ -93,6 +107,9 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   }
   if (integrityList.length > 0) {
     effectiveTabs.push({ id: "integrity" as TabId, label: "Integrity", icon: ShieldWarning });
+  }
+  if (usageRows.length > 0) {
+    effectiveTabs.push({ id: "usage" as TabId, label: "Usage", icon: Lightning });
   }
 
   // Artifact URLs resolve against the configured backend base. Resolution is
@@ -148,6 +165,11 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   const fitCopy = fitRows.length
     ? `Requirement fit (${fitCounts![0]}/${fitRows.length} fully covered):\n` +
       fitRows.map((r) => `[${r.status.toUpperCase()}] ${r.requirement} — ${r.reason}`).join("\n")
+    : "";
+  const usageCopy = usageRows.length
+    ? `Per-task token usage (${usageTotals!.llm_calls} LLM calls, ${usageTotals!.total_tokens} tokens):\n` +
+      usageRows.map(([task, s]) =>
+        `${task}: ${s.llm_calls} ${s.llm_calls === 1 ? "call" : "calls"}, ${s.prompt_tokens} in / ${s.completion_tokens} out`).join("\n")
     : "";
 
   const renderCopyRow = (label: string, text: string) => (
@@ -451,6 +473,37 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                 <span className="text-2xs text-ink-3 font-mono leading-relaxed break-all">
                   prompts: {Object.values(result.prompt_versions ?? {}).join(" · ")}
                 </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "usage" && (
+          <div id="panel-usage" role="tabpanel" aria-labelledby="tab-usage" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
+            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-line">
+              <span className="text-2xs text-ink-3 font-mono">Token accounting per pipeline stage (from the provider's usage, in code)</span>
+              {renderCopyRow("usage", usageCopy)}
+            </div>
+
+            <p className="text-2xs text-ink-3 leading-relaxed mb-3">
+              What each stage actually spent on this run. Task names match the prompt stamps shown on the Fit tab, so a suspicious cost points straight at the stage (and prompt version) that ran it.
+            </p>
+            <ul className="space-y-1.5">
+              {usageRows.map(([task, s]) => (
+                <li key={`usage-${task}`} className="flex items-center gap-2 px-3 py-2 rounded-md2 bg-surface border border-line text-2xs">
+                  <span className="flex-1 min-w-0 font-mono text-ink truncate">{task}</span>
+                  <span className="font-mono text-ink-3 shrink-0">{s.llm_calls} {s.llm_calls === 1 ? "call" : "calls"}</span>
+                  <span className="font-mono text-ink-3 shrink-0">{s.prompt_tokens} in / {s.completion_tokens} out</span>
+                  <span className="font-mono text-ink font-semibold shrink-0 w-16 text-right">{s.total_tokens}</span>
+                </li>
+              ))}
+            </ul>
+            {usageTotals && (
+              <div className="pt-3 mt-3 border-t border-line flex items-center gap-3 text-2xs">
+                <span className="text-ink-2 font-semibold uppercase tracking-wide flex-1">Total</span>
+                <span className="font-mono text-ink-3 shrink-0">{usageTotals.llm_calls} {usageTotals.llm_calls === 1 ? "call" : "calls"}</span>
+                <span className="font-mono text-ink-3 shrink-0">{usageTotals.prompt_tokens} in / {usageTotals.completion_tokens} out</span>
+                <span className="font-mono text-ink font-semibold shrink-0 w-16 text-right">{usageTotals.total_tokens}</span>
               </div>
             )}
           </div>

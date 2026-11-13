@@ -642,6 +642,9 @@ def test_step2_result_payload_carries_integrity_and_versions(client, fake_llms, 
     assert set(usage) == {"prompt_tokens", "completion_tokens",
                           "total_tokens", "llm_calls"}
     assert usage["llm_calls"] == 0 and usage["total_tokens"] == 0
+    # The per-task view follows the same rule: no callbacks fire, so there
+    # is nothing to attribute - an EMPTY map, not zeroed buckets.
+    assert payload["task_usage"] == {}
 
 
 def test_cover_letter_fabricated_metrics_are_flagged(client, fake_llms,

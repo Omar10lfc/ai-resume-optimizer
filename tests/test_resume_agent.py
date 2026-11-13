@@ -2101,14 +2101,32 @@ def _tool_use_failed_exc(generation: str, *, with_body: bool = True):
     return Exception(f"Error code: 400 - {{'error': {err!r}}}")
 
 
+def _parse_failed_exc(generation: str):
+    """The NON-refused structured-output failure class: the tool call never
+    parsed (message differs from the 'Tool choice is required' refusal), so
+    the ladder's attempt 2 stays the schema-REPAIR retry instead of the
+    prompt-schema rung. Same body/failed_generation shape."""
+    err = {"message": "Failed to parse tool arguments for ReviewOutput",
+           "type": "invalid_request_error", "code": "invalid_tool_usage",
+           "failed_generation": generation}
+
+    class _Exc(Exception):
+        pass
+
+    exc = _Exc(f"Error code: 400 - {{'error': {err!r}}}")
+    exc.body = {"error": err}
+    return exc
+
+
 def test_salvage_parses_score_from_failed_generation(fake_llms, monkeypatch):
-    """Traces 01a15e3a/01a15f6d: on tool_use_failed the model's prose answer
-    (score + feedback) sits in body.error.failed_generation. MR5 ladder order:
-    attempt 2 is the schema REPAIR (the model sees its own answer + the schema
-    - a different payload, so the identical-bytes objection from trace
-    01a15f6d does not apply), and the prose salvage below runs only when even
-    the repair folds. This fake folds EVERY attempt, so the salvage must
-    still recover the score and avoid review_failed at the 2-call cap."""
+    """Traces 01a15e3a/01a15f6d: on a structured-output failure the model's
+    prose answer (score + feedback) sits in body.error.failed_generation.
+    MR5 ladder order: attempt 2 is the schema REPAIR (the model sees its own
+    answer + the schema - a different payload, so the identical-bytes
+    objection from trace 01a15f6d does not apply), and the prose salvage
+    below runs only when even the repair folds. This fake folds EVERY
+    attempt, so the salvage must still recover the score and avoid
+    review_failed at the 2-call cap."""
     probe = {"calls": 0}
 
     class FoldedReviewer:
@@ -2116,7 +2134,7 @@ def test_salvage_parses_score_from_failed_generation(fake_llms, monkeypatch):
             class Structured:
                 def invoke(self, messages):
                     probe["calls"] += 1
-                    raise _tool_use_failed_exc(_SALVAGE_GENERATION)
+                    raise _parse_failed_exc(_SALVAGE_GENERATION)
 
             return Structured()
 
@@ -2136,7 +2154,7 @@ def test_salvage_parses_score_from_failed_generation(fake_llms, monkeypatch):
 
 
 def test_salvage_skipped_when_generation_unparseable(fake_llms, monkeypatch):
-    """A tool_use_failed payload whose prose has NO extractable score: the
+    """A structured-output failure whose prose has NO extractable score: the
     MR5 ladder still spends its one repair attempt (the prose exists, so
     attempt 2 shows it back to the model with the schema), the salvage
     returns None on the second failure, and the reviewer degrades to
@@ -2148,7 +2166,7 @@ def test_salvage_skipped_when_generation_unparseable(fake_llms, monkeypatch):
             class Structured:
                 def invoke(self, messages):
                     probe["calls"] += 1
-                    raise _tool_use_failed_exc("I could not grade this resume.")
+                    raise _parse_failed_exc("I could not grade this resume.")
 
             return Structured()
 
@@ -2204,12 +2222,19 @@ def test_salvage_reads_wrapped_repr_errors():
 # MR5 provider ladder: uniform schema-repair retry
 # ==========================================
 
-def _foldable_llm(first_error, success_after, *, always_fail=False):
+def _foldable_llm(first_error, success_after, *, always_fail=False,
+                  plain_answers=None):
     """Fake strict LLM for direct ladder tests: raises ``first_error`` on
     attempt 1 (pass None to succeed immediately), returns ``success_after``
     on the next attempt (or keeps raising when ``always_fail``). Records
-    every attempt's message list."""
+    every attempt's message list. ``plain_answers`` scripts the prompt-schema
+    rung's PLAIN ``llm.invoke`` calls (the json_schema attempt): each call
+    pops the next item - a content string (wrapped in an AIMessage) or a
+    BaseException to raise - and its message lists land on
+    ``Fake.plain_calls``."""
     calls = []
+    plain_calls: list = []
+    plain = list(plain_answers or [])
 
     class Fake:
         def with_structured_output(self, schema):
@@ -2222,6 +2247,15 @@ def _foldable_llm(first_error, success_after, *, always_fail=False):
 
             return Structured()
 
+        def invoke(self, messages):
+            plain_calls.append(list(messages))
+            answer = plain.pop(0) if plain else RuntimeError(
+                "no plain answer scripted")
+            if isinstance(answer, BaseException):
+                raise answer
+            return AIMessage(content=answer)
+
+    Fake.plain_calls = plain_calls
     return Fake, calls
 
 
@@ -2236,7 +2270,7 @@ def test_ladder_direct_success_is_one_call():
 
 
 def test_ladder_repair_shows_model_its_own_answer_and_schema():
-    exc = _tool_use_failed_exc(_SALVAGE_GENERATION)
+    exc = _parse_failed_exc(_SALVAGE_GENERATION)
     good = agent.ReviewOutput(score=85, feedback="ok", sections=["projects"])
     Fake, calls = _foldable_llm(exc, good)
     result, method = agent.invoke_structured_with_repair(
@@ -2269,7 +2303,7 @@ def test_ladder_plain_retry_when_failure_has_no_prose():
 
 
 def test_ladder_salvage_runs_only_after_both_attempts_fail():
-    exc = _tool_use_failed_exc(_SALVAGE_GENERATION)
+    exc = _parse_failed_exc(_SALVAGE_GENERATION)
     Fake, calls = _foldable_llm(exc, None, always_fail=True)
     salvage_seen = []
 
@@ -2322,7 +2356,7 @@ def test_extract_rung_skips_prose_that_was_never_json():
     """Reviewer prose (score sentences, no JSON) does not trigger the extract
     rung - the ladder still spends the schema-repair retry (the pre-round-8
     behavior is preserved exactly)."""
-    exc = _tool_use_failed_exc(_SALVAGE_GENERATION)
+    exc = _parse_failed_exc(_SALVAGE_GENERATION)
     good = agent.ReviewOutput(score=85, feedback="ok")
     Fake, calls = _foldable_llm(exc, good)
     result, method = agent.invoke_structured_with_repair(
@@ -2335,7 +2369,7 @@ def test_extract_rung_skips_prose_that_was_never_json():
 def test_extract_rung_rejects_json_that_fails_the_schema():
     """A candidate that parses but violates the schema is not returned - the
     ladder falls through to the repair retry."""
-    exc = _tool_use_failed_exc(
+    exc = _parse_failed_exc(
         'Here you go:\n{"score": "very high", "feedback": "ok"}')
     good = agent.ReviewOutput(score=70, feedback="ok")
     Fake, calls = _foldable_llm(exc, good)
@@ -2344,6 +2378,105 @@ def test_extract_rung_rejects_json_that_fails_the_schema():
     assert method == "repair"
     assert result is good
     assert len(calls) == 2
+
+
+# ==========================================
+# MR5c: SCHEMA_REFUSED -> the prompt-schema rung
+# ==========================================
+
+def test_schema_refused_markers_stay_tight():
+    """A match reroutes attempt 2 away from the tool binding, so the marker
+    list must not match ordinary parse/transient failures."""
+    from agent.provider import _is_schema_refused
+
+    assert _is_schema_refused(RuntimeError(
+        "Error 400: Tool choice is required, but model did not call a tool"))
+    assert _is_schema_refused(RuntimeError("tool calling is not supported"))
+    assert _is_schema_refused(RuntimeError("Tool use is not supported"))
+    assert _is_schema_refused(RuntimeError("Function calling is not supported"))
+    assert not _is_schema_refused(RuntimeError("connection reset"))
+    assert not _is_schema_refused(RuntimeError("Failed to parse tool arguments"))
+    assert not _is_schema_refused(_parse_failed_exc("Quality score: 87/100"))
+
+
+def test_ladder_schema_refused_switches_to_prompt_schema_rung():
+    """The 'Tool choice is required' flake class: the endpoint refused the
+    tool-calling contract itself, so attempt 2 does NOT retry through the
+    tool layer - it re-asks with the schema in the PROMPT (plain invoke, no
+    binding) and the code parses the answer against the schema."""
+    import json as _json
+
+    exc = _tool_use_failed_exc(
+        "Error: Tool choice is required, but model did not call a tool")
+    good_json = _json.dumps({"score": 88, "feedback": "ok",
+                             "sections": ["experience"]})
+    Fake, calls = _foldable_llm(exc, None, always_fail=True,
+                                plain_answers=[good_json])
+    result, method = agent.invoke_structured_with_repair(
+        Fake(), agent.ReviewOutput, [HumanMessage(content="grade")], label="t")
+    assert method == "json_schema"
+    assert result.score == 88
+    assert result.sections == ["experience"]
+    assert len(calls) == 1          # only attempt 1 used the tool binding
+    plain = Fake.plain_calls
+    assert len(plain) == 1
+    # The original conversation is preserved and ONE code-owned instruction
+    # carrying the JSON schema is appended - the schema travels in the
+    # prompt, never through a tool binding.
+    assert len(plain[0]) == 2
+    assert plain[0][0].content == "grade"
+    assert '"score"' in plain[0][1].content
+    assert '"sections"' in plain[0][1].content
+    assert "JSON" in plain[0][1].content
+
+
+def test_ladder_schema_refused_rejected_answer_rides_to_salvage():
+    """A prompt-schema answer that fails to parse is carried in the
+    failed_generation envelope to caller salvage - the fresh answer gets a
+    real chance (the reviewer's prose salvage parses a score out of it)."""
+    exc = _tool_use_failed_exc(
+        "Error: Tool choice is required, but model did not call a tool")
+    Fake, calls = _foldable_llm(
+        exc, None, always_fail=True,
+        plain_answers=["Combined weighted quality score: 82/100\n"
+                       "Feedback: tightened the summary."])
+    salvage_seen = []
+
+    def salvage(e):
+        salvage_seen.append(e)
+        return agent._salvage_review_output(e)
+
+    result, method = agent.invoke_structured_with_repair(
+        Fake(), agent.ReviewOutput, [HumanMessage(content="grade")],
+        salvage=salvage, label="t")
+    assert method == "salvage"
+    assert result.score == 82
+    assert len(salvage_seen) == 1
+    body = getattr(salvage_seen[0], "body", None)
+    assert body["error"]["failed_generation"].startswith(
+        "Combined weighted quality score")
+    assert len(calls) == 1          # the 2-LLM-call cap holds
+
+
+def test_ladder_schema_refused_invoke_failure_goes_to_salvage():
+    """If the prompt-schema invoke itself raises, that exception (not the
+    original refusal) is what salvage sees - and what is raised after."""
+    exc = _tool_use_failed_exc("tool calling is not supported on this endpoint")
+    Fake, calls = _foldable_llm(exc, None, always_fail=True,
+                                plain_answers=[RuntimeError("endpoint dropped")])
+    salvage_seen = []
+
+    def salvage(e):
+        salvage_seen.append(e)
+        return None
+
+    with pytest.raises(RuntimeError, match="endpoint dropped"):
+        agent.invoke_structured_with_repair(
+            Fake(), agent.ReviewOutput, [HumanMessage(content="grade")],
+            salvage=salvage, label="t")
+    assert len(salvage_seen) == 1
+    assert str(salvage_seen[0]) == "endpoint dropped"
+    assert len(calls) == 1          # the 2-LLM-call cap holds
 
 
 def test_extract_candidate_finds_first_object_and_skips_string_braces():
@@ -2419,7 +2552,7 @@ def test_repair_recovers_structured_review_with_sections(fake_llms, monkeypatch)
                 def invoke(self, messages):
                     calls.append(1)
                     if len(calls) == 1:
-                        raise _tool_use_failed_exc(_SALVAGE_GENERATION)
+                        raise _parse_failed_exc(_SALVAGE_GENERATION)
                     return agent.ReviewOutput(score=85, feedback="Fix bullets.",
                                               sections=["projects"])
 
@@ -2435,8 +2568,8 @@ def test_repair_recovers_structured_review_with_sections(fake_llms, monkeypatch)
 
 
 def test_ats_semantic_repair_recovers_verdicts(monkeypatch):
-    """The 'Tool choice is required' flake class hit the reviewer THEN the
-    ATS semantic check: attempt 2 (repair) recovers the verdicts instead of
+    """The non-refused parse-failure class (the refusal class now takes the
+    prompt-schema rung): attempt 2 (repair) recovers the verdicts instead of
     degrading keywords to missing."""
     calls = []
 
@@ -2446,7 +2579,7 @@ def test_ats_semantic_repair_recovers_verdicts(monkeypatch):
                 def invoke(self, messages):
                     calls.append(1)
                     if len(calls) == 1:
-                        raise _tool_use_failed_exc(
+                        raise _parse_failed_exc(
                             "Docker: the resume mentions building images.")
                     return agent.SemanticReview(verdicts=[
                         agent.SemanticVerdict(keyword="docker",
@@ -2527,6 +2660,109 @@ def test_token_usage_tracker_reads_llm_output_and_metadata_fallback():
         t.join()
     assert tracker4.totals() == {"prompt_tokens": 4, "completion_tokens": 4,
                                  "total_tokens": 8, "llm_calls": 4}
+
+
+def test_token_usage_tracker_attributes_tasks_via_langgraph_node():
+    """MR5: task attribution with zero node-code changes. A callback inside
+    a LangGraph node sees metadata['langgraph_node'] at START (metadata is
+    None at END - probed on langgraph 1.2.16), so the tracker captures the
+    task into a run_id map at start and attributes at on_llm_end via the
+    shared run_id. Node ids with underscores alias to the prompt_versions
+    stamp vocabulary."""
+    import uuid as _uuid
+    from types import SimpleNamespace
+
+    tracker = agent.TokenUsageTracker()
+    resp = SimpleNamespace(
+        llm_output={"token_usage": {"prompt_tokens": 2, "completion_tokens": 1}},
+        generations=[])
+
+    for node, expected in (("ats_check", "ats-semantic"),
+                           ("scanner", "scanner"),
+                           ("improver", "improver")):
+        run = _uuid.uuid4()
+        tracker.on_chat_model_start(None, [], run_id=run,
+                                    metadata={"langgraph_node": node})
+        tracker.on_llm_end(resp, run_id=run)
+        assert tracker.task_totals()[expected]["llm_calls"] == 1
+
+    assert tracker.totals() == {"prompt_tokens": 6, "completion_tokens": 3,
+                                "total_tokens": 9, "llm_calls": 3}
+    assert tracker.task_totals() == {
+        "ats-semantic": {"prompt_tokens": 2, "completion_tokens": 1,
+                         "total_tokens": 3, "llm_calls": 1},
+        "improver": {"prompt_tokens": 2, "completion_tokens": 1,
+                     "total_tokens": 3, "llm_calls": 1},
+        "scanner": {"prompt_tokens": 2, "completion_tokens": 1,
+                    "total_tokens": 3, "llm_calls": 1},
+    }
+
+
+def test_token_usage_tracker_unknown_bucket_and_garbage_metadata():
+    """No captured start (run_id=None, unusable metadata) buckets as
+    'unknown' and never raises."""
+    import uuid as _uuid
+    from types import SimpleNamespace
+
+    tracker = agent.TokenUsageTracker()
+    resp = SimpleNamespace(
+        llm_output={"token_usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+        generations=[])
+    # Existing direct on_llm_end calls (fakes that replace whole chains)
+    # carry no run_id at all.
+    tracker.on_llm_end(resp)
+    # Garbage metadata: wrong type, then an empty dict.
+    run = _uuid.uuid4()
+    tracker.on_chat_model_start(None, [], run_id=run, metadata="not-a-dict")
+    tracker.on_llm_end(resp, run_id=run)
+    run = _uuid.uuid4()
+    tracker.on_llm_start(None, ["p"], run_id=run, metadata={})
+    tracker.on_llm_end(resp, run_id=run)
+    totals = tracker.task_totals()
+    assert set(totals) == {"unknown"}
+    assert totals["unknown"] == {"prompt_tokens": 3, "completion_tokens": 3,
+                                 "total_tokens": 6, "llm_calls": 3}
+
+
+def test_token_usage_tracker_on_llm_error_drops_the_run_mapping():
+    """A failed call produces no usage; the START-time mapping is popped so
+    the map cannot leak across the segment."""
+    import uuid as _uuid
+
+    tracker = agent.TokenUsageTracker()
+    run = _uuid.uuid4()
+    tracker.on_chat_model_start(None, [], run_id=run,
+                                metadata={"langgraph_node": "reviewer"})
+    tracker.on_llm_error(RuntimeError("boom"), run_id=run)
+    assert tracker.task_totals() == {}
+    assert tracker.totals()["llm_calls"] == 0
+
+
+def test_token_usage_tracker_task_attribution_is_thread_safe():
+    """The fan-out (cover letter + prep) attributes concurrently."""
+    import threading
+    import uuid as _uuid
+    from types import SimpleNamespace
+
+    tracker = agent.TokenUsageTracker()
+    resp = SimpleNamespace(
+        llm_output={"token_usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+        generations=[])
+
+    def work():
+        run = _uuid.uuid4()
+        tracker.on_chat_model_start(None, [], run_id=run,
+                                    metadata={"langgraph_node": "cover_letter"})
+        tracker.on_llm_end(resp, run_id=run)
+
+    threads = [threading.Thread(target=work) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert tracker.task_totals() == {
+        "cover-letter": {"prompt_tokens": 4, "completion_tokens": 4,
+                         "total_tokens": 8, "llm_calls": 4}}
 
 
 # ==========================================

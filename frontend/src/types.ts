@@ -46,6 +46,14 @@ export interface OptimizationResult {
    *  the request opts in (include_diff=original) - powers DiffView for
    *  uploads; paste mode falls back to the client-held text. */
   original_resume?: string;
+  /** MR5: per-task token accounting, keys matching the prompt_versions
+   *  stamps (scanner/improver/reviewer/ats-semantic/polisher/cover-letter/
+   *  interview-prep). Empty when the run produced no per-task attribution
+   *  (fakes that bypass the callback layer). */
+  task_usage?: Record<
+    string,
+    { prompt_tokens: number; completion_tokens: number; total_tokens: number; llm_calls: number }
+  >;
 }
 
 export type PipelineStage =

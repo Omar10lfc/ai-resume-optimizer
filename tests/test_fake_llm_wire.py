@@ -241,6 +241,9 @@ def test_step1_over_the_wire_returns_gaps_after_single_llm_call(client, wire_llm
     # this run's only completion, and the fake server reports 1/1 tokens.
     assert done["token_usage"] == {"prompt_tokens": 1, "completion_tokens": 1,
                                    "total_tokens": 2, "llm_calls": 1}
+    assert done["task_usage"] == {
+        "scanner": {"prompt_tokens": 1, "completion_tokens": 1,
+                    "total_tokens": 2, "llm_calls": 1}}
     assert any("(step 1 of 2)" in s for s in _statuses(events))
     assert any("Loading documents..." in s for s in _statuses(events))
 
@@ -302,6 +305,25 @@ def test_step2_over_the_wire_end_to_end(client, wire_llms, monkeypatch):
     # fresh step-2 makes exactly 9 completions (tool sequence below).
     assert result["token_usage"] == {"prompt_tokens": 9, "completion_tokens": 9,
                                      "total_tokens": 18, "llm_calls": 9}
+    # The per-task split (keys = prompt_versions stamp vocabulary): the
+    # reviewer and the ATS semantic check run TWICE (the two improvement
+    # rounds), everything else once.
+    assert result["task_usage"] == {
+        "ats-semantic": {"prompt_tokens": 2, "completion_tokens": 2,
+                         "total_tokens": 4, "llm_calls": 2},
+        "cover-letter": {"prompt_tokens": 1, "completion_tokens": 1,
+                         "total_tokens": 2, "llm_calls": 1},
+        "improver": {"prompt_tokens": 1, "completion_tokens": 1,
+                     "total_tokens": 2, "llm_calls": 1},
+        "interview-prep": {"prompt_tokens": 1, "completion_tokens": 1,
+                           "total_tokens": 2, "llm_calls": 1},
+        "polisher": {"prompt_tokens": 1, "completion_tokens": 1,
+                     "total_tokens": 2, "llm_calls": 1},
+        "reviewer": {"prompt_tokens": 2, "completion_tokens": 2,
+                     "total_tokens": 4, "llm_calls": 2},
+        "scanner": {"prompt_tokens": 1, "completion_tokens": 1,
+                    "total_tokens": 2, "llm_calls": 1},
+    }
 
     # BB1: the completed run was auto-recorded into the persistent profile
     # store - one application (the parsed evidence texts, not the raw
