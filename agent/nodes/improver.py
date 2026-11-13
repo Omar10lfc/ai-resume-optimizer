@@ -7,6 +7,8 @@ post-processing tail. The polisher (agent/nodes/polisher.py) reuses this
 module's full-rewrite path as its fallback mode and runs its own
 section-targeted mode on top.
 """
+from typing import Optional
+
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
 from ..helpers import (_safe_print, _filter_hallucinated_sections,
@@ -32,6 +34,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 # integrity note, and a total writer failure falls back to the source
 # verbatim instead of killing the run.
 IMPROVER_PROMPT_VERSION = "improver@4"
+
+# Round 11 (Nov 13 2026): the deterministic context weave-in. When the
+# post-processing tail finds notes-sourced terms the final draft dropped,
+# ONE extra structured pass offers to re-weave them; adoption is decided in
+# code (the woven draft re-enters the same patch stack and is kept only if
+# the unused-term count strictly decreases). Stamped on attempt, whether or
+# not the weave is adopted.
+CONTEXT_WEAVE_PROMPT_VERSION = "weave@1"
 
 
 def _build_improver_prompt(state: AgentState, units) -> str:
@@ -159,15 +169,16 @@ def _make_improver_salvage(units):
     return _salvage
 
 
-def _postprocess_draft(state: AgentState, draft: str, current_iter: int) -> dict:
-    """Deterministic enforcement tail shared by the improver and the polisher.
-
-    Chain (in order): decline-protocol parsing -> hallucinated-section
-    filter -> fabrication scrubber -> unevidenced-metric tripwire. Accumulates
-    the QW2/QW3 channels (declined_requests, scrub_removals,
-    unevidenced_metrics) across passes; guardrail_warnings keeps its existing
-    last-pass contract (server relays the final list as one warning event).
-    """
+def _patch_stack(state: AgentState, draft: str) -> tuple[
+        str, list[str], list[str], list[str], list[str], list[str]]:
+    """The deterministic patch stack shared by the improver and the polisher
+    (round 11 extraction so the context weave can re-run it on a woven
+    draft). Chain (in order): decline-protocol parsing -> unicode bullet
+    taming -> hallucinated-section filter -> fabrication scrubber ->
+    unevidenced-metric tripwire -> contact-link guard -> dropped-evidence
+    tripwire -> unused-context tripwire. Prints and guardrail order are
+    preserved verbatim. Returns ``(final_text, guardrail, scrub_removals,
+    unevidenced, declined, unused_context)``."""
     # The writer's DECLINED: lines are protocol, not resume content: strip
     # them before any downstream consumer (ATS, LaTeX, PDF) can see them.
     draft, declined = extract_declined_requests(draft)
@@ -253,7 +264,171 @@ def _postprocess_draft(state: AgentState, draft: str, current_iter: int) -> dict
     guardrail += [f"user-context term not in the final resume: {t}"
                   for t in unused_context]
 
-    return {
+    return (final_text, guardrail, removals, warnings, declined,
+            unused_context)
+
+
+def _build_context_weave_prompt(state: AgentState, units, terms: list[str]) -> str:
+    """The one-shot weave prompt (round 11): the writer sees the CURRENT
+    draft's units - NOT the source, so first-pass rewrites are never lost -
+    and the exact "DROPPED CONTEXT TERMS" marker the tests and the fake
+    server key on. The job description is omitted on purpose: the draft is
+    already role-shaped, and this is a repair pass, not a re-tailor."""
+    notes = str(state.get('human_notes') or '')
+    if len(notes) > 2000:
+        notes = notes[:2000] + " ... [truncated]"
+
+    if units.whole_document:
+        units_block = (
+            f'[id="{RESUME_UNIT_ID}"] (the ENTIRE current draft, shown in '
+            "full):\n"
+            f"{units.sections[0].body}")
+        delivery = (
+            "HOW DELIVERY WORKS - whole-document mode: the entire draft is"
+            "\none unit. Return a replacement for it whose body is the"
+            "\ncomplete rewoven resume (same shape and order as the draft)."
+            "\nReturning an EMPTY sections list keeps the draft verbatim. Do"
+            "\nnot return any other section id in this mode.")
+    else:
+        listed = "\n\n".join(
+            f'[id="{u.id}"] (draft heading: "{u.heading_line}")\n{u.body}'
+            for u in units.sections)
+        units_block = (
+            "DRAFT UNITS (the delivery code reassembles the document from"
+            "\nwhat you return; any unit you do not return ships VERBATIM):\n"
+            f"{listed}")
+        delivery = (
+            "HOW DELIVERY WORKS - by-section mode: every returned section"
+            "\nreplaces ONLY its unit's body (the heading line is kept by"
+            "\nthe delivery code); units you skip ship byte-identical. Return"
+            "\nONLY the sections you actually change - a minimal answer is"
+            "\nthe expected one. Returned ids the draft does not offer are"
+            "\nDROPPED with an integrity note - only use the ids listed"
+            "\nabove.")
+
+    return f"""
+    You are an expert Resume Writer performing a TARGETED REPAIR pass.
+
+    TASK: a deterministic check found terms from the user's typed notes that
+    the current draft never mentions. Re-weave that context into the draft
+    faithfully. Return a STRUCTURED answer through the ImproverOutput tool -
+    the delivery code assembles the document deterministically from what you
+    return, trusting nothing.
+
+    {delivery}
+
+    DROPPED CONTEXT TERMS: {', '.join(terms)}
+
+    RULES:
+    1. TRUTHFULNESS GATE: weave only what the USER CONTEXT actually
+       supports. Never invent projects, jobs, tools, integrations,
+       credentials, or numbers in order to place a term. If a term cannot
+       be woven truthfully, do NOT force it - decline it instead.
+    2. METRIC INTEGRITY (zero tolerance): every number in your output must
+       be copied from the USER CONTEXT or already present in the draft.
+       Never coin, copy, or round numbers from anywhere else.
+    3. PRESERVE ALL REAL LINKS and the identity header exactly as the draft
+       shows them; never drop GitHub links, live demos, portfolio URLs,
+       LinkedIn profile links, or email addresses.
+    4. This is a weave, not a rewrite: keep the draft's wording, structure,
+       and section order otherwise intact, and weave each term into the
+       most fitting existing section body (Projects / Experience / Summary
+       / Skills as fits).
+    5. DECLINE PROTOCOL: any dropped term you cannot truthfully weave goes
+       in `declined`, one short restatement per item, e.g.:
+           "Experience with k8s"
+       Never omit a dropped term silently.
+
+    {_untrusted('USER NOTES', notes)}
+
+    {_untrusted('CURRENT DRAFT UNITS', units_block)}
+
+    ANSWER SHAPE: return ONLY the ImproverOutput tool call:
+        sections: [{{"id": <unit id>, "body": <markdown body, no heading line>}}, ...]
+        declined: ["<refused term>", ...]
+    Do NOT wrap the answer in code fences.
+    """
+
+
+def _context_weave_pass(state: AgentState, draft: str, terms: list[str]
+                        ) -> tuple[Optional[str], list[str], list[str]]:
+    """The one-shot targeted weave pass (round 11): parses the CURRENT draft
+    into units and asks the writer to re-weave the dropped context terms.
+    Returns ``(assembled, structured_declined, assembly_warnings)``, or
+    ``(None, [], [])`` when the structured call fails entirely - the caller
+    then keeps the detection-only warning with no content change."""
+    units = parse_resume_units(draft)
+    messages = [
+        SystemMessage(content=SYSTEM_GUARDRAIL),
+        HumanMessage(content=_build_context_weave_prompt(state, units, terms)),
+    ]
+    try:
+        answer, _method = invoke_structured_with_repair(
+            _llms.llm_creative, ImproverOutput, messages,
+            salvage=_make_improver_salvage(units), label="context-weave")
+    except Exception as exc:
+        _safe_print(f"   [context-weave] structured pass unavailable "
+                    f"({exc}) - keeping the detection-only warning")
+        return None, [], []
+    assembled, assembly_warnings, structured_declined = \
+        assemble_resume_units(units, answer)
+    return assembled, structured_declined, assembly_warnings
+
+
+def _postprocess_draft(state: AgentState, draft: str, current_iter: int, *,
+                       allow_context_weave: bool = True) -> dict:
+    """Deterministic enforcement tail shared by the improver and the polisher.
+
+    Chain (in order): decline-protocol parsing -> hallucinated-section
+    filter -> fabrication scrubber -> unevidenced-metric tripwire ->
+    contact-link guard -> dropped-evidence tripwire -> unused-context
+    tripwire (all in ``_patch_stack``). Accumulates the QW2/QW3 channels
+    (declined_requests, scrub_removals, unevidenced_metrics) across passes;
+    guardrail_warnings keeps its existing last-pass contract (server relays
+    the final list as one warning event).
+
+    Round 11 context weave-in: when the patch stack finds notes-sourced
+    terms the final draft dropped and the attempt cap allows it, ONE extra
+    structured pass re-weaves them. The woven draft re-enters the SAME
+    patch stack and is adopted only if the unused-term count strictly
+    decreases - the tripwire, not the model, decides.
+    ``allow_context_weave=False`` marks a draft the structured writer did
+    not produce (total writer failure): the one-shot attempt is not spent
+    on a verbatim-source fallback a weave pass cannot improve.
+    """
+    final_text, guardrail, removals, warnings, declined, unused_context = \
+        _patch_stack(state, draft)
+
+    weave_attempted = False
+    if (allow_context_weave and unused_context
+            and not state.get("context_weave_attempted")):
+        weave_attempted = True
+        _safe_print(f"   [Integrity] Context weave-in pass triggered: "
+                    f"{', '.join(unused_context)}")
+        woven, weave_declined, weave_warnings = _context_weave_pass(
+            state, final_text, unused_context)
+        if woven is not None:
+            # Deterministic acceptance: the woven draft re-enters the SAME
+            # patch stack; adopt only if the unused-term count strictly
+            # decreases. The tripwire is the acceptance test, never the
+            # model's word - an unfaithful weave (or a plain echo of the
+            # draft) fails this check and changes nothing.
+            w_final, w_guardrail, w_removals, w_warnings, w_declined, \
+                w_unused = _patch_stack(state, woven)
+            if len(w_unused) < len(unused_context):
+                _safe_print(f"   [Integrity] Context weave adopted: unused "
+                            f"context terms {len(unused_context)} -> "
+                            f"{len(w_unused)}")
+                final_text, unused_context = w_final, w_unused
+                guardrail = [*weave_warnings,
+                             "user context woven via targeted pass",
+                             *w_guardrail]
+                removals = accumulate_unique(removals, w_removals)
+                warnings = accumulate_unique(warnings, w_warnings)
+                declined = accumulate_unique(
+                    declined, [*w_declined, *weave_declined])
+
+    result = {
         "optimized_resume": final_text,
         "iteration": current_iter,
         "guardrail_warnings": guardrail,
@@ -261,6 +436,13 @@ def _postprocess_draft(state: AgentState, draft: str, current_iter: int) -> dict
         "unevidenced_metrics": accumulate_unique(state.get("unevidenced_metrics"), warnings),
         "declined_requests": accumulate_unique(state.get("declined_requests"), declined),
     }
+    if weave_attempted:
+        # Stamped on attempt (QW1), adoption or not. The CALLER merges this
+        # with its own stamp - both _full_rewrite and the polisher's
+        # targeted tail merge, never clobber.
+        result["context_weave_attempted"] = True
+        result["prompt_versions"] = {"context-weave": CONTEXT_WEAVE_PROMPT_VERSION}
+    return result
 
 
 def _full_rewrite(state: AgentState, *, node_label: str, version_key: str,
@@ -279,6 +461,7 @@ def _full_rewrite(state: AgentState, *, node_label: str, version_key: str,
     ]
     assembly_warnings: list[str] = []
     structured_declined: list[str] = []
+    allow_weave = True
     try:
         answer, _method = invoke_structured_with_repair(
             _llms.llm_creative, ImproverOutput, messages,
@@ -294,16 +477,24 @@ def _full_rewrite(state: AgentState, *, node_label: str, version_key: str,
         assembly_warnings = [
             "resume writer unavailable - shipped the source resume "
             f"verbatim ({exc})"]
+        # Round 11: skip the context weave on this path. The one-shot
+        # attempt is reserved for drafts the writer actually produced -
+        # burning it on the verbatim source cannot help the run.
+        allow_weave = False
 
     result = _postprocess_draft(state, assembled,
-                                state.get("iteration", 0) + 1)
+                                state.get("iteration", 0) + 1,
+                                allow_context_weave=allow_weave)
     # The assembly's structural findings lead the integrity list; the
     # shared deterministic tail's findings follow.
     result["guardrail_warnings"] = [
         *assembly_warnings, *(result.get("guardrail_warnings") or [])]
     result["declined_requests"] = accumulate_unique(
         result.get("declined_requests"), structured_declined)
-    result["prompt_versions"] = {version_key: version}
+    # Merge, never clobber: _postprocess_draft may have stamped the
+    # context-weave attempt (QW1), and both stamps must survive.
+    result["prompt_versions"] = {**(result.get("prompt_versions") or {}),
+                                 version_key: version}
     return result
 
 

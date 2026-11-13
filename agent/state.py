@@ -76,6 +76,11 @@ class AgentState(TypedDict):
     # the evidence does not back them ("DECLINED:" lines, parsed out of the
     # draft and stripped before any consumer sees them).
     declined_requests: NotRequired[list]
+    # Round 11 context weave-in (Nov 13 2026): the one-shot targeted rewriter
+    # pass that re-weaves user notes the writer dropped has ALREADY been
+    # attempted this run (attempt cap: once per run, regardless of adoption;
+    # later passes keep the detection-only tripwire with no extra call).
+    context_weave_attempted: NotRequired[bool]
     # MR1 section-targeted polish: the reviewer's structured answer to
     # "which sections does your feedback address" (fixed vocabulary).
     feedback_sections: NotRequired[list[str]]

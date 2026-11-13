@@ -40,6 +40,7 @@ from langchain_groq import ChatGroq  # noqa: E402
 import agent  # noqa: E402
 import agent.config  # noqa: E402
 import agent.llms  # noqa: E402
+from agent.nodes.improver import CONTEXT_WEAVE_PROMPT_VERSION  # noqa: E402
 import server.app as server_app  # noqa: E402
 import server.runners as runners  # noqa: E402
 from tests.fake_groq_server import (  # noqa: E402
@@ -389,11 +390,16 @@ def test_step2_resumes_step1_session_over_the_wire(client, wire_llms, monkeypatc
 
     keys = wire_llms.request_keys()
     # index 0 is step 1's scanner call (same test fixture, same server record);
-    # from the resume point onwards the shape matches a fresh run minus scanner.
-    assert keys[:-2] == ["missing_skills", *FRESH_STEP2_WIRES[1:]]
+    # from the resume point onwards the shape matches a fresh run minus
+    # scanner, plus the ONE context weave attempt the dropped 'k8s' note
+    # triggers (round 11: the fake answers empty sections, so the weave is
+    # never adopted and changes no content).
+    assert keys[:-2] == ["missing_skills", "tool:ImproverOutput",
+                         "context_weave", *FRESH_STEP2_WIRES[2:]]
     assert sorted(keys[-2:]) == ["cover", "prep"]
 
-    assert result["prompt_versions"] == EXPECTED_PROMPT_VERSIONS
+    assert result["prompt_versions"] == {
+        **EXPECTED_PROMPT_VERSIONS, "context-weave": CONTEXT_WEAVE_PROMPT_VERSION}
     assert len(feedback_calls) == 1
 
 
@@ -413,6 +419,11 @@ def test_step2_over_the_wire_survives_full_rewrite_fallback(client, wire_llms, m
     assert "polisher-target@2" not in result["prompt_versions"].values()
     # ...and the fake server saw both writer passes as STRUCTURED calls
     # (BB1 Phase B: the improver and the polisher's full-rewrite fallback
-    # return typed section units through the bound ImproverOutput tool).
+    # return typed section units through the bound ImproverOutput tool),
+    # plus the ONE context weave attempt (round 11: fired on the improver
+    # pass; the attempt cap makes the polisher pass skip its own, and the
+    # fake's empty answer is never adopted).
     assert wire_llms.request_keys().count("tool:ImproverOutput") == 2
+    assert wire_llms.request_keys().count("context_weave") == 1
+    assert result["prompt_versions"]["context-weave"] == CONTEXT_WEAVE_PROMPT_VERSION
     assert wire_llms.request_keys().count("polish_target") == 0

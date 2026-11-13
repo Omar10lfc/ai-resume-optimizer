@@ -664,7 +664,8 @@ def test_polish_pass_cannot_regress_below_first_draft(fake_llms, monkeypatch):
 def test_prompt_versions_stamped_across_full_graph(fake_llms):
     """Every LLM node contributes exactly one stamp (QW1), merged through
     the reducer channel: 'which prompt produced this run' is one lookup."""
-    from agent.nodes.improver import IMPROVER_PROMPT_VERSION
+    from agent.nodes.improver import (IMPROVER_PROMPT_VERSION,
+                                      CONTEXT_WEAVE_PROMPT_VERSION)
     from agent.nodes.polisher import POLISHER_FULL_VERSION
     from agent.nodes.reviewer import REVIEWER_PROMPT_VERSION
     from agent.nodes.scanner import SCANNER_PROMPT_VERSION
@@ -690,6 +691,10 @@ def test_prompt_versions_stamped_across_full_graph(fake_llms):
     # Fan-out siblings must BOTH survive the concurrent writes.
     assert pv["cover-letter"] == COVER_LETTER_PROMPT_VERSION
     assert pv["interview-prep"] == INTERVIEW_PREP_PROMPT_VERSION
+    # The dropped 'k8s' note triggers exactly ONE context weave attempt
+    # (round 11: stamped on attempt; the attempt cap keeps the polisher's
+    # full-rewrite pass from re-running it - merged beside the writer stamps).
+    assert pv["context-weave"] == CONTEXT_WEAVE_PROMPT_VERSION
 
 
 # ==========================================
@@ -1692,7 +1697,11 @@ def test_improver_postprocess_flags_unused_context_terms():
                             "LangGraph agent with bounded timeouts.",
              "missing_skills": "", "iteration": 1,
              "scrub_removals": [], "unevidenced_metrics": [],
-             "declined_requests": []}
+             "declined_requests": [],
+             # Round 11: pins the weave attempt cap - without this the
+             # dropped-context trigger would invoke the (unpatched, real)
+             # creative LLM from a unit test.
+             "context_weave_attempted": True}
     draft = ("# Jane Roe\n"
              "https://linkedin.com/in/jane | https://github.com/jane | "
              "https://huggingface.co/jane\n"
@@ -1708,6 +1717,223 @@ def test_improver_postprocess_flags_unused_context_terms():
     # the tripwire is detection-only: no content change (the tail may
     # normalize the draft's trailing newline)
     assert out["optimized_resume"].rstrip("\n") == draft.rstrip("\n")
+
+
+# ==========================================
+# Round 11: the deterministic context weave-in
+# ==========================================
+# The dropped-context trigger offers ONE extra structured pass that re-weaves
+# user notes the writer dropped (Option A). Adoption is decided in code: the
+# woven draft re-enters the SAME patch stack and is kept only if the
+# unused-term count strictly decreases.
+
+_WEAVE_NOTES = "Aegis: built a FastAPI + LangGraph heat-risk agent."
+_WEAVE_SOURCE = ("Jane Roe\n"
+                 "SUMMARY\n"
+                 "Python developer.\n"
+                 "PROJECTS\n"
+                 "Deploy tooling.\n")
+_WEAVE_DRAFT = ("Jane Roe\n"
+                "SUMMARY\n"
+                "Python developer with cloud experience.\n"
+                "PROJECTS\n"
+                "Deploy tooling.\n")
+_WEAVE_WOVEN_PROJECTS = ("**Aegis** - heat-risk agent\n"
+                         "- Built the FastAPI + LangGraph heat-risk service.")
+
+
+def _weave_state(**extra):
+    state = {"resume_text": _WEAVE_SOURCE, "human_notes": _WEAVE_NOTES,
+             "missing_skills": "", "iteration": 1, "scrub_removals": [],
+             "unevidenced_metrics": [], "declined_requests": []}
+    state.update(extra)
+    return state
+
+
+def test_context_weave_adopts_when_terms_land_in_the_draft(monkeypatch):
+    """A faithful weave passes the deterministic acceptance: the woven draft
+    re-enters the same patch stack and ships with the adoption note; the
+    stale unused-context warnings for the woven terms are gone."""
+    captured = []
+
+    class WeaveLLM:
+        def with_structured_output(self, schema):
+            assert schema is agent.ImproverOutput
+
+            class Structured:
+                def invoke(self, messages):
+                    prompt = "\n".join(str(m.content) for m in messages)
+                    captured.append(prompt)
+                    assert "DROPPED CONTEXT TERMS" in prompt
+                    return agent.ImproverOutput(
+                        sections=[{"id": "Projects",
+                                   "body": _WEAVE_WOVEN_PROJECTS}])
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_creative", WeaveLLM())
+    out = agent.nodes.improver._postprocess_draft(_weave_state(),
+                                                  _WEAVE_DRAFT, 1)
+    body = out["optimized_resume"]
+    assert "Aegis" in body and "FastAPI" in body and "LangGraph" in body
+    assert "user context woven via targeted pass" in out["guardrail_warnings"]
+    assert not any("user-context term not in the final resume" in w
+                   for w in out["guardrail_warnings"])
+    assert out["context_weave_attempted"] is True
+    assert out["prompt_versions"] == {
+        "context-weave": agent.nodes.improver.CONTEXT_WEAVE_PROMPT_VERSION}
+    # exactly one call: the weave pass (this helper bypasses the writer)
+    assert len(captured) == 1
+    assert "USER NOTES" in captured[0] and "Aegis" in captured[0]
+
+
+def test_context_weave_not_adopted_keeps_draft_and_warning(monkeypatch):
+    """A weave answer that changes nothing (empty sections) cannot pass the
+    deterministic acceptance: the draft and the original warning stay, and
+    no adoption note is added - only the attempt stamp marks that it ran."""
+
+    class EchoLLM:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    return agent.ImproverOutput(sections=[], declined=[])
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_creative", EchoLLM())
+    out = agent.nodes.improver._postprocess_draft(_weave_state(),
+                                                  _WEAVE_DRAFT, 1)
+    assert out["optimized_resume"].rstrip("\n") == _WEAVE_DRAFT.rstrip("\n")
+    warns = out["guardrail_warnings"]
+    assert any("user-context term not in the final resume: Aegis" in w
+               for w in warns)
+    assert not any("woven" in w for w in warns)
+    assert out["context_weave_attempted"] is True
+    assert out["prompt_versions"] == {
+        "context-weave": agent.nodes.improver.CONTEXT_WEAVE_PROMPT_VERSION}
+
+
+def test_context_weave_runs_at_most_once_per_run(monkeypatch):
+    """The attempt cap: once an earlier pass set context_weave_attempted,
+    later passes keep the detection-only tripwire and make NO LLM call,
+    with no attempt stamp of their own."""
+
+    class MustNotRunLLM:
+        def with_structured_output(self, schema):
+            raise AssertionError("the weave must not run twice in one run")
+
+    monkeypatch.setattr(agent.llms, "llm_creative", MustNotRunLLM())
+    out = agent.nodes.improver._postprocess_draft(
+        _weave_state(context_weave_attempted=True), _WEAVE_DRAFT, 2)
+    assert out["optimized_resume"].rstrip("\n") == _WEAVE_DRAFT.rstrip("\n")
+    assert any("user-context term not in the final resume: Aegis" in w
+               for w in out["guardrail_warnings"])
+    assert "context_weave_attempted" not in out
+    assert "prompt_versions" not in out
+
+
+def test_context_weave_unavailable_degrades_to_detection_only(monkeypatch):
+    """The weave rides the repair ladder; when every rung fails, the draft
+    and the original warning stay untouched - and the attempt is still
+    stamped, so a dead weave pass is visible in the forensics."""
+
+    class DownLLM:
+        def invoke(self, messages):
+            raise RuntimeError("ladder down")
+
+        def with_structured_output(self, schema):
+            raise RuntimeError("ladder down")
+
+    monkeypatch.setattr(agent.llms, "llm_creative", DownLLM())
+    out = agent.nodes.improver._postprocess_draft(_weave_state(),
+                                                  _WEAVE_DRAFT, 1)
+    assert out["optimized_resume"].rstrip("\n") == _WEAVE_DRAFT.rstrip("\n")
+    warns = out["guardrail_warnings"]
+    assert any("user-context term not in the final resume: Aegis" in w
+               for w in warns)
+    assert not any("woven" in w for w in warns)
+    assert out["context_weave_attempted"] is True
+    assert out["prompt_versions"] == {
+        "context-weave": agent.nodes.improver.CONTEXT_WEAVE_PROMPT_VERSION}
+
+
+def test_full_rewrite_writer_down_skips_the_context_weave(monkeypatch):
+    """When the structured writer itself fails, the source ships verbatim
+    and the one-shot weave attempt is NOT spent on it: an outage cannot
+    weave anything, so no weave prompt ever goes out and no attempt stamp
+    lands."""
+    seen = []
+
+    class DownWriterLLM:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    seen.append("\n".join(str(m.content) for m in messages))
+                    raise RuntimeError("writer down")
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_creative", DownWriterLLM())
+    state = {"resume_text": _WEAVE_SOURCE, "optimized_resume": "",
+             "human_notes": _WEAVE_NOTES,
+             "job_text": "Python engineer with Docker experience.",
+             "missing_skills": "", "feedback": "", "iteration": 0,
+             "scrub_removals": [], "unevidenced_metrics": [],
+             "declined_requests": []}
+    out = agent.nodes.improver._full_rewrite(
+        state, node_label="improver", version_key="improver",
+        version=agent.nodes.improver.IMPROVER_PROMPT_VERSION)
+    assert any("writer unavailable" in w for w in out["guardrail_warnings"])
+    assert out["optimized_resume"].rstrip("\n") == _WEAVE_SOURCE.rstrip("\n")
+    # the dropped context is still surfaced - detection-only
+    assert any("user-context term not in the final resume: Aegis" in w
+               for w in out["guardrail_warnings"])
+    # writer prompts went out; the weave prompt never did
+    assert seen and all("Rewrite the resume" in p for p in seen)
+    assert not any("DROPPED CONTEXT TERMS" in p for p in seen)
+    assert out.get("context_weave_attempted") is None
+    assert out["prompt_versions"] == {
+        "improver": agent.nodes.improver.IMPROVER_PROMPT_VERSION}
+
+
+def test_full_rewrite_merges_the_context_weave_stamp(monkeypatch):
+    """The stamp merge: _postprocess_draft stamps the weave attempt and the
+    caller's own version stamp must survive it (merge, never clobber)."""
+    prompts = []
+
+    class ModeKeyedLLM:
+        def with_structured_output(self, schema):
+            assert schema is agent.ImproverOutput
+
+            class Structured:
+                def invoke(self, messages):
+                    prompt = "\n".join(str(m.content) for m in messages)
+                    prompts.append(prompt)
+                    if "DROPPED CONTEXT TERMS" in prompt:
+                        return agent.ImproverOutput(
+                            sections=[{"id": "Projects",
+                                       "body": _WEAVE_WOVEN_PROJECTS}])
+                    # the main writer adds nothing: the source ships verbatim
+                    return agent.ImproverOutput(sections=[], declined=[])
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_creative", ModeKeyedLLM())
+    state = {"resume_text": _WEAVE_SOURCE, "optimized_resume": "",
+             "human_notes": _WEAVE_NOTES,
+             "job_text": "Python engineer with Docker experience.",
+             "missing_skills": "", "feedback": "", "iteration": 0,
+             "scrub_removals": [], "unevidenced_metrics": [],
+             "declined_requests": []}
+    out = agent.nodes.improver._full_rewrite(
+        state, node_label="improver", version_key="improver",
+        version=agent.nodes.improver.IMPROVER_PROMPT_VERSION)
+    assert out["context_weave_attempted"] is True
+    assert out["prompt_versions"] == {
+        "improver": agent.nodes.improver.IMPROVER_PROMPT_VERSION,
+        "context-weave": agent.nodes.improver.CONTEXT_WEAVE_PROMPT_VERSION}
+    body = out["optimized_resume"]
+    assert "Aegis" in body and "FastAPI" in body and "LangGraph" in body
+    assert "user context woven via targeted pass" in out["guardrail_warnings"]
+    # the writer prompt and the weave prompt are distinguishable on the wire
+    assert any("DROPPED CONTEXT TERMS" in p for p in prompts)
+    assert any("Rewrite the resume" in p for p in prompts)
 
 
 def test_scanner_output_is_tamed_for_consumers(monkeypatch):

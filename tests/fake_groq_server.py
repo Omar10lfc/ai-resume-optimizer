@@ -100,6 +100,15 @@ def _classify(body: dict) -> tuple[str | None, dict | None, str]:
         # the plain-answer era. By-section mode (the polisher fallback
         # rewriting a marked draft) -> replacements for its sections.
         prompt = _prompt_text(body)
+        if "DROPPED CONTEXT TERMS" in prompt:
+            # Round 11 context weave-in: the fake answers with an EMPTY
+            # sections list, so the deterministic acceptance never adopts
+            # on the wire. Keyed separately ("context_weave", not
+            # "tool:ImproverOutput") so wire call sequences stay
+            # deterministic and inspectable.
+            return None, _tool_call("ImproverOutput",
+                                    {"sections": [], "declined": []}), \
+                "context_weave"
         if '[id="Resume"]' in prompt:
             arguments = {"sections": [{"id": "Resume", "body": FAKE_RESUME}],
                          "declined": []}

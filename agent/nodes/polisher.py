@@ -183,6 +183,10 @@ def polisher_node(state: AgentState):
 
     _safe_print(f"   [Polish] Merged {len(replaced)} rewritten section(s): "
                 f"{', '.join(replaced)}.")
-    return {**_postprocess_draft(state, merged, current_iter),
+    post = _postprocess_draft(state, merged, current_iter)
+    # Merge, never clobber: _postprocess_draft may have stamped the
+    # context-weave attempt (QW1), and both stamps must survive.
+    return {**post,
             "polish_sections_targeted": replaced,
-            "prompt_versions": {"polisher": POLISHER_TARGET_VERSION}}
+            "prompt_versions": {**(post.get("prompt_versions") or {}),
+                                "polisher": POLISHER_TARGET_VERSION}}
