@@ -33,12 +33,19 @@ from .nodes.reviewer import _salvage_review_output
 from .provider import (TokenUsageTracker, extract_failed_generation,
                        extract_structured_candidate,
                        invoke_structured_with_repair)
+from .resume_units import (ImproverOutput, ImproverSection, ResumeUnits,
+                           SourceUnit, assemble_resume_units,
+                           improver_output_from_markdown, parse_resume_units)
 from .graphs import full_app, agent_app, should_continue
 
 __all__ = [
     # State & models
     "AgentState", "ReviewOutput", "SemanticVerdict", "SemanticReview",
+    "ImproverOutput", "ImproverSection",
     "SYSTEM_GUARDRAIL", "_untrusted",
+    # BB1 Phase B resume units
+    "ResumeUnits", "SourceUnit", "parse_resume_units",
+    "assemble_resume_units", "improver_output_from_markdown",
     # Helpers
     "_force_ascii", "_strip_emoji_for_pdf", "_strip_emoji_from_html", "_strip_code_fences",
     "_filter_hallucinated_sections", "_sanitize_html_for_pdf",

@@ -28,6 +28,7 @@ from langchain_core.messages import AIMessage  # noqa: E402
 import agent  # noqa: E402
 import agent.config  # noqa: E402
 import agent.llms  # noqa: E402
+import agent.nodes.loader  # noqa: E402
 import agent.tracing  # noqa: E402
 import server.app as server_app  # noqa: E402
 import server.runners as runners  # noqa: E402
@@ -52,7 +53,30 @@ class FakeStrictLLM:
         return Structured()
 
 
-class FakeCreativeLLM:
+class _CreativeStructuredMixin:
+    """BB1 Phase B: the improver (and the polisher's full-rewrite fallback)
+    now call with_structured_output(ImproverOutput) through the MR5 ladder.
+    The fakes answer from their own invoke() markdown - the same seam as
+    before - switching to the whole-document unit when the prompt offers
+    only "[id=\"Resume\"]" (a heading-less source)."""
+
+    def with_structured_output(self, schema):
+        if schema is not agent.ImproverOutput:
+            raise NotImplementedError(
+                "creative-profile fakes only serve ImproverOutput")
+        outer = self
+
+        class Structured:
+            def invoke(self, messages):
+                prompt = messages[-1].content
+                markdown = outer.invoke(messages).content
+                return agent.improver_output_from_markdown(
+                    markdown, whole_document='[id="Resume"]' in prompt)
+
+        return Structured()
+
+
+class FakeCreativeLLM(_CreativeStructuredMixin):
     def invoke(self, messages):
         return AIMessage(content="## Skills\nPython, Docker\n## Experience\nBuilt ML pipelines.")
 
@@ -516,19 +540,35 @@ def test_step2_reuses_completed_session_by_starting_fresh(client, fake_llms, mon
     assert events[-1][1]["session"] != first_session
 
 
-def test_step2_pipeline_error_becomes_error_event(client, fake_llms, monkeypatch, clean_name_register):
+def test_step2_writer_outage_falls_back_to_source_verbatim(client, fake_llms,
+                                                           monkeypatch,
+                                                           clean_name_register):
+    """BB1 Phase B: a total writer failure no longer kills the run. The
+    Dossier-style fallback ships the source resume verbatim with a loud
+    integrity warning - the outage is never silent, but the user still
+    gets a complete (untailored) result to retry from."""
     class BrokenImproverLLM:
         def invoke(self, messages):
             raise RuntimeError("provider outage")
 
-    # the improver is the first node after the interrupt -> fails the resume
+        def with_structured_output(self, schema):
+            # Raises from inside the structured chain: every ladder rung
+            # (direct/repair/retry) re-raises this, and the text surfaces in
+            # the integrity warning after the fallback ships the source.
+            raise RuntimeError("provider outage")
+
     monkeypatch.setattr(agent.llms, "llm_creative", BrokenImproverLLM())
     r = client.post("/api/v1/step2",
                     data={"job_description": JD, "resume_text": RESUME_TEXT,
                           "notes": "notes"})
     events = parse_sse(r.text)
-    assert events[-1][0] == "error"
-    assert "provider outage" in events[-1][1]["message"]
+    assert events[-1][0] == "result"
+    assert "error" not in [kind for kind, _ in events]
+    result = events[-1][1]
+    assert result["optimized_resume"].strip() == RESUME_TEXT.strip()
+    warnings = [e["message"] for kind, e in events if kind == "warning"]
+    assert any("provider outage" in w for w in warnings)
+    assert any("shipped the source resume verbatim" in w for w in warnings)
 
 
 def test_step2_emits_integrity_warning_before_result(client, fake_llms, monkeypatch):
@@ -969,15 +1009,17 @@ def test_runs_endpoint_roundtrips_step1_and_step2(client, fake_llms):
 
 def test_runs_ledger_records_failures_with_reason(client, fake_llms,
                                                   monkeypatch):
-    class BrokenImproverLLM:
-        def invoke(self, messages):
-            raise RuntimeError("provider exploded")
+    def _boom(url):
+        raise ValueError("provider exploded")
 
-    # the improver is the first node after the interrupt -> fails the run
-    monkeypatch.setattr(agent.llms, "llm_creative", BrokenImproverLLM())
+    # the loader is the graph entry point -> fails the run (BB1 Phase B
+    # made the writer failure degrade to a fallback, so the ledger-failure
+    # vehicle moved to the loader's URL fetch, which stays a hard error)
+    monkeypatch.setattr(agent.nodes.loader, "_fetch_job_description", _boom)
     known = "66666666-6666-6666-6666-666666666666"
     r = client.post("/api/v1/step2",
-                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                    data={"job_description": "http://example.com/job",
+                          "resume_text": RESUME_TEXT,
                           "notes": "", "session": known})
     events = parse_sse(r.text)
     assert events[-1][0] == "error"
@@ -1107,7 +1149,7 @@ def test_step2_recovery_after_real_midnode_crash_redoes_model_segment(
     rewound path must write reset + notes as ONE ``update_state`` anchored
     with ``as_node="scanner"`` (probe-reproduced and probe-verified)."""
 
-    class CrashyCreative:
+    class CrashyCreative(_CreativeStructuredMixin):
         """Mirrors the live incident: invoke 1 = the improver's full
         draft, invokes 2-4 = the polisher's targeted section rewrites,
         invoke 4 RAISES mid-node (the live APIConnectionError)."""

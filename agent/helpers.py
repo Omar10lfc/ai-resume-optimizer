@@ -1093,6 +1093,17 @@ def preserve_contact_links(
     return "\n".join(lines), restored, removed, normalized
 
 
+# BB1 Phase B: the markdown-link counter shared by the polisher's targeted
+# merge gate and the improver's per-unit rewrite gate (a rewrite that drops
+# a project/demo/GitHub URL the source carried is refused deterministically).
+_MD_LINK_RE = re.compile(r"\]\([^)]+\)")
+
+
+def markdown_link_count(text: str) -> int:
+    """Number of markdown links ``[label](url)`` in ``text``."""
+    return len(_MD_LINK_RE.findall(text or ""))
+
+
 def accumulate_unique(existing: Optional[list], added: Optional[list]) -> list:
     """Order-preserving accumulation of state list values across passes."""
     out = list(existing or [])

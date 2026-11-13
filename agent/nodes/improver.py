@@ -1,77 +1,101 @@
 """NODE 2: Improver - rewrites resume using human notes.
 
-Also hosts the pieces the POLISHER node shares with it: the full-rewrite
-prompt/enforcement chain and the deterministic post-processing tail. The
-polisher (agent/nodes/polisher.py) reuses this module's full-rewrite path
-as its fallback mode and runs its own section-targeted mode on top.
+Also hosts the pieces the POLISHER node shares with it: the structured
+full-rewrite path (BB1 Phase B: typed section units keyed by source ids,
+code-assembled delivery - agent/resume_units.py) and the deterministic
+post-processing tail. The polisher (agent/nodes/polisher.py) reuses this
+module's full-rewrite path as its fallback mode and runs its own
+section-targeted mode on top.
 """
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
-from ..helpers import (_safe_print, _strip_code_fences, _filter_hallucinated_sections,
+from ..helpers import (_safe_print, _filter_hallucinated_sections,
                        _tame_unicode_bullets, find_unevidenced_metric_claims,
                        find_dropped_source_metrics, find_unused_context_terms,
                        scrub_unsupported_content, extract_declined_requests,
                        accumulate_unique, preserve_contact_links)
+from ..provider import invoke_structured_with_repair, extract_failed_generation
+from ..resume_units import (ImproverOutput, RESUME_UNIT_ID,
+                            assemble_resume_units,
+                            improver_output_from_markdown,
+                            parse_resume_units, STANDARD_SECTION_NAMES)
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Bump when the rewrite prompt changes materially. Runners stamp this into
 # every artifact so "which prompt produced this draft" is a one-lookup
-# answer instead of a trace-scavenging exercise. improver@3 (round 7, Nov 12
-# 2026): the user-context contract went from advisory ("incorporate if
-# valid") to binding - both round-7 runs silently dropped the pasted Aegis
-# project (runs 25ff4ae5 / 1a8125f0), and nothing recorded the omission.
-IMPROVER_PROMPT_VERSION = "improver@3"
+# answer instead of a trace-scavenging exercise. improver@4 (BB1 Phase B,
+# Nov 13 2026): the writer no longer delivers a whole markdown document -
+# it returns typed section replacements keyed by source-unit ids (the
+# Dossier study's resumeUnits() "trusting nothing" pattern) and the delivery
+# code assembles the resume: the identity header is pinned from the source,
+# skipped units ship verbatim, unknown ids are dropped with a visible
+# integrity note, and a total writer failure falls back to the source
+# verbatim instead of killing the run.
+IMPROVER_PROMPT_VERSION = "improver@4"
 
 
-def _build_improver_prompt(state: AgentState) -> str:
-    """The full-rewrite prompt (iteration 1 and the polisher fallback)."""
-    base_content = state['optimized_resume'] if state['optimized_resume'] else state['resume_text']
+def _build_improver_prompt(state: AgentState, units) -> str:
+    """The structured full-rewrite prompt (iteration 1 and the polisher
+    fallback). The source is presented as typed units; the writer returns
+    replacements by id and never assembles the document itself."""
     feedback = state.get('feedback') or ""
+
+    if units.whole_document:
+        units_block = (
+            f'[id="{RESUME_UNIT_ID}"] (the ENTIRE source resume, shown in full):\n'
+            f"{units.sections[0].body}")
+        delivery = (
+            "HOW DELIVERY WORKS - whole-document mode: the entire source is one"
+            "\nunit. Return a replacement for it whose body is your complete"
+            "\nrewritten resume, starting with \"# <Full Name>\" then the contact"
+            "\nline (bare URLs - no [label](url) markdown in the header line),"
+            "\nthen the sections in the standard template order. Returning an"
+            "\nEMPTY sections list keeps the source verbatim. Do not return any"
+            "\nother section id in this mode.")
+    else:
+        listed = "\n\n".join(
+            f'[id="{u.id}"] (source heading: "{u.heading_line}")\n{u.body}'
+            for u in units.sections)
+        units_block = (
+            "IDENTITY HEADER (pinned verbatim by the delivery code - it is NEVER"
+            "\nyours to write, and no section body may contain it):\n"
+            f"{units.header_block}\n\n"
+            "SOURCE RESUME UNITS (return replacements by id; any unit you do not"
+            "\nreturn ships VERBATIM from the source):\n"
+            f"{listed}")
+        delivery = (
+            "HOW DELIVERY WORKS - by-section mode: every returned section"
+            "\nreplaces ONLY its unit's body (the source heading is kept by the"
+            "\ndelivery code); units you skip ship byte-identical from the"
+            "\nsource. Returned ids the source does not offer are DROPPED with"
+            "\na visible integrity note - only use the ids listed above. You may"
+            "\nalso ADD one of the standard sections the source lacks: "
+            + ", ".join(STANDARD_SECTION_NAMES)
+            + " - use exactly that name as the id.")
 
     return f"""
     You are an expert Resume Writer.
 
-    TASK: Rewrite the resume to match the Job Description.
-    Output the result in clean MARKDOWN format. Do NOT wrap your output in code fences.
+    TASK: Rewrite the resume to match the Job Description. Return a
+    STRUCTURED answer through the ImproverOutput tool - the delivery code
+    assembles the final resume document deterministically from what you
+    return, trusting nothing.
 
-    STRICT MARKDOWN STRUCTURE TO FOLLOW:
-    # Full Candidate Name
-    Location | Phone Number | Email Address | LinkedIn URL | GitHub URL | Portfolio URL
-    (Write every header link as the bare URL itself - no [label](url) markdown in the header line.)
+    {delivery}
 
-    ## Professional Summary
-    2-3 impactful sentences summarizing qualifications, target domain, and core strengths.
-
-    ## Technical Skills
-    **Category 1**: Skill A, Skill B, Skill C
-    **Category 2**: Skill D, Skill E, Skill F
-    (Always format skills as **Category**: comma-separated list)
-
-    ## Experience
-    **Job Title** | Company Name | Location | Date Range
-    - Bullet starting with strong action verb and quantified outcome
-    - Another bullet with metrics and technical tools
-
-    ## Projects
-    **Project Name** [Live Demo](URL) [GitHub](URL) | Technologies Used | Date Range
-    - Bullet describing what you built, technical implementation, and measurable impact
-    - Keep Project Name concise (2-4 words, e.g. **Distributed Event Streamer**; put descriptions in bullets)
-    - Keep dates and all links on the same header line (e.g. **Real-Time Data Pipeline** [Live Demo](URL) [GitHub](URL) | Tech Stack | Jan 2026 - May 2026)
-    - NEVER put links as standalone bullet points! (Do NOT write "- Live Demo" or "- [GitHub](URL)" as a bullet item). All project links belong on the project title line.
-    - CRITICAL: PRESERVE all links from the original resume (GitHub repos, live demos, project URLs, e.g. [GitHub](https://...), [Live Demo](https://...)). Never drop project links!
-
-    ## Education
-    **University Name** | Location | Degree Name | Graduation Date Range
-
-    ## Certifications
-    Certification Name - Issuing Organization (Year)
-
-    (Note: Also preserve any additional legitimate sections present in the original resume, such as Publications, Honors & Awards, Leadership, Volunteering, or Coursework.)
+    BODY FORMAT (the delivery code wraps every returned body in its '## '
+    heading - the body itself must NOT repeat the heading line):
+    - Professional Summary: 2-3 impactful sentences summarizing qualifications, target domain, and core strengths.
+    - Technical Skills: **Category 1**: Skill A, Skill B, Skill C (always this format).
+    - Experience: **Job Title** | Company Name | Location | Date Range on the first line, then bullets starting with strong action verbs and quantified outcomes.
+    - Projects: **Project Name** [Live Demo](URL) [GitHub](URL) | Technologies Used | Date Range on the title line (keep names concise, 2-4 words; descriptions go in bullets). NEVER put links as standalone bullet points (do NOT write "- [GitHub](URL)" as a bullet item).
+    - Education: **University Name** | Location | Degree Name | Graduation Date Range.
+    - Certifications: Certification Name - Issuing Organization (Year).
 
     INSTRUCTIONS:
     1. RULES FOR THE MISSING-SKILLS LIST (treat it as RESEARCH TOPICS, never
-       as experience to claim). A gap item may only appear in the rewrite if
-       the original resume or the USER CONTEXT already demonstrates it; in
+       as experience to claim). A gap item may only appear in a section body
+       if the original resume or the USER CONTEXT already demonstrates it; in
        that case weave the demonstrated evidence in. Otherwise OMIT the item
        entirely. NEVER describe building, deploying, or integrating anything
        with a named tool, platform, vendor server, or product that neither
@@ -81,36 +105,58 @@ def _build_improver_prompt(state: AgentState) -> str:
        Missing skills under review: {state['missing_skills']}
     2. USER CONTEXT (binding, not optional): "{state['human_notes']}".
        Every project, role, or experience it describes MUST be woven into
-       the rewrite (Projects / Experience / Summary as fits) - silently
-       omitting one is a protocol violation. Only when you judge an item
-       unsupported or irrelevant to THIS job, refuse it with a
-       "DECLINED: <short item>" line instead (see the Decline Protocol).
+       the section bodies you return (Projects / Experience / Summary as
+       fits) - silently omitting one is a protocol violation. Only when you
+       judge an item unsupported or irrelevant to THIS job, refuse it with
+       an entry in `declined` instead (see the Decline Protocol).
     3. Do NOT invent projects, jobs, tools, integrations, credentials, or
        numbers not supported by the original resume or the user context.
     4. METRIC INTEGRITY (zero tolerance): every number in your output must
        be copied from the ORIGINAL RESUME or the USER CONTEXT. Never coin,
        copy, or round numbers from the job description or the feedback text.
     5. Feedback from previous review (if any): {feedback}
-    6. PRESERVE ALL REAL LINKS: Never drop GitHub links, live demos, portfolio URLs, LinkedIn profile links, or email addresses from the original resume. Attach project links directly to the project header line beside the project title, NEVER as a standalone bullet item.
-    7. Retain legitimate existing sections from the candidate's background.
+    6. PRESERVE ALL REAL LINKS inside the bodies you return: never drop
+       GitHub links, live demos, portfolio URLs, LinkedIn profile links, or
+       email addresses the source shows. Attach project links to the project
+       title line, NEVER as a standalone bullet item.
+    7. Retain legitimate existing sections from the candidate's background:
+       any unit you skip ships verbatim, so a section stays in the resume
+       unless you explicitly replace its body.
     8. DECLINE PROTOCOL: when the missing-skills list, the user context, or
        the feedback asks you to feature something the evidence (original
        resume + user notes) does not support - tools, employers, projects,
-       certifications, metrics - do NOT write it. Instead end the resume
-       with one line per refused request, in this exact shape:
-           DECLINED: <short restatement of the requested item>
-       Example: "DECLINED: Experience with n8n". The same line is required
-       for any USER CONTEXT item you chose not to feature (never omit
-       context silently). These lines are removed
-       automatically and shown to the user as "requests the writer
-       declined"; they exist so silence can never hide an omission.
+       certifications, metrics - do NOT write it. Instead list every refused
+       request in `declined`, one short restatement per item:
+           "Experience with n8n"
+       The same entry is required for any USER CONTEXT item you chose not
+       to feature (never omit context silently). These are shown to the
+       user as "requests the writer declined"; they exist so silence can
+       never hide an omission. (If you answer in prose instead of the tool,
+       "DECLINED: <item>" lines are parsed the same way.)
+
+    {_untrusted('SOURCE RESUME UNITS', units_block)}
 
     {_untrusted('JOB DESCRIPTION', state['job_text'])}
 
-    {_untrusted('ORIGINAL RESUME', base_content)}
-
-    Return ONLY the rewritten resume text in MARKDOWN. Do NOT use code fences.
+    ANSWER SHAPE: return ONLY the ImproverOutput tool call:
+        sections: [{{"id": <unit id or standard name>, "body": <markdown body, no heading line>}}, ...]
+        declined: ["<refused request>", ...]
+    Do NOT wrap the answer in code fences.
     """
+
+
+def _make_improver_salvage(units):
+    """The ladder's salvage rung for the improver: a writer that answered in
+    prose/markdown instead of the tool call gets its answer parsed into the
+    structured shape (unknown ids are dropped by the assembly, declined
+    lines ride the protocol)."""
+    def _salvage(exc):
+        text = extract_failed_generation(exc)
+        if not text:
+            return None
+        return improver_output_from_markdown(
+            text, whole_document=units.whole_document)
+    return _salvage
 
 
 def _postprocess_draft(state: AgentState, draft: str, current_iter: int) -> dict:
@@ -219,13 +265,46 @@ def _postprocess_draft(state: AgentState, draft: str, current_iter: int) -> dict
 
 def _full_rewrite(state: AgentState, *, node_label: str, version_key: str,
                   version: str) -> dict:
-    """Full-rewrite invocation (improver pass and the polisher fallback)."""
-    return {**_postprocess_draft(state, _strip_code_fences(
-        _llms.llm_creative.invoke([
-            SystemMessage(content=SYSTEM_GUARDRAIL),
-            HumanMessage(content=_build_improver_prompt(state)),
-        ]).content), state.get("iteration", 0) + 1),
-        "prompt_versions": {version_key: version}}
+    """Structured full-rewrite invocation (improver pass and the polisher
+    fallback), BB1 Phase B: the writer returns typed section units through
+    the MR5 repair ladder and the delivery code assembles the document.
+    Total failure falls back to the source resume verbatim with a loud
+    integrity warning - an outage degrades to "untailored but honest"
+    instead of killing the run."""
+    base_content = state['optimized_resume'] if state['optimized_resume'] else state['resume_text']
+    units = parse_resume_units(base_content)
+    messages = [
+        SystemMessage(content=SYSTEM_GUARDRAIL),
+        HumanMessage(content=_build_improver_prompt(state, units)),
+    ]
+    assembly_warnings: list[str] = []
+    structured_declined: list[str] = []
+    try:
+        answer, _method = invoke_structured_with_repair(
+            _llms.llm_creative, ImproverOutput, messages,
+            salvage=_make_improver_salvage(units), label=node_label)
+        _assembled, assembly_warnings, structured_declined = \
+            assemble_resume_units(units, answer)
+        assembled = _assembled
+    except Exception as exc:
+        _safe_print(f"   [{node_label or 'improver'}] structured writer "
+                    f"unavailable ({exc}) - shipping the source resume "
+                    f"verbatim")
+        assembled = base_content
+        assembly_warnings = [
+            "resume writer unavailable - shipped the source resume "
+            f"verbatim ({exc})"]
+
+    result = _postprocess_draft(state, assembled,
+                                state.get("iteration", 0) + 1)
+    # The assembly's structural findings lead the integrity list; the
+    # shared deterministic tail's findings follow.
+    result["guardrail_warnings"] = [
+        *assembly_warnings, *(result.get("guardrail_warnings") or [])]
+    result["declined_requests"] = accumulate_unique(
+        result.get("declined_requests"), structured_declined)
+    result["prompt_versions"] = {version_key: version}
+    return result
 
 
 def improver_node(state: AgentState):

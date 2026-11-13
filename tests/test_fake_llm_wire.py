@@ -54,7 +54,7 @@ RESUME_TEXT = "Jane Roe\nPython developer with cloud exposure."
 # payload merged (QW1's snapshot-pull handles the concurrent cover/prep fan-out).
 EXPECTED_PROMPT_VERSIONS = {
     "scanner": "scanner@1",
-    "improver": "improver@3",
+    "improver": "improver@4",
     "polisher": "polisher-full@1",
     "reviewer": "reviewer@2",
     "ats-semantic": "ats-semantic@1",
@@ -65,16 +65,18 @@ EXPECTED_PROMPT_VERSIONS = {
 # Deterministic first segment of a FRESH step-2 run (no session): the gate sees
 # a passing score WITH feedback (polisher full-rewrite, sections=[]), so both
 # ATS passes fit exactly two (reviewer -> semantic check) rounds before the
-# iteration cap fans out. Only the fan-out tail's ORDER is nondeterministic
-# (cover_letter vs interview_prep run concurrently).
+# iteration cap fans out. Since BB1 Phase B the improver AND the polisher's
+# full-rewrite fallback are STRUCTURED calls (bound ImproverOutput tool).
+# Only the fan-out tail's ORDER is nondeterministic (cover_letter vs
+# interview_prep run concurrently).
 FRESH_STEP2_WIRES = [
-    "missing_skills",       # scanner
-    "rewrite",              # improver
-    "tool:ReviewOutput",    # reviewer pass 1
-    "tool:SemanticReview",  # ats_check pass 1 (paragraph = iteration cap -> polisher)
-    "rewrite",              # polisher full-rewrite fallback
-    "tool:ReviewOutput",    # reviewer pass 2
-    "tool:SemanticReview",  # ats_check pass 2 (iteration cap -> fan-out)
+    "missing_skills",        # scanner
+    "tool:ImproverOutput",   # improver (typed section units)
+    "tool:ReviewOutput",     # reviewer pass 1
+    "tool:SemanticReview",   # ats_check pass 1 (paragraph = iteration cap -> polisher)
+    "tool:ImproverOutput",   # polisher full-rewrite fallback
+    "tool:ReviewOutput",     # reviewer pass 2
+    "tool:SemanticReview",   # ats_check pass 2 (iteration cap -> fan-out)
 ]
 
 
@@ -330,8 +332,8 @@ def test_step2_over_the_wire_end_to_end(client, wire_llms, monkeypatch):
     assert keys[:-2] == FRESH_STEP2_WIRES
     assert sorted(keys[-2:]) == ["cover", "prep"]
     assert [entry["tool"] for entry in wire_llms.requests] == [
-        None, None, "ReviewOutput", "SemanticReview", None, "ReviewOutput",
-        "SemanticReview", None, None,
+        None, "ImproverOutput", "ReviewOutput", "SemanticReview",
+        "ImproverOutput", "ReviewOutput", "SemanticReview", None, None,
     ]
 
     assert len(feedback_calls) == 1
@@ -387,6 +389,8 @@ def test_step2_over_the_wire_survives_full_rewrite_fallback(client, wire_llms, m
     result = events[-1][1]
     assert result["prompt_versions"]["polisher"] == "polisher-full@1"
     assert "polisher-target@2" not in result["prompt_versions"].values()
-    # ...and the fake server saw the polisher fall through "Rewrite..." prompts
-    assert wire_llms.request_keys().count("rewrite") == 2
+    # ...and the fake server saw both writer passes as STRUCTURED calls
+    # (BB1 Phase B: the improver and the polisher's full-rewrite fallback
+    # return typed section units through the bound ImproverOutput tool).
+    assert wire_llms.request_keys().count("tool:ImproverOutput") == 2
     assert wire_llms.request_keys().count("polish_target") == 0

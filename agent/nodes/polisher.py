@@ -12,23 +12,24 @@ Two modes:
   polisher edition dropped the Aegis header while keeping fabricated lines)
   becomes structurally impossible: untouched sections are byte-identical.
 
-- Full-rewrite (fallback): the improver chain is reused verbatim whenever
-  the feedback has no surgically addressable section (empty ``sections``,
-  cross-cutting targets like "formatting", or a draft whose headers do not
-  match the vocabulary). Best-of guard in ats_check still caps regressions.
+- Full-rewrite (fallback): the improver's structured units path (BB1
+  Phase B: typed section replacements, code-assembled delivery) is reused
+  verbatim whenever the feedback has no surgically addressable section
+  (empty ``sections``, cross-cutting targets like "formatting", or a draft
+  whose headers do not match the vocabulary). Best-of guard in ats_check
+  still caps regressions.
 """
-import re
-
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
 from ..helpers import (_safe_print, _strip_code_fences, _safe_truncate,
                        split_markdown_sections, canonical_feedback_section,
-                       merge_rewritten_sections)
-from .improver import _build_improver_prompt, _postprocess_draft
+                       merge_rewritten_sections, markdown_link_count)
+from .improver import _full_rewrite, _postprocess_draft
 from langchain_core.messages import HumanMessage, SystemMessage
 
-# Full mode reuses the improver@3 prompt builder; the version below marks the
-# polisher's own decision (which mode shipped) for the prompt_versions stamp.
+# Full mode rides the improver's structured units path (improver@4, BB1
+# Phase B); the version below marks the polisher's own decision (which mode
+# shipped) for the prompt_versions stamp.
 # polisher-target@2 (round 7, Nov 12 2026): section rewrites must keep
 # claims the USER CONTEXT supports - a targeted rewrite of the section
 # holding the pasted context's bullets could otherwise drop them silently.
@@ -39,16 +40,13 @@ POLISHER_TARGET_VERSION = "polisher-target@2"
 # sections on one pass costs five small calls, capped here.
 _MAX_TARGETS_PER_PASS = 3
 
-_MD_LINK_RE = re.compile(r"\]\([^)]+\)")
-
-
 def _rewrite_kept_links(old_body: str, new_body: str) -> bool:
     """Deterministic gate: a section rewrite must not drop markdown links
     (project/demo/GitHub URLs) the original body carried - the improver's
     "preserve all real links" contract is enforced in code, not trusted to
     the model."""
-    return (len(_MD_LINK_RE.findall(new_body or ""))
-            >= len(_MD_LINK_RE.findall(old_body or "")))
+    return (markdown_link_count(new_body or "")
+            >= markdown_link_count(old_body or ""))
 
 
 def _build_section_prompt(state: AgentState, header_line: str, section_body: str,
@@ -144,12 +142,9 @@ def polisher_node(state: AgentState):
         reason = ("reviewer feedback is empty" if not feedback
                   else "no feedback section matches the draft headers")
         _safe_print(f"   [Polish] Full-rewrite pass ({reason}).")
-        return {**_postprocess_draft(state, _strip_code_fences(
-            _llms.llm_creative.invoke([
-                SystemMessage(content=SYSTEM_GUARDRAIL),
-                HumanMessage(content=_build_improver_prompt(state)),
-            ]).content), current_iter),
-            "prompt_versions": {"polisher": POLISHER_FULL_VERSION}}
+        return _full_rewrite(state, node_label="polisher",
+                             version_key="polisher",
+                             version=POLISHER_FULL_VERSION)
 
     _safe_print(f"--- NODE 2b: POLISHING (targeted: {', '.join(c for c, *_ in targets)}) "
                 f"(Iteration {current_iter}) ---")
@@ -182,12 +177,9 @@ def polisher_node(state: AgentState):
         # Refused merge (unknown shape / duplicate headers / empty answers):
         # fall through to the full-rewrite pass so the iteration is never lost.
         _safe_print("   [Polish] Targeted merge refused - falling back to full rewrite.")
-        return {**_postprocess_draft(state, _strip_code_fences(
-            _llms.llm_creative.invoke([
-                SystemMessage(content=SYSTEM_GUARDRAIL),
-                HumanMessage(content=_build_improver_prompt(state)),
-            ]).content), current_iter),
-            "prompt_versions": {"polisher": POLISHER_FULL_VERSION}}
+        return _full_rewrite(state, node_label="polisher",
+                             version_key="polisher",
+                             version=POLISHER_FULL_VERSION)
 
     _safe_print(f"   [Polish] Merged {len(replaced)} rewritten section(s): "
                 f"{', '.join(replaced)}.")

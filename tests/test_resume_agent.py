@@ -407,7 +407,30 @@ class FakeStrictLLM:
         return Structured()
 
 
-class FakeCreativeLLM:
+class _CreativeStructuredMixin:
+    """BB1 Phase B: the improver (and the polisher's full-rewrite fallback)
+    now call with_structured_output(ImproverOutput) through the MR5 ladder.
+    The fakes answer from their own invoke() markdown - the same seam as
+    before - switching to the whole-document unit when the prompt offers
+    only "[id=\"Resume\"]" (a heading-less source)."""
+
+    def with_structured_output(self, schema):
+        if schema is not agent.ImproverOutput:
+            raise NotImplementedError(
+                "creative-profile fakes only serve ImproverOutput")
+        outer = self
+
+        class Structured:
+            def invoke(self, messages):
+                prompt = messages[-1].content
+                markdown = outer.invoke(messages).content
+                return agent.improver_output_from_markdown(
+                    markdown, whole_document='[id="Resume"]' in prompt)
+
+        return Structured()
+
+
+class FakeCreativeLLM(_CreativeStructuredMixin):
     def invoke(self, messages):
         return AIMessage(content="## Skills\nPython, Docker\n## Experience\nBuilt ML pipelines.")
 
@@ -514,7 +537,7 @@ def test_optimizer_reviewer_failure_skips_retry(fake_llms, monkeypatch):
 # Best-of guard: extra polish iteration (MAX_ITERATIONS=2)
 # ==========================================
 
-class SeqCreativeLLM:
+class SeqCreativeLLM(_CreativeStructuredMixin):
     """Returns queued drafts in call order; tracks invocations."""
 
     def __init__(self, contents):
@@ -876,7 +899,7 @@ def test_improver_scrubs_and_reports_via_guardrail_warnings(monkeypatch):
         "feedback": None,
     }
 
-    class InventingLLM:
+    class InventingLLM(FakeCreativeLLM):
         def invoke(self, messages):
             return AIMessage(content="# Omar\n## Experience\n"
                                      "- Wrote Kubernetes operators for nightly jobs.\n"
@@ -911,7 +934,7 @@ def test_improver_never_ships_fully_scrubbed_empty_draft(monkeypatch):
         "feedback": None,
     }
 
-    class FullyFabricatedLLM:
+    class FullyFabricatedLLM(FakeCreativeLLM):
         def invoke(self, messages):
             return AIMessage(content="# Omar\n## Experience\n"
                                      "- Cut manual ingestion effort by 55%.")
@@ -939,7 +962,7 @@ def test_improver_decline_protocol_records_and_strips(monkeypatch):
         "feedback": None,
     }
 
-    class DecliningLLM:
+    class DecliningLLM(FakeCreativeLLM):
         def invoke(self, messages):
             prompt = messages[-1].content
             assert "DECLINE PROTOCOL" in prompt     # the clause ships with the prompt
@@ -953,6 +976,203 @@ def test_improver_decline_protocol_records_and_strips(monkeypatch):
     assert "DECLINED" not in out["optimized_resume"]
     assert "40%" in out["optimized_resume"]
     assert out["declined_requests"] == ["Experience with n8n", "3x throughput claims"]
+    assert out["prompt_versions"] == {"improver": IMPROVER_PROMPT_VERSION}
+
+
+# ==========================================
+# BB1 Phase B: typed resume units + code-assembled delivery
+# ==========================================
+
+def test_parse_resume_units_pins_header_and_canonicalizes_marks():
+    units = agent.parse_resume_units(
+        "# Jane Roe\nCity | j@x.io\n\nSUMMARY\nOld summary.\n\n"
+        "EXPERIENCE\nBuilt things.")
+    assert not units.whole_document
+    assert units.header_block == "# Jane Roe\nCity | j@x.io"
+    assert [u.id for u in units.sections] == ["Professional Summary",
+                                              "Experience"]
+    assert units.sections[1].heading_line == "EXPERIENCE"
+    assert units.sections[1].body == "Built things."
+
+
+def test_parse_resume_units_markdown_draft_keeps_headings_byte_identical():
+    units = agent.parse_resume_units(
+        "## Skills\nPython, Docker\n## Experience\nBuilt ML pipelines.")
+    assert units.header_block == ""
+    assert [u.id for u in units.sections] == ["Technical Skills", "Experience"]
+    assert units.sections[0].heading_line == "## Skills"
+
+
+def test_parse_resume_units_whole_document_when_source_has_no_marks():
+    units = agent.parse_resume_units("Jane Roe\nPython developer.")
+    assert units.whole_document
+    assert units.sections[0].id == "Resume"
+    assert units.sections[0].body == "Jane Roe\nPython developer."
+
+
+def test_assemble_rewrites_in_place_skips_verbatim_adds_missing():
+    units = agent.parse_resume_units(
+        "# Jane\nCity | j@x.io\nSUMMARY\nOld summary.\nEXPERIENCE\nBuilt things.")
+    answer = agent.ImproverOutput(sections=[
+        agent.ImproverSection(id="Professional Summary", body="New summary.")])
+    text, warns, declined = agent.assemble_resume_units(units, answer)
+    # The identity header is pinned verbatim and the skipped unit ships
+    # byte-stable from the source (normalized heading for a raw ALL-CAPS one).
+    assert text.startswith("# Jane\nCity | j@x.io")
+    assert "## Professional Summary\nNew summary." in text
+    assert "## Experience\nBuilt things." in text
+    assert warns == [] and declined == []
+
+
+def test_assemble_drops_unknown_ids_with_guardrail_note():
+    units = agent.parse_resume_units("## Skills\nPython")
+    answer = agent.ImproverOutput(sections=[
+        agent.ImproverSection(id="Awards", body="Made-up award")])
+    text, warns, _ = agent.assemble_resume_units(units, answer)
+    assert "Made-up award" not in text and "## Awards" not in text
+    # A markdown source heading ships byte-verbatim (byte-stability for
+    # untouched units); only ALL-CAPS raw headings normalize to '## <id>'.
+    assert text == "## Skills\nPython"
+    assert any("unknown section id 'Awards'" in w for w in warns)
+
+
+def test_assemble_refuses_rewrites_that_drop_links_or_ship_empty():
+    units = agent.parse_resume_units(
+        "## Projects\n**Aegis** [GitHub](https://x.io/aegis)\n- Built it.")
+    empty = agent.ImproverOutput(sections=[
+        agent.ImproverSection(id="Projects", body="")])
+    text, warns, _ = agent.assemble_resume_units(units, empty)
+    assert "https://x.io/aegis" in text
+    assert any("empty rewrite for 'Projects'" in w for w in warns)
+
+    linkless = agent.ImproverOutput(sections=[
+        agent.ImproverSection(id="Projects", body="- Built it without links.")])
+    text2, warns2, _ = agent.assemble_resume_units(units, linkless)
+    assert "https://x.io/aegis" in text2
+    assert any("dropped a source link" in w for w in warns2)
+
+
+def test_assemble_whole_document_replacement_and_outsider_drop():
+    units = agent.parse_resume_units("Jane Roe\nPython developer.")
+    answer = agent.ImproverOutput(sections=[
+        agent.ImproverSection(
+            id="Resume", body="# Jane Roe\nj@x.io\n## Skills\nPython")])
+    text, warns, _ = agent.assemble_resume_units(units, answer)
+    assert text.startswith("# Jane Roe")
+    assert "Python developer." not in text       # replaced wholesale
+    assert warns == []
+
+    outsider = agent.ImproverOutput(sections=[
+        agent.ImproverSection(id="Skills", body="Python")])
+    text2, warns2, _ = agent.assemble_resume_units(units, outsider)
+    assert text2 == "Jane Roe\nPython developer."
+    assert any("outside the 'Resume' whole-document unit" in w for w in warns2)
+
+
+def test_improver_output_from_markdown_modes_and_declined():
+    out = agent.improver_output_from_markdown(
+        "# Jane\n## Skills\nPython\n\nDECLINED: n8n")
+    assert [s.id for s in out.sections] == ["Skills"]
+    assert out.sections[0].body == "Python"
+    assert out.declined == ["n8n"]
+
+    out = agent.improver_output_from_markdown(
+        "# Jane\n## Skills\nPython", whole_document=True)
+    assert [s.id for s in out.sections] == ["Resume"]
+    assert out.sections[0].body == "# Jane\n## Skills\nPython"
+
+    out = agent.improver_output_from_markdown("plain prose, no headings")
+    assert [s.id for s in out.sections] == ["Resume"]
+    assert out.sections[0].body == "plain prose, no headings"
+
+
+def _improver_state(resume_text: str, **overrides) -> dict:
+    state = {
+        "iteration": 0,
+        "optimized_resume": "",          # empty -> base_content = resume_text
+        "resume_text": resume_text,
+        "job_text": "ML platform engineer role.",
+        "human_notes": "",
+        "missing_skills": "- Kubernetes",
+        "feedback": None,
+    }
+    state.update(overrides)
+    return state
+
+
+def test_improver_writer_outage_falls_back_to_source_verbatim(monkeypatch):
+    """BB1 Phase B: a total writer failure degrades to the source resume
+    verbatim with a loud integrity warning instead of killing the run."""
+    from agent.nodes.improver import improver_node
+
+    class BrokenCreative:
+        def invoke(self, messages):
+            raise RuntimeError("provider outage")
+
+        def with_structured_output(self, schema):
+            raise RuntimeError("provider outage")
+
+    monkeypatch.setattr(agent.llms, "llm_creative", BrokenCreative())
+    out = improver_node(_improver_state(
+        "Jane Roe\nPython developer with cloud exposure."))
+    assert out["iteration"] == 1
+    assert out["optimized_resume"].strip() == \
+        "Jane Roe\nPython developer with cloud exposure."
+    warns = "; ".join(out["guardrail_warnings"])
+    assert "provider outage" in warns
+    assert "shipped the source resume verbatim" in warns
+
+
+def test_improver_unknown_unit_ids_are_dropped_and_noted(monkeypatch):
+    """The trusting-nothing guarantee: the writer cannot invent a section
+    by naming it - unknown ids are dropped and surfaced in the integrity
+    warning, while the source units ship verbatim."""
+    from agent.nodes.improver import improver_node
+
+    class UnknownIdLLM(FakeCreativeLLM):
+        def invoke(self, messages):
+            return AIMessage(content="## Awards\nMade-up award")
+
+    monkeypatch.setattr(agent.llms, "llm_creative", UnknownIdLLM())
+    # MARKED source: the converter then emits id "Awards" for the fake's
+    # markdown. (A heading-less source would whole-document it into one
+    # Resume replacement, which the hallucination filter then empties -
+    # that defense-in-depth belt has this assembly drop as its suspenders.)
+    out = improver_node(_improver_state(
+        "# Jane\n## Experience\nBuilt pipelines, cutting latency by 40%."))
+    final = out["optimized_resume"]
+    assert "## Experience\nBuilt pipelines, cutting latency by 40%." in final
+    assert "Made-up award" not in final and "Awards" not in final
+    assert any("unknown section id 'Awards'" in w
+               for w in out["guardrail_warnings"])
+
+
+def test_improver_structured_declined_list_feeds_the_channel(monkeypatch):
+    """QW2 in the structured shape: the writer's `declined` entries ride
+    the same declined_requests channel the DECLINED: lines used."""
+    from agent.nodes.improver import improver_node, IMPROVER_PROMPT_VERSION
+
+    class StructuredDecliner:
+        def invoke(self, messages):
+            raise AssertionError("plain invoke must not be used")
+
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    return agent.ImproverOutput(
+                        sections=[agent.ImproverSection(
+                            id="Experience",
+                            body="- Built pipelines, cutting latency by 40%.")],
+                        declined=["Experience with n8n"])
+
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_creative", StructuredDecliner())
+    out = improver_node(_improver_state(
+        "# Jane\n## Experience\nBuilt pipelines, cutting latency by 40%."))
+    assert out["declined_requests"] == ["Experience with n8n"]
+    assert "n8n" not in out["optimized_resume"]
+    assert "40%" in out["optimized_resume"]
     assert out["prompt_versions"] == {"improver": IMPROVER_PROMPT_VERSION}
 
 

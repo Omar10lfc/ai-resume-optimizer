@@ -14,7 +14,8 @@ structured-output branches, immune to prompt text):
 | Node (profile)              | Wire key                       | Tool call / reply                       |
 |-----------------------------|--------------------------------|-----------------------------------------|
 | scanner (llm_strict)        | "MISSING SKILLS" in prompt     | plain: gap chips (Kubernetes/Terraform) |
-| improver + polisher-full    | "Rewrite the resume" in prompt | plain: two-section resume markdown      |
+| improver + polisher-full    | tool bound: "ImproverOutput"   | sections by id (whole-document unit     |
+|                             |                                | when the prompt offers "[id=Resume]")   |
 | polisher-target (llm_creat) | "SURGICAL REVISION" in prompt  | plain: one rewritten "## Skills"        |
 | cover_letter  (llm_fast)    | "Cover Letter" in prompt       | plain: prose cover letter               |
 | interview_prep (llm_fast)   | "Preparation Tips" in prompt   | plain: questions + tips markdown        |
@@ -22,11 +23,12 @@ structured-output branches, immune to prompt text):
 | ats_check     (llm_fast)    | tool bound: "SemanticReview"   | verdicts=[] (no semantic rescues)       |
 
 Key notes:
-- Tool branches take priority: the reviewer/semantic-check prompts contain job
+- Tool branches take priority: the reviewer/semantic/improver prompts contain job
   descriptions could accidentally match a text key, so the bound tool decides.
-- "SURGICAL REVISION" is checked before "Rewrite the resume": the polisher's
-  full-rewrite fallback shares the improver's prompt builder; the targeted
-  prompt is the only one that must win its own branch.
+- "SURGICAL REVISION" is checked before the plain text keys: the polisher's
+  full-rewrite fallback now rides the improver's STRUCTURED path (bound
+  tool), so the plain "Rewrite the resume" branch only survives as a
+  safety net for an unbound writer answer.
 - Every accepted completion request is appended to ``requests`` in arrival
   order so tests can assert the exact call sequence/arity of a pipeline.
 """
@@ -90,6 +92,23 @@ def _classify(body: dict) -> tuple[str | None, dict | None, str]:
         }), "tool:ReviewOutput"
     if bound_tool == "SemanticReview":
         return None, _tool_call("SemanticReview", {"verdicts": []}), "tool:SemanticReview"
+    if bound_tool == "ImproverOutput":
+        # BB1 Phase B: the writer returns section replacements by id.
+        # Whole-document mode (the prompt offers "[id=\"Resume\"]" for a
+        # heading-less source) -> one Resume replacement whose body is the
+        # full FAKE_RESUME, so the assembled output is byte-identical to
+        # the plain-answer era. By-section mode (the polisher fallback
+        # rewriting a marked draft) -> replacements for its sections.
+        prompt = _prompt_text(body)
+        if '[id="Resume"]' in prompt:
+            arguments = {"sections": [{"id": "Resume", "body": FAKE_RESUME}],
+                         "declined": []}
+        else:
+            arguments = {"sections": [
+                {"id": "Skills", "body": "Python, Docker"},
+                {"id": "Experience", "body": "Built ML pipelines."},
+            ], "declined": []}
+        return None, _tool_call("ImproverOutput", arguments), "tool:ImproverOutput"
     if bound_tool:
         # Unknown bound tool: keep the structured flow loud and visible.
         return None, _tool_call(bound_tool, {}), f"tool:{bound_tool}"
@@ -98,7 +117,7 @@ def _classify(body: dict) -> tuple[str | None, dict | None, str]:
     prompt = _prompt_text(body)
     if "SURGICAL REVISION" in prompt:        # polisher targeted rewrites
         return FAKE_SECTION, None, "polish_target"
-    if "Rewrite the resume" in prompt:       # improver + polisher full-rewrite
+    if "Rewrite the resume" in prompt:       # unbound writer answer (safety net)
         return FAKE_RESUME, None, "rewrite"
     if "MISSING SKILLS" in prompt:           # scanner
         return FAKE_MISSING_SKILLS, None, "missing_skills"
