@@ -304,6 +304,10 @@ def test_step2_over_the_wire_end_to_end(client, wire_llms, monkeypatch):
     # BB2: the renderer stamp rides the payload (the hermetic conftest pin
     # keeps the wire run on the classic LaTeX engine).
     assert result["render_engine"] == "latex@1"
+    # Round 13 (roadmap 12): the XYZ bullet-impact audit rides the payload
+    # too. The fake's canned resume is bullet-free prose (not "- " items), so
+    # the audit is correctly empty - the key + shape is what is pinned here.
+    assert result["bullet_impact"] == []
 
     # MR5: per-task token accounting rides the result payload. The fake
     # server reports {prompt:1, completion:1, total:2} per completion and a

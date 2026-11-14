@@ -3760,6 +3760,29 @@ def test_graph_writes_requirement_match_table(fake_llms, monkeypatch):
     assert row["reason"] == "Covers all key terms (python, docker, kubernetes)."
 
 
+def test_graph_writes_bullet_impact_table(fake_llms, monkeypatch):
+    """Round 13 (roadmap 12) wiring: ats_check computes the XYZ audit every
+    pass and the best-of guard keeps the WINNER's audit - a regressed polish
+    pass cannot ship a duty-statement audit for the good first draft."""
+    good = ("## Skills\nPython, Docker, Kubernetes\n## Experience\n"
+            "**Engineer** | Corp | 2024\n"
+            "- Built Python services on Kubernetes with Docker.")
+    worse = "## Skills\nPython\n## Experience\nWrote some scripts."
+    result, seq = _run_with_drafts([good, worse], monkeypatch)
+
+    rows = result.get("bullet_impact")
+    assert isinstance(rows, list) and len(rows) == 1
+    row = rows[0]
+    assert row["section"] == "Experience"
+    assert row["grade"] == "medium"  # strong verb ('built'), no metric
+    assert row["verb"] == "built"
+    assert row["metrics"] == []
+    assert row["bullet"] == "Built Python services on Kubernetes with Docker."
+    # the shipped audit describes the SHIPPED resume, verbatim the scorer
+    assert rows == agent.compute_bullet_impact(good)
+    assert not any("Wrote some scripts" in r["bullet"] for r in rows)
+
+
 # ==========================================
 # Scoring truth: reviewer flattening + ATS link-target alignment
 # ==========================================

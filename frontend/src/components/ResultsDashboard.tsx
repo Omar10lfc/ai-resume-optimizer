@@ -15,16 +15,18 @@ import {
   ShieldWarning,
   Prohibit,
   Target,
+  TrendUp,
+  Warning,
   X,
   Lightning,
 } from "@phosphor-icons/react";
-import type { OptimizationResult, RequirementMatch } from "../types";
+import type { OptimizationResult, RequirementMatch, BulletImpactRow } from "../types";
 import { resolveArtifactUrl } from "../api";
 import { ScoreGauge } from "./ScoreGauge";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 
-type TabId = "resume" | "cover" | "ats" | "fit" | "interview" | "integrity" | "usage";
+type TabId = "resume" | "cover" | "ats" | "fit" | "impact" | "interview" | "integrity" | "usage";
 
 interface ResultsDashboardProps {
   result: OptimizationResult;
@@ -84,9 +86,10 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
     ...(result.cover_letter_metrics ?? []),
   ];
   // Tabs beyond the core four exist only when this run has their content:
-  // Fit (MR2 requirement table), Integrity (QW2/QW3 channels), Usage (MR5
-  // per-task token accounting).
+  // Fit (MR2 requirement table), Bullet impact (round 13 XYZ audit),
+  // Integrity (QW2/QW3 channels), Usage (MR5 per-task token accounting).
   const fitRows = (result.requirement_matches ?? []) as RequirementMatch[];
+  const impactRows = (result.bullet_impact ?? []) as BulletImpactRow[];
   const taskUsage = result.task_usage ?? {};
   const usageRows = Object.entries(taskUsage);
   const usageTotals = usageRows.length
@@ -104,6 +107,10 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   ];
   if (fitRows.length > 0) {
     effectiveTabs.splice(3, 0, { id: "fit" as TabId, label: "Fit", icon: Target });
+  }
+  if (impactRows.length > 0) {
+    // Bullet impact sits beside Fit - both are code-classified analytical views.
+    effectiveTabs.splice(fitRows.length > 0 ? 4 : 3, 0, { id: "impact" as TabId, label: "Bullet impact", icon: TrendUp });
   }
   if (integrityList.length > 0) {
     effectiveTabs.push({ id: "integrity" as TabId, label: "Integrity", icon: ShieldWarning });
@@ -165,6 +172,17 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   const fitCopy = fitRows.length
     ? `Requirement fit (${fitCounts![0]}/${fitRows.length} fully covered):\n` +
       fitRows.map((r) => `[${r.status.toUpperCase()}] ${r.requirement} — ${r.reason}`).join("\n")
+    : "";
+  const impactCounts = impactRows.length
+    ? [
+        impactRows.filter((r) => r.grade === "high").length,
+        impactRows.filter((r) => r.grade === "medium").length,
+        impactRows.filter((r) => r.grade === "low").length,
+      ]
+    : null;
+  const impactCopy = impactRows.length
+    ? `Bullet impact (${impactCounts![0]} high / ${impactCounts![1]} medium / ${impactCounts![2]} low of ${impactRows.length} bullets):\n` +
+      impactRows.map((r) => `[${r.grade.toUpperCase()}] ${r.bullet} — ${r.reason}`).join("\n")
     : "";
   const usageCopy = usageRows.length
     ? `Per-task token usage (${usageTotals!.llm_calls} LLM calls, ${usageTotals!.total_tokens} tokens):\n` +
@@ -373,6 +391,71 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                     </span>
                     <span className="flex-1 min-w-0 text-2xs text-ink leading-relaxed">{row.requirement}</span>
                   </div>
+                  {row.reason && (
+                    <p className="mt-1.5 text-2xs text-ink-2 leading-relaxed">{row.reason}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+
+            {Object.keys(result.prompt_versions ?? {}).length > 0 && (
+              <div className="pt-3 mt-3 border-t border-line">
+                <span className="text-2xs text-ink-3 font-mono leading-relaxed break-all">
+                  prompts: {Object.values(result.prompt_versions ?? {}).join(" · ")}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "impact" && (
+          <div id="panel-impact" role="tabpanel" aria-labelledby="tab-impact" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
+            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-line">
+              <span className="text-2xs text-ink-3 font-mono">Bullet impact — graded in code against the Google XYZ formula</span>
+              {renderCopyRow("impact", impactCopy)}
+            </div>
+
+            <p className="text-2xs text-ink-3 leading-relaxed mb-3">
+              Every achievement bullet audited for &ldquo;Accomplished [X] as measured by [Y] by doing [Z]&rdquo;:
+              a strong action verb plus a measured outcome. Duty statements grade low and are the first thing a recruiter skims past.
+            </p>
+            {impactCounts && (
+              <div className="flex items-center gap-2 mb-3">
+                <span className="px-2 py-0.5 rounded-sm2 bg-ok-tint border border-ok/25 text-2xs text-ok font-semibold">{impactCounts[0]} high</span>
+                <span className="px-2 py-0.5 rounded-sm2 bg-warn-tint border border-warn/25 text-2xs text-warn font-semibold">{impactCounts[1]} medium</span>
+                <span className="px-2 py-0.5 rounded-sm2 bg-danger-tint border border-danger/25 text-2xs text-danger font-semibold">{impactCounts[2]} low</span>
+              </div>
+            )}
+            <ul className="space-y-2">
+              {impactRows.map((row, i) => (
+                <li key={`impact-${i}`} className="rounded-md2 bg-surface border border-line p-2.5">
+                  <div className="flex items-start gap-2">
+                    <span
+                      aria-label={row.grade}
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-sm2 border text-2xs font-semibold uppercase tracking-wide shrink-0 ${
+                        row.grade === "high"
+                          ? "bg-ok-tint border-ok/25 text-ok"
+                          : row.grade === "medium"
+                            ? "bg-warn-tint border-warn/25 text-warn"
+                            : "bg-danger-tint border-danger/25 text-danger"
+                      }`}
+                    >
+                      {row.grade === "high"
+                        ? <Check weight="bold" className="w-3 h-3" />
+                        : row.grade === "medium"
+                          ? <Warning weight="bold" className="w-3 h-3" />
+                          : <X weight="bold" className="w-3 h-3" />}
+                      {row.grade}
+                    </span>
+                    <span className="flex-1 min-w-0 text-2xs text-ink leading-relaxed">{row.bullet}</span>
+                  </div>
+                  {row.metrics.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {row.metrics.map((metric, j) => (
+                        <span key={`impact-${i}-m-${j}`} className="px-1.5 py-0.5 rounded-sm2 bg-inset border border-line text-2xs text-ink-2 font-mono">{metric}</span>
+                      ))}
+                    </div>
+                  )}
                   {row.reason && (
                     <p className="mt-1.5 text-2xs text-ink-2 leading-relaxed">{row.reason}</p>
                   )}

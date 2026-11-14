@@ -5,6 +5,7 @@ from ..config import ATS_SCORE_WEIGHT, LLM_SCORE_WEIGHT
 from ..ats import compute_ats_match, apply_semantic_matches
 from ..helpers import _safe_print, _safe_truncate
 from ..match import compute_requirement_match_table
+from ..bullet_impact import compute_bullet_impact
 from ..provider import invoke_structured_with_repair
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -69,6 +70,12 @@ def ats_check_node(state: AgentState):
     requirement_table = compute_requirement_match_table(
         state['job_text'], state['optimized_resume'], semantic)
 
+    # Round 13 (roadmap 12): the Google XYZ bullet-impact audit for THIS
+    # draft - deterministic, zero LLM calls (the Fit-table precedent).
+    # Follows the SAME best-of guard: a regressed polish pass keeps the
+    # audit that describes the resume that actually ships.
+    bullet_table = compute_bullet_impact(state['optimized_resume'])
+
     llm_quality = state.get('llm_quality_score', 0)
     composite = round(
         ATS_SCORE_WEIGHT * result['percentage'] + LLM_SCORE_WEIGHT * llm_quality
@@ -92,6 +99,8 @@ def ats_check_node(state: AgentState):
             # MR2: the table travels with the winning draft, so later,
             # worse passes keep a table that matches the shipped resume.
             "requirement_matches": requirement_table,
+            # Round 13: the bullet audit travels with it for the same reason.
+            "bullet_impact": bullet_table,
         }
     if composite < best_score:
         _safe_print(f"-> Draft {state.get('iteration', 0)} regressed ({composite} < {best_score}); keeping the best draft.")
@@ -103,6 +112,7 @@ def ats_check_node(state: AgentState):
             "llm_quality_score": best["llm_quality_score"],
             "best_result": best,
             "requirement_matches": list(best.get("requirement_matches") or []),
+            "bullet_impact": list(best.get("bullet_impact") or []),
             "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
         }
 
@@ -112,5 +122,6 @@ def ats_check_node(state: AgentState):
         "score": composite,
         "best_result": best,
         "requirement_matches": requirement_table,
+        "bullet_impact": bullet_table,
         "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
     }

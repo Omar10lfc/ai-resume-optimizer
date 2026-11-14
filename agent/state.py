@@ -98,6 +98,12 @@ class AgentState(TypedDict):
     # table of the draft that actually ships) so the payload never describes a
     # regressed draft.
     requirement_matches: NotRequired[list]
+    # Round 13 (roadmap 12, Nov 14 2026): Google XYZ bullet-impact audit -
+    # deterministic per-bullet grades (high/medium/low) + human reasons.
+    # Zero LLM calls (the MR2 Fit-table precedent); recomputed per ATS pass
+    # and follows the SAME best-of guard as requirement_matches, so the audit
+    # always describes the resume that ships.
+    bullet_impact: NotRequired[list]
     # Cover-letter integrity (live run 22e943c6, Nov 11 2026): metric-shaped
     # tokens in the generated COVER LETTER that neither the source resume nor
     # the user notes contain (the letter fabricated "70%"/"45%" from nothing

@@ -13,6 +13,16 @@ export interface RequirementMatch {
   reason: string;
 }
 
+/** Round 13 (roadmap 12): one row of the deterministic Google XYZ bullet-impact audit (graded in code, never by a model). */
+export interface BulletImpactRow {
+  bullet: string;
+  section: string;
+  grade: "high" | "medium" | "low";
+  verb: string | null;
+  metrics: string[];
+  reason: string;
+}
+
 export interface OptimizationResult {
   session: string;
   optimized_resume: string;
@@ -42,6 +52,8 @@ export interface OptimizationResult {
   prompt_versions?: Record<string, string>;
   /** MR2: deterministic requirement fit rows (covered/partial/gap + reasons). */
   requirement_matches?: RequirementMatch[];
+  /** Round 13: deterministic Google XYZ bullet-impact audit rows (high/medium/low + reasons). */
+  bullet_impact?: BulletImpactRow[];
   /** BB1 Phase B (PB3): the PARSED original resume, echoed server-side when
    *  the request opts in (include_diff=original) - powers DiffView for
    *  uploads; paste mode falls back to the client-held text. */

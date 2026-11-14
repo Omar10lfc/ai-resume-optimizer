@@ -121,6 +121,7 @@ def _recovery_reset() -> dict:
         "render_engine": "",
         "scrub_removals": [], "unevidenced_metrics": [],
         "declined_requests": [], "requirement_matches": [],
+        "bullet_impact": [],
         "feedback_sections": [], "polish_sections_targeted": [],
         "cover_letter_metrics": [],
         "human_notes": "", "missing_skills": "",
@@ -355,6 +356,9 @@ def _extract_results(final_state: dict) -> dict:
         # MR2: deterministic requirement-level fit table (covered/partial/gap
         # rows with evidence terms and human reasons).
         "requirement_matches": final_state.get("requirement_matches") or [],
+        # Round 13 (roadmap 12): the deterministic XYZ bullet-impact audit
+        # (high/medium/low grades + human reasons per achievement bullet).
+        "bullet_impact": final_state.get("bullet_impact") or [],
         "weights": {
             "ats": agent_config.ATS_SCORE_WEIGHT,
             "llm": agent_config.LLM_SCORE_WEIGHT,
