@@ -301,6 +301,10 @@ def test_step2_over_the_wire_end_to_end(client, wire_llms, monkeypatch):
     # The seven prompt-version stamps survive the concurrent fan-out merge.
     assert result["prompt_versions"] == EXPECTED_PROMPT_VERSIONS
 
+    # BB2: the renderer stamp rides the payload (the hermetic conftest pin
+    # keeps the wire run on the classic LaTeX engine).
+    assert result["render_engine"] == "latex@1"
+
     # MR5: per-task token accounting rides the result payload. The fake
     # server reports {prompt:1, completion:1, total:2} per completion and a
     # fresh step-2 makes exactly 9 completions (tool sequence below).

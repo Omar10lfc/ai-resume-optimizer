@@ -874,6 +874,49 @@ def test_find_unevidenced_metric_empty_inputs():
     assert agent.find_unevidenced_metric_claims("Cut by 55%", "") == ["55%"]
 
 
+def test_find_unevidenced_metric_rounding_tolerance():
+    """Nov 14 2026 ('96 %' survivor): typed numbers compared as text only
+    flagged the cover letter's legitimate rounding - the letter cited
+    '96 %' where the resume says '96.2%'. A claim that is the rounding or
+    truncation of an evidence value at the claim's precision is evidenced;
+    drift, fabrication, wrong values, and ratios still flag."""
+    evidence = ("Cut latency 96.2% via caching. Trimmed spend by 44.6%. "
+                "Speed 2.6x faster. p95 latency 380 ms.")
+    # legitimate roundings -> silent
+    assert agent.find_unevidenced_metric_claims(
+        "Cut latency 96 % via caching.", evidence) == []
+    assert agent.find_unevidenced_metric_claims(
+        "Trimmed spend by 45%.", evidence) == []
+    assert agent.find_unevidenced_metric_claims(
+        "Speed 3x faster.", evidence) == []
+    # drift / fabrication / wrong value / ratio -> still flagged
+    assert agent.find_unevidenced_metric_claims(
+        "p95 latency 400 ms.", evidence) == ["400 ms"]
+    assert agent.find_unevidenced_metric_claims(
+        "Reduced manual processing by 70%.", evidence) == ["70%"]
+    assert agent.find_unevidenced_metric_claims(
+        "Trimmed spend by 98%.", evidence) == ["98%"]
+    assert agent.find_unevidenced_metric_claims(
+        "Passed 150/150 benchmark tests.", "Passed 149/150 benchmark tests."
+    ) == ["150/150"]
+
+
+def test_find_unevidenced_metric_rounding_tolerance_unit_must_match():
+    """96 % tolerates 96.2%; it does not tolerate a different-unit metric
+    that happens to share the number."""
+    assert agent.find_unevidenced_metric_claims(
+        "Cut 96% of waste.", "Measured 96.2 ms per request.") == ["96%"]
+
+
+def test_unevidenced_metric_tokens_rounding_tolerance():
+    """The scrubber's per-line scan shares the tolerance: a rounded claim
+    survives the scrub, a drifted one does not."""
+    assert agent.helpers._unevidenced_metric_tokens(
+        "improved throughput 96 %", ["improved throughput 96.2%"]) == []
+    assert agent.helpers._unevidenced_metric_tokens(
+        "improved latency 400 ms", ["improved latency 380 ms"]) == ["400ms"]
+
+
 def test_find_unevidenced_metric_catches_fraction_pass_rates():
     """Nov 7 run pair (1d3e1550): '150/150 benchmark passes' is a claim a
     model can coin without a %/x/ms unit - it must be flagged when the

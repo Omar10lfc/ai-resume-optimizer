@@ -118,6 +118,7 @@ def _recovery_reset() -> dict:
         "resume_docx_path": "", "resume_tex_path": "",
         "resume_pages": 0, "resume_compacted": False,
         "page_overflow_warning": "", "guardrail_warnings": [],
+        "render_engine": "",
         "scrub_removals": [], "unevidenced_metrics": [],
         "declined_requests": [], "requirement_matches": [],
         "feedback_sections": [], "polish_sections_targeted": [],
@@ -347,6 +348,10 @@ def _extract_results(final_state: dict) -> dict:
         # unevidenced numbers, rendered by the results Integrity tab.
         "cover_letter_metrics": final_state.get("cover_letter_metrics") or [],
         "prompt_versions": final_state.get("prompt_versions") or {},
+        # BB2: which engine produced the resume PDF (html-chromium@1 /
+        # latex@1 / xhtml2pdf@1) - the renderer stamp beside the prompt
+        # stamps, one lookup for "which engine produced this run".
+        "render_engine": final_state.get("render_engine") or "",
         # MR2: deterministic requirement-level fit table (covered/partial/gap
         # rows with evidence terms and human reasons).
         "requirement_matches": final_state.get("requirement_matches") or [],

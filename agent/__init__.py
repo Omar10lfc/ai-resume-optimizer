@@ -14,6 +14,10 @@ from .latex_render import (
     parse_markdown_resume, render_resume_tex, latex_to_pdf, latex_to_docx,
     HAVE_PANDOC, HAVE_PDFLATEX,
 )
+from .html_render import (
+    render_resume_html, html_to_pdf, render_density_tiers,
+    HTML_RENDERER_VERSION, HAVE_BROWSER, BROWSER_PATH,
+)
 from .config import (
     SCORE_THRESHOLD, MAX_ITERATIONS, MAX_PDF_PAGES, MAX_RESUME_CHARS,
     MAX_JOB_CHARS, MAX_PDF_BYTES, ATS_SCORE_WEIGHT, LLM_SCORE_WEIGHT,
@@ -52,6 +56,9 @@ __all__ = [
     "find_unevidenced_metric_claims", "scrub_unsupported_content",
     "split_markdown_sections", "canonical_feedback_section",
     "merge_rewritten_sections", "extract_declined_requests",
+    # BB2 HTML/CSS renderer (headless Chromium)
+    "render_resume_html", "html_to_pdf", "render_density_tiers",
+    "HTML_RENDERER_VERSION", "HAVE_BROWSER", "BROWSER_PATH",
     # ATS engine
     "_extract_keywords", "_simple_stem", "compute_ats_match", "apply_semantic_matches", "_job_brief",
     "_boundary_contains", "freq_ok",

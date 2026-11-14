@@ -58,6 +58,12 @@ class AgentState(TypedDict):
     resume_pages: NotRequired[int]
     resume_compacted: NotRequired[bool]
     page_overflow_warning: NotRequired[str]
+    # BB2 (Nov 14 2026): which engine produced the resume PDF -
+    # "html-chromium@1" (the CSS-density HTML theme), "latex@1" (the classic
+    # theme), or "xhtml2pdf@1" (the last-resort fallback). One-lookup answer
+    # to "which renderer produced this run", same forensics contract the
+    # prompt stamps serve for prompts.
+    render_engine: NotRequired[str]
     # Best-of guard (ats_check): snapshot of the highest-composite draft seen
     # so far in this run, so extra polish iterations can never regress the
     # final result below an earlier draft.

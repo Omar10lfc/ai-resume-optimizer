@@ -1,5 +1,6 @@
 """Shared utility functions: printing, truncation, text cleaning, PDF export."""
 import logging
+import math
 import re
 import unicodedata
 from pathlib import Path
@@ -270,6 +271,62 @@ _METRIC_TOKEN_RE = re.compile(
     r"case|check)s?\b))"
 )
 
+# Typed-number parsing for the rounding tolerance (Nov 14 2026, the "96 %"
+# survivor): a metric token decomposed into (value, unit, decimals). Ratios
+# ("150/150") deliberately do NOT parse - they are exact-set claims, never
+# rounding targets.
+_METRIC_VALUE_RE = re.compile(r"^(\d+(?:[.,]\d+)?)\s*(%|x|ms|mm)$")
+
+
+def _metric_value(token: str):
+    """(value, unit, decimals) of a metric token, or None. '96 %' ->
+    (96.0, '%', 0); '1.7 ms' -> (1.7, 'ms', 1); '150/150' -> None."""
+    m = _METRIC_VALUE_RE.match((token or "").strip().lower())
+    if not m:
+        return None
+    raw = m.group(1)
+    decimals = len(raw.split(".")[1]) if "." in raw else (
+        len(raw.split(",")[1]) if "," in raw else 0)
+    return float(raw.replace(",", ".")), m.group(2), decimals
+
+
+def _round_half_up(x: float, decimals: int) -> float:
+    """Human-convention rounding (96.5 -> 97, not the float-lattice's
+    banker's 96) at the claim's precision."""
+    scale = 10 ** decimals
+    return math.floor(x * scale + 0.5) / scale
+
+
+def _claim_rounds_to(token: str, evidence_values: list) -> bool:
+    """True when the claim token is a legitimate ROUNDED form of an
+    evidence metric: same unit, and rounding OR truncating the evidence
+    value to the claim's decimal precision reproduces the claim (96.2 ->
+    "96 %" and "96.9 %"; 44.6 -> "45%"; 2.6 -> "3x"). A drifted claim
+    ("400 ms" vs "380 ms") still fails."""
+    parsed = _metric_value(token)
+    if not parsed:
+        return False
+    claim_val, claim_unit, claim_dec = parsed
+    for ev_val, ev_unit, _ev_dec in evidence_values:
+        if ev_unit != claim_unit:
+            continue
+        rounded = _round_half_up(ev_val, claim_dec)
+        truncated = math.floor(ev_val * (10 ** claim_dec)) / (10 ** claim_dec)
+        if rounded == claim_val or truncated == claim_val:
+            return True
+    return False
+
+
+def _evidence_metric_values(evidence_text: str) -> list:
+    """(value, unit, decimals) triples for every metric-shaped token in the
+    evidence text - the numeric side of the rounding tolerance."""
+    out = []
+    for m in _METRIC_TOKEN_RE.finditer(evidence_text or ""):
+        parsed = _metric_value(m.group(1))
+        if parsed:
+            out.append(parsed)
+    return out
+
 
 def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
                                    max_claims: int = 6) -> list[str]:
@@ -288,6 +345,15 @@ def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
     "42.69%" flagged the user's REAL number), and the evidence is compacted
     per line so an spaced variant of a source metric never reads as a
     cross-line coincidence.
+
+    Since Nov 14 2026 the scan is also ROUNDING-TOLERANT at the claim's
+    decimal precision (the "96 %" survivor, live: the cover letter cited
+    "96 %" where the resume says "96.2%" and was flagged as fabrication -
+    typed numbers were compared as text only). Same unit + a claim that is
+    the rounding or truncation of an evidence value ("96.2%" -> "96 %",
+    "44.6%" -> "45%", "2.6x" -> "3x") is evidenced; a DRIFTED claim
+    ("400 ms" vs "380 ms") still flags. Ratios never tolerate - exact-set
+    claims.
     """
     if not optimized_text:
         return []
@@ -296,6 +362,7 @@ def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
         re.sub(r"\s+", "", (line or "").lower())
         for line in (evidence_text or "").splitlines()
     ]
+    evidence_values = _evidence_metric_values(evidence_text)
     claims: list[str] = []
     seen: set[str] = set()
     for match in _METRIC_TOKEN_RE.finditer(optimized_text):
@@ -309,6 +376,8 @@ def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
             seen.add(key)
             continue
         seen.add(key)
+        if _claim_rounds_to(token, evidence_values):
+            continue
         claims.append(token)
         if len(claims) >= max_claims:
             break
@@ -586,14 +655,27 @@ def _tidy_removal_residue(line: str) -> str:
 
 def _unevidenced_metric_tokens(line: str, ev_lines: list[str]) -> list[str]:
     """Compact forms of the metric tokens in `line` that the evidence
-    (whitespace-insensitively, per line) does not contain."""
+    (whitespace-insensitively, per line) does not contain. Since Nov 14
+    2026 the same rounding tolerance as the full-text scan applies: a
+    claim that is the rounding/truncation of an evidence metric at the
+    claim's precision ("96 %" vs "96.2%") is evidenced; ratios never
+    tolerate."""
+    evidence_values: list = []
+    for ln in ev_lines:
+        for m in _METRIC_TOKEN_RE.finditer(ln):
+            parsed = _metric_value(m.group(1))
+            if parsed:
+                evidence_values.append(parsed)
     out: list[str] = []
     for match in _METRIC_TOKEN_RE.finditer(line):
         compact = _compact_all(match.group(1))
         if not compact or compact in out:
             continue
-        if not any(compact in cl for cl in ev_lines):
-            out.append(compact)
+        if any(compact in cl for cl in ev_lines):
+            continue
+        if _claim_rounds_to(match.group(1), evidence_values):
+            continue
+        out.append(compact)
     return out
 
 
