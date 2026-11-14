@@ -90,6 +90,7 @@ def _export_resume_latex(resume_text: str, request_dir: Path) -> dict:
         "resume_pdf_path": resume_pdf_path or "",
         "resume_docx_path": resume_docx_path or "",
         "resume_tex_path": resume_tex_path or "",
+        "resume_html_path": "",
         "resume_pages": resume_pages or 0,
         "resume_compacted": resume_compacted,
         "page_overflow_warning": page_overflow_warning,
@@ -97,18 +98,24 @@ def _export_resume_latex(resume_text: str, request_dir: Path) -> dict:
     }
 
 
-def _export_resume_html(resume_text: str, request_dir: Path) -> dict | None:
+def _export_resume_html(resume_text: str, request_dir: Path,
+                        theme: str = "") -> dict | None:
     """The BB2 HTML/CSS path (the Dossier steal).
 
     Renders the resume through the CSS-density theme printed by headless
     Chromium; the .tex source + DOCX still ride the LaTeX tooling (no
-    pdflatex needed) so the artifact contract stays intact. Returns None
-    when the browser is unavailable or the print fails - the caller falls
-    back to the LaTeX path, so an export never fails because of the theme.
+    pdflatex needed) so the artifact contract stays intact. ``theme``
+    selects the look (html_render.THEMES); unknown values fall back to the
+    default here - the runner already validated against the env knob, this
+    is just defense in depth. Returns None when the browser is unavailable
+    or the print fails - the caller falls back to the LaTeX path, so an
+    export never fails because of the theme.
     """
+    if theme not in _html.THEMES:
+        theme = _html.DEFAULT_THEME
     try:
         data = _latex.parse_markdown_resume(resume_text)
-        page = _html.render_resume_html(data)
+        page = _html.render_resume_html(data, theme=theme)
         resume_pdf_path = _html.html_to_pdf(
             page, request_dir, "Optimized_Resume.pdf")
         if not resume_pdf_path:
@@ -118,6 +125,7 @@ def _export_resume_html(resume_text: str, request_dir: Path) -> dict | None:
         resume_compacted = False
         page_overflow_warning = ""
         density_used = 0
+        adopted_html = page
         # Same enforced 1-page containment as the LaTeX path, measured with
         # the SAME pdfplumber convention: on overflow the density-tier
         # ladder probes tighter CSS and adopts the first tier that fits one
@@ -127,12 +135,13 @@ def _export_resume_html(resume_text: str, request_dir: Path) -> dict | None:
                 f"   [HTML] Rendered {resume_pages} pages - "
                 "trying density tiers (airy-tight first).")
             tiered = _html.render_density_tiers(
-                data, request_dir, "Optimized_Resume.pdf")
+                data, request_dir, "Optimized_Resume.pdf", theme=theme)
             if tiered:
                 resume_pdf_path = tiered["pdf_path"]
                 resume_compacted = True
                 resume_pages = 1
                 density_used = tiered["density"]
+                adopted_html = tiered["html"]
                 _safe_print(
                     f"   [HTML] Adopted density tier {tiered['density']} "
                     "(tighter typography).")
@@ -141,6 +150,18 @@ def _export_resume_html(resume_text: str, request_dir: Path) -> dict | None:
                     f"Optimized resume is {resume_pages} pages after compaction attempt. "
                     "Internal target is 1 page - trim content in Step 2 review or hide low-value sections.")
                 _safe_print(f"   [WARN] {page_overflow_warning}")
+
+        # Round 14 preview surface: persist the ADOPTED page html beside the
+        # PDF. The preview IS the printed document (the Dossier's render
+        # architecture): it shows the exact fonts/colors/density the PDF
+        # carries, served later as the "resume-html" artifact kind.
+        resume_html_path = ""
+        try:
+            preview_file = request_dir / "Optimized_Resume.html"
+            preview_file.write_text(adopted_html, encoding="utf-8")
+            resume_html_path = str(preview_file)
+        except Exception as e:
+            _safe_print(f"   [HTML] Preview artifact skipped: {e}")
 
         # Artifact contract: .tex source (advanced editing/Overleaf) + DOCX
         # (pandoc - no pdflatex needed) still generated from the same data.
@@ -158,12 +179,13 @@ def _export_resume_html(resume_text: str, request_dir: Path) -> dict | None:
         except Exception as e:
             _safe_print(f"   [HTML] .tex/DOCX side artifacts skipped: {e}")
 
-        _safe_print(f"   [Renderer] HTML theme (Chromium), density tier "
-                    f"{density_used} (0 = base).")
+        _safe_print(f"   [Renderer] HTML theme '{theme}' (Chromium), "
+                    f"density tier {density_used} (0 = base).")
         return {
             "resume_pdf_path": resume_pdf_path,
             "resume_docx_path": resume_docx_path or "",
             "resume_tex_path": resume_tex_path,
+            "resume_html_path": resume_html_path,
             "resume_pages": resume_pages or 0,
             "resume_compacted": resume_compacted,
             "page_overflow_warning": page_overflow_warning,
@@ -174,33 +196,38 @@ def _export_resume_html(resume_text: str, request_dir: Path) -> dict | None:
         return None
 
 
-def _export_resume(resume_text: str, request_dir: Path) -> dict:
+def _export_resume(resume_text: str, request_dir: Path,
+                   theme: str = "") -> dict:
     """Engine selection: the config knob routes the resume to the HTML/CSS
     theme (when a browser is available and the print succeeds) or the
     classic LaTeX path. ``latex`` pins the historical behavior exactly;
     ``html`` forces the theme with the LaTeX fallback; ``auto`` prefers the
-    theme whenever a browser was found."""
+    theme whenever a browser was found. ``theme`` selects the look
+    (classic | serif | modern; LaTeX ignores it entirely)."""
     from .. import config
     mode = config.RESUME_RENDERER
     if mode in ("html", "auto"):
         if mode == "auto" and not _html.HAVE_BROWSER:
             result = None  # no browser: straight to the classic theme
         else:
-            result = _export_resume_html(resume_text, request_dir)
+            result = _export_resume_html(resume_text, request_dir, theme=theme)
         if result is not None:
             return result
     return _export_resume_latex(resume_text, request_dir)
 
 
-def export_documents(resume_text: str, cover_text: str, request_dir: Path) -> dict:
+def export_documents(resume_text: str, cover_text: str, request_dir: Path,
+                     theme: str = "") -> dict:
     """Renders the optimized resume + cover letter into ``request_dir``.
 
-    Returns exactly the keys the exporter node writes back into the graph
-    state (file paths as strings, "" when an export failed; the trailing
-    keys carry the 1-page containment outcome and the engine stamp).
-    Shared by the pipeline node and the PB2 history re-download endpoint.
+    ``theme`` selects the resume look (classic | serif | modern) on the
+    HTML path; the LaTeX/xhtml2pdf paths ignore it. Returns exactly the
+    keys the exporter node writes back into the graph state (file paths as
+    strings, "" when an export failed; the trailing keys carry the 1-page
+    containment outcome and the engine stamp). Shared by the pipeline node
+    and the PB2 history re-download endpoint (which passes no theme).
     """
-    resume_out = _export_resume(resume_text, request_dir)
+    resume_out = _export_resume(resume_text, request_dir, theme=theme)
 
     # If BOTH engines failed to produce a PDF, fall back to the xhtml2pdf
     # path so the resume download always works.
@@ -220,6 +247,7 @@ def export_documents(resume_text: str, cover_text: str, request_dir: Path) -> di
         "cover_letter_pdf_path": cover_path,
         "resume_docx_path": resume_out.get("resume_docx_path") or "",
         "resume_tex_path": resume_out.get("resume_tex_path") or "",
+        "resume_html_path": resume_out.get("resume_html_path") or "",
         "resume_pages": resume_out.get("resume_pages") or 0,
         "resume_compacted": resume_out.get("resume_compacted") or False,
         "page_overflow_warning": resume_out.get("page_overflow_warning") or "",
@@ -232,7 +260,8 @@ def pdf_exporter_node(state: AgentState):
 
     request_dir = Path(state.get("output_dir") or str(OUTPUT_ROOT / uuid4()))
     exported = export_documents(
-        state['optimized_resume'], state['cover_letter'], request_dir)
+        state['optimized_resume'], state['cover_letter'], request_dir,
+        theme=state.get("resume_theme") or "")
 
     _safe_print(f"-> Saved resume PDF:  {exported['resume_pdf_path']}")
     _safe_print(f"-> Saved resume DOCX: {exported['resume_docx_path']}")

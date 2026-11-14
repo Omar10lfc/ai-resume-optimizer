@@ -104,6 +104,17 @@ class AgentState(TypedDict):
     # and follows the SAME best-of guard as requirement_matches, so the audit
     # always describes the resume that ships.
     bullet_impact: NotRequired[list]
+    # Round 14 (BB2 follow-on, Nov 14 2026): the selected resume look -
+    # an invocation INPUT (classic | serif | modern), not derived state,
+    # so it survives crash-rewind naturally (no reset entry needed).
+    # Empty = pipeline default (config.RESUME_THEME env knob, else classic).
+    resume_theme: NotRequired[str]
+    # Round 14 preview surface: the ADOPTED page html persisted beside the
+    # PDF by the HTML export path (the preview IS the printed document -
+    # the Dossier's render architecture). Empty for the LaTeX/xhtml2pdf
+    # engines (their preview is the PDF itself); the artifact endpoint
+    # serves it as the "resume-html" kind.
+    resume_html_path: NotRequired[str]
     # Cover-letter integrity (live run 22e943c6, Nov 11 2026): metric-shaped
     # tokens in the generated COVER LETTER that neither the source resume nor
     # the user notes contain (the letter fabricated "70%"/"45%" from nothing

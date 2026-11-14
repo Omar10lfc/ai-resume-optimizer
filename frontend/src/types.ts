@@ -1,5 +1,5 @@
 export interface Artifact {
-  kind: "resume-pdf" | "cover-pdf" | "resume-docx" | "resume-tex";
+  kind: "resume-pdf" | "cover-pdf" | "resume-docx" | "resume-tex" | "resume-html";
   filename: string;
   url: string;
 }
@@ -54,6 +54,10 @@ export interface OptimizationResult {
   requirement_matches?: RequirementMatch[];
   /** Round 13: deterministic Google XYZ bullet-impact audit rows (high/medium/low + reasons). */
   bullet_impact?: BulletImpactRow[];
+  /** Round 14: the resolved resume look (classic | serif | modern) the
+   *  shipped PDF was rendered with. The LaTeX/xhtml2pdf paths ignore it
+   *  and print the classic look (render_engine disambiguates). */
+  resume_theme?: string;
   /** BB1 Phase B (PB3): the PARSED original resume, echoed server-side when
    *  the request opts in (include_diff=original) - powers DiffView for
    *  uploads; paste mode falls back to the client-held text. */

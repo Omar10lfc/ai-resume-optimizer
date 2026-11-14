@@ -41,6 +41,7 @@ from langchain_core.runnables import RunnableLambda
 from agent import TRACE_CALLBACKS, agent_app
 from agent import config as agent_config
 from agent.helpers import _safe_truncate
+from agent.html_render import DEFAULT_THEME, THEMES
 from agent.llms import groq_key_override
 from agent.provider import TokenUsageTracker
 from agent.tracing import (
@@ -72,6 +73,9 @@ _ARTIFACT_KINDS = {
     "cover-pdf": "cover_letter_pdf_path",
     "resume-docx": "resume_docx_path",
     "resume-tex": "resume_tex_path",
+    # Round 14: the adopted page html persisted by the HTML export path -
+    # the print preview IS the shipped PDF's source page.
+    "resume-html": "resume_html_path",
 }
 
 
@@ -116,6 +120,7 @@ def _recovery_reset() -> dict:
         "best_result": {}, "cover_letter": "", "interview_questions": "",
         "resume_pdf_path": "", "cover_letter_pdf_path": "",
         "resume_docx_path": "", "resume_tex_path": "",
+        "resume_html_path": "",
         "resume_pages": 0, "resume_compacted": False,
         "page_overflow_warning": "", "guardrail_warnings": [],
         "render_engine": "",
@@ -359,6 +364,11 @@ def _extract_results(final_state: dict) -> dict:
         # Round 13 (roadmap 12): the deterministic XYZ bullet-impact audit
         # (high/medium/low grades + human reasons per achievement bullet).
         "bullet_impact": final_state.get("bullet_impact") or [],
+        # Round 14: the resolved resume look (classic | serif | modern) -
+        # the invocation input echoed so the UI's picker and the shipped
+        # PDF agree (the LaTeX path ignores it and prints the classic look;
+        # render_engine disambiguates).
+        "resume_theme": final_state.get("resume_theme") or "",
         "weights": {
             "ats": agent_config.ATS_SCORE_WEIGHT,
             "llm": agent_config.LLM_SCORE_WEIGHT,
@@ -494,15 +504,34 @@ def _split_composed_notes(notes: str, pristine_missing: str) -> tuple[str, str]:
     return "\n".join(deduped), "\n".join(evidence_lines)
 
 
+def _resolve_theme(resume_theme: str) -> str:
+    """Round 14: resolve the look ONCE (validated against the THEMES
+    vocabulary) - per-request value wins; empty falls back to the
+    ``RESUME_THEME`` env knob; anything unknown falls back to the default.
+    The exporter re-validates defensively, but the value written into
+    state is always canonical."""
+    if resume_theme in THEMES:
+        return resume_theme
+    if agent_config.RESUME_THEME in THEMES:
+        return agent_config.RESUME_THEME
+    return DEFAULT_THEME
+
+
 def _stream_step2(job_description: str, resume_source: str, notes: str,
                   session: str | None, groq_api_key: str | None = None,
-                  include_original: bool = False) -> Iterator[dict]:
+                  include_original: bool = False,
+                  resume_theme: str = "") -> Iterator[dict]:
     """Step 2: resumes the interrupted session (or starts fresh).
 
     groq_api_key (optional) honors a client-supplied Groq key - see stream_step1.
     include_original (BB1 Phase B / PB3): echoes the PARSED original resume
     text in the final result payload so the SPA's before/after diff works
     for uploads too (default off - paste mode already holds the text).
+    resume_theme (round 14): the resume look (classic | serif | modern).
+    An invocation INPUT, not derived state: the per-request form value
+    wins, empty falls back to the ``RESUME_THEME`` env knob, and anything
+    unknown falls back to the default - so it survives crash-rewind with
+    no reset entry. The LaTeX path ignores it (prints the classic look).
 
     Session-entry semantics (MR3):
     - ``next == ("improver",)`` - the durable human-review checkpoint: the
@@ -524,6 +553,11 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
         yield {"type": "error", "message": "Please upload a resume PDF or paste your resume text."}
         return
     job_description = _capped_job_description(job_description)
+
+    # Round 14: resolve the look ONCE (validated against the THEMES
+    # vocabulary); the exporter re-validates defensively, but the value
+    # written into state here is always canonical.
+    theme = _resolve_theme(resume_theme)
 
     with groq_key_override(groq_api_key):
         premask_resume_name(resume_source)
@@ -636,11 +670,16 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                     **_recovery_reset(),
                     "human_notes": evidence_lines,
                     "missing_skills": gap_lines,
+                    # Round 14: the look rides the SAME checkpoint advance -
+                    # deliberately NOT in _recovery_reset (an invocation
+                    # input, so a rewind keeps the user's choice).
+                    "resume_theme": theme,
                 }, as_node="scanner")
             else:
                 agent_app.update_state(config, {
                     "human_notes": evidence_lines,
                     "missing_skills": gap_lines,
+                    "resume_theme": theme,
                 })
             _trace_notes_injection(session, evidence_lines, gap_lines)
 
@@ -708,6 +747,11 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                               "number(s) " + ", ".join(letter_metrics)
                               + ". Verify the cover letter before sending."}
 
+        # Round 14: resume_theme is a run INPUT written via update_state
+        # (never a node delta), so final_state does not accumulate it on the
+        # step1->step2 resume path - seed the resolved value for the echo
+        # BEFORE the payload build.
+        final_state["resume_theme"] = theme
         results_payload = _extract_results(final_state)
         # PB3: opt-in echo of the PARSED original resume. It lives in the
         # authoritative snapshot (loader output - final_state only carries

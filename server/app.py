@@ -57,6 +57,7 @@ _ARTIFACT_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".tex": "text/x-tex",
+    ".html": "text/html",
 }
 
 # Optional basic auth (both env vars required to enable, read once at import)
@@ -322,17 +323,21 @@ def create_app() -> FastAPI:
               resume_file: UploadFile | None = File(None),
               notes: str = Form(""),
               session: str = Form(""),
+              resume_theme: str = Form(""),
               include_diff: str = Query("")) -> StreamingResponse:
         # BB1 Phase B (PB3): include_diff=original asks the server to echo the
         # PARSED original resume in the result payload - DiffView then works
         # for uploads too (the SPA never parsed PDFs client-side).
+        # resume_theme (round 14): the resume look (classic | serif |
+        # modern); empty = the RESUME_THEME env knob, else the default.
         job_description, resume_path = _validate_step_common(
             job_description, resume_text, resume_file)
         session = _safeguard_session(session)
         gen = runners.stream_step2(job_description,
                                    runners.resolve_resume_source(resume_path, resume_text),
                                    notes, session, groq_api_key=_client_groq_key(request),
-                                   include_original=include_diff == "original")
+                                   include_original=include_diff == "original",
+                                   resume_theme=resume_theme)
         temp = [resume_path] if resume_path else []
         return StreamingResponse(
             _wrapped_pipeline(gen, temp),

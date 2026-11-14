@@ -42,6 +42,16 @@ RESUME_RENDERER = (_RESUME_RENDERER_RAW
 # (PATH, then the standard Chrome/Edge install locations, then a Playwright
 # browser cache).
 RENDER_BROWSER_PATH = os.environ.get("RENDER_BROWSER_PATH", "").strip()
+# Resume look knob (round 14): a pure CSS-variable set over fonts, colors,
+# and heading decoration - NEVER sizes (the density variables stay the only
+# size authority, so the measured tier ladder holds for every theme).
+# Duplicated from html_render.THEMES (which this module's consumer imports)
+# to avoid the circular import; "" = pipeline default (classic). The
+# per-request value from the step-2 form overrides this env fallback.
+_RESUME_THEME_RAW = os.environ.get("RESUME_THEME", "").strip().lower()
+RESUME_THEME = (_RESUME_THEME_RAW
+                if _RESUME_THEME_RAW in {"classic", "serif", "modern"}
+                else "")
 
 # --- Output Directories & Persistence ---# BB1 Phase B (PB1): artifacts live under the project's gitignored data/
 # dir by default (visible to the user, survives OS temp cleaners, and

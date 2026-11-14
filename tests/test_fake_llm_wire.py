@@ -308,6 +308,11 @@ def test_step2_over_the_wire_end_to_end(client, wire_llms, monkeypatch):
     # too. The fake's canned resume is bullet-free prose (not "- " items), so
     # the audit is correctly empty - the key + shape is what is pinned here.
     assert result["bullet_impact"] == []
+    # Round 14: the resolved look echoes back (no theme sent -> the
+    # pipeline default), and the LaTeX engine leaves the preview artifact
+    # out of the artifact list entirely.
+    assert result["resume_theme"] == "classic"
+    assert "resume-html" not in artifact_kinds
 
     # MR5: per-task token accounting rides the result payload. The fake
     # server reports {prompt:1, completion:1, total:2} per completion and a

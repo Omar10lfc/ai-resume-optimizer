@@ -8,6 +8,11 @@ Layers:
   corrections ported from the LaTeX renderer (project date/tech/links +
   glue defense, experience role/company swap, education rows), the
   density CSS ladder, and the anti-fabrication link rule.
+- THEME tests (round 14, always run): themes are pure CSS-variable sets
+  over fonts/colors/heading decoration - never sizes (the density ladder
+  stays the size authority) - classic reproducing the round-12 look,
+  unknown values falling back to it, and the ADOPTED page html persisted
+  as the Optimized_Resume.html preview artifact (empty for LaTeX runs).
 - MEASURED-LOOP logic tests (fake measurer, always run): the density-tier
   ladder's contract mirrors the LaTeX tier pass - winner copied onto the
   shipped filename, losing probes unlinked, the bottom-stop gate on tier
@@ -22,6 +27,7 @@ Layers:
   density ladder reclaiming a long fixture to one page.
 """
 import re
+from pathlib import Path
 
 import pytest
 
@@ -438,6 +444,197 @@ def test_export_documents_xhtml2pdf_last_resort(monkeypatch, tmp_path,
     assert got["render_engine"] == "xhtml2pdf@1"
     assert got["resume_pdf_path"].endswith("fallback.pdf")
     assert got["cover_letter_pdf_path"].endswith("fallback.pdf")
+    # No HTML engine ran -> no preview artifact, ever.
+    assert got["resume_html_path"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Themes (round 14): looks, never sizes
+# ---------------------------------------------------------------------------
+
+
+def _theme_style(theme: str, density: int = 0) -> str:
+    page = render_resume_html(parse_markdown_resume(SPEC_B_MD),
+                              density=density, theme=theme)
+    return page.split("<style>")[1].split("</style>")[0]
+
+
+def test_theme_vocabulary_and_default():
+    from agent.html_render import DEFAULT_THEME, THEME_LABELS, THEMES
+    assert THEMES == frozenset({"classic", "serif", "modern"})
+    assert DEFAULT_THEME == "classic"
+    assert set(THEME_LABELS) == set(THEMES)
+
+
+@pytest.mark.parametrize("theme,needle", [
+    ("classic", '--font-body:"Segoe UI"'),
+    ("serif", "--font-body:Charter, Georgia"),
+    ("modern", "--font-body:system-ui"),
+])
+def test_theme_body_font_applied(theme, needle):
+    assert needle in _theme_style(theme)
+
+
+def test_classic_reproduces_the_round12_look():
+    """Classic parity: the round-12 literals now ride the variable set -
+    the default look is unchanged byte-for-byte in effect."""
+    style = _theme_style("classic")
+    for needle in ("--ink:#111", "--date:#333", "--muted:#444",
+                   "--name-tracking:0.3pt", "--name-color:inherit",
+                   "--h2-case:uppercase", "--h2-tracking:0.6pt",
+                   "--h2-rule:0.8pt solid #444", "--h2-color:inherit"):
+        assert needle in style, needle
+
+
+def test_theme_never_touches_sizes():
+    """The size authority stays with the density ladder: the theme :root
+    line declares no size variable, and the density line is identical
+    across themes (the measured tier contract holds for every look)."""
+    from agent.html_render import _density_css, _theme_css
+    for theme in ("classic", "serif", "modern"):
+        theme_line = _theme_css(theme).strip()
+        for var in _DENSITY_VARS[2]:
+            assert f"--{var}:" not in theme_line, var
+        style = _theme_style(theme, density=2)
+        assert _density_css(2).strip() in style
+
+
+def test_unknown_theme_falls_back_to_classic():
+    style = _theme_style("hacker-green")
+    assert '--font-body:"Segoe UI"' in style
+    assert "--h2-rule:0.8pt solid #444" in style
+
+
+def test_theme_composes_with_density():
+    """Both :root lines ride one <style> block: the theme's look with the
+    tier's typography (serif body at the tightest density)."""
+    style = _theme_style("serif", density=3)
+    assert "--font-body:Charter" in style
+    assert f"--fs:{_DENSITY_VARS[3]['fs']}" in style
+
+
+def test_exporter_resolves_theme_defensively(monkeypatch, tmp_path,
+                                             latex_engine_fakes):
+    """The runner resolves the look, the exporter re-validates: a bogus
+    theme never reaches the renderer."""
+    monkeypatch.setattr(config, "RESUME_RENDERER", "auto")
+    monkeypatch.setattr(_exporter._html, "HAVE_BROWSER", True)
+    seen: dict = {}
+
+    def fake_render(data, density=0, theme="classic"):
+        seen["theme"] = theme
+        return "<html><body>base</body></html>"
+
+    monkeypatch.setattr(_exporter._html, "render_resume_html", fake_render)
+    monkeypatch.setattr(_exporter._html, "html_to_pdf",
+                        lambda *a, **k: str(tmp_path / "Optimized_Resume.pdf"))
+    (tmp_path / "Optimized_Resume.pdf").write_bytes(b"%PDF-fake")
+    monkeypatch.setattr(_exporter._latex, "pdf_page_count", lambda p: 1)
+    got = _exporter.export_documents(SPEC_B_MD, "Dear hiring manager,\n",
+                                     tmp_path, theme="hacker-green")
+    assert seen["theme"] == "classic"
+    assert got["render_engine"] == HTML_RENDERER_VERSION
+
+
+def test_export_documents_html_persists_adopted_preview(
+        monkeypatch, tmp_path, latex_engine_fakes):
+    """Round 14 preview surface: the ADOPTED page html is persisted as
+    Optimized_Resume.html (resume_html_path) - the tiered page when the
+    density ladder adopts, the base page otherwise."""
+    monkeypatch.setattr(config, "RESUME_RENDERER", "auto")
+    monkeypatch.setattr(_exporter._html, "HAVE_BROWSER", True)
+    seen: dict = {}
+
+    def fake_render(data, density=0, theme="classic"):
+        seen["base"] = f"<html data-base={theme} d{density}></html>"
+        return seen["base"]
+
+    def fake_tiers(data, output_dir, filename="Optimized_Resume.pdf",
+                   theme="classic"):
+        seen["tiers_theme"] = theme
+        return {"pdf_path": str(tmp_path / "Optimized_Resume.pdf"),
+                "html": f"<html data-adopted={theme} d2></html>",
+                "density": 2, "pages": 1}
+
+    monkeypatch.setattr(_exporter._html, "render_resume_html", fake_render)
+    monkeypatch.setattr(_exporter._html, "render_density_tiers", fake_tiers)
+    monkeypatch.setattr(_exporter._html, "html_to_pdf",
+                        lambda *a, **k: str(tmp_path / "Optimized_Resume.pdf"))
+    (tmp_path / "Optimized_Resume.pdf").write_bytes(b"%PDF-overflow")
+    monkeypatch.setattr(_exporter._latex, "pdf_page_count", lambda p: 2)
+
+    got = _exporter.export_documents(SPEC_B_MD, "Dear hiring manager,\n",
+                                     tmp_path, theme="serif")
+    assert seen["tiers_theme"] == "serif"
+    assert got["resume_html_path"]
+    preview = Path(got["resume_html_path"])
+    assert preview.name == "Optimized_Resume.html"
+    # the ADOPTED (tiered) page, not the base render
+    assert preview.read_text(encoding="utf-8") == "<html data-adopted=serif d2></html>"
+
+
+def test_export_documents_html_preview_is_base_page_without_overflow(
+        monkeypatch, tmp_path, latex_engine_fakes):
+    monkeypatch.setattr(config, "RESUME_RENDERER", "auto")
+    monkeypatch.setattr(_exporter._html, "HAVE_BROWSER", True)
+    seen: dict = {}
+
+    def fake_render(data, density=0, theme="classic"):
+        seen["base"] = f"<html data-base={theme} d0></html>"
+        return seen["base"]
+
+    tiers_called = []
+
+    def fake_tiers(*a, **k):
+        tiers_called.append(1)
+        return None
+
+    monkeypatch.setattr(_exporter._html, "render_resume_html", fake_render)
+    monkeypatch.setattr(_exporter._html, "render_density_tiers", fake_tiers)
+    monkeypatch.setattr(_exporter._html, "html_to_pdf",
+                        lambda *a, **k: str(tmp_path / "Optimized_Resume.pdf"))
+    (tmp_path / "Optimized_Resume.pdf").write_bytes(b"%PDF-fake")
+    monkeypatch.setattr(_exporter._latex, "pdf_page_count", lambda p: 1)
+    got = _exporter.export_documents(SPEC_B_MD, "Dear hiring manager,\n",
+                                     tmp_path, theme="modern")
+    assert not tiers_called  # one page: the ladder never runs
+    preview = Path(got["resume_html_path"])
+    assert preview.read_text(encoding="utf-8") == "<html data-base=modern d0></html>"
+
+
+def test_export_documents_latex_leaves_preview_empty(monkeypatch, tmp_path,
+                                                     latex_engine_fakes):
+    monkeypatch.setattr(config, "RESUME_RENDERER", "latex")
+    got = _exporter.export_documents("# J\n\n## Summary\nDid things.\n",
+                                     "Dear hiring manager,\n", tmp_path)
+    assert got["render_engine"] == "latex@1"
+    assert got["resume_html_path"] == ""
+
+
+def test_pdf_exporter_node_threads_resume_theme(monkeypatch, tmp_path):
+    """The node reads the resume_theme channel into export_documents; an
+    absent channel passes empty (the runner owns env/default resolution)."""
+    captured: dict = {}
+
+    def fake_export(resume_text, cover_text, request_dir, theme=""):
+        captured["theme"] = theme
+        return {"resume_pdf_path": "", "cover_letter_pdf_path": "",
+                "resume_docx_path": "", "resume_tex_path": "",
+                "resume_html_path": "", "resume_pages": 0,
+                "resume_compacted": False, "page_overflow_warning": "",
+                "render_engine": ""}
+
+    monkeypatch.setattr(_exporter, "export_documents", fake_export)
+    out = _exporter.pdf_exporter_node({
+        "optimized_resume": "## Skills\nPython", "cover_letter": "Dear...",
+        "output_dir": str(tmp_path), "resume_theme": "modern"})
+    assert captured["theme"] == "modern"
+    assert out["resume_html_path"] == ""
+    captured.clear()
+    _exporter.pdf_exporter_node({
+        "optimized_resume": "## Skills\nPython", "cover_letter": "Dear...",
+        "output_dir": str(tmp_path)})
+    assert captured["theme"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -540,3 +737,26 @@ def test_html_render_density_ladder_reclaims_long_fixture(tmp_path):
         # the airy-tight gate: inside the bottom stop
         assert led["lines"][-1]["baseline"] <= 743.2 + 1.0
     assert led["lines"][0]["top"] >= 14.0
+
+
+@pytest.mark.skipif(not (HAVE_BROWSER and HAVE_PDFPLUMBER),
+                    reason="no Chromium-family browser / pdfplumber")
+def test_html_render_acceptance_themes_are_looks_never_sizes(tmp_path):
+    """Round 14, measured on the real print: every theme renders ONE page
+    with IDENTICAL geometry - the measured name size matches across all
+    three looks (themes swap fonts/colors/decoration, never sizes; the
+    density ladder owns them), and ATS-safe extraction survives each font
+    stack."""
+    data = parse_markdown_resume(SPEC_B_MD)
+    name_sizes = {}
+    for theme in ("classic", "serif", "modern"):
+        pdf = html_to_pdf(render_resume_html(data, theme=theme),
+                          tmp_path, f"theme_{theme}.pdf")
+        assert pdf and agent.latex_render.pdf_page_count(pdf) == 1
+        led = _pdf_lines(pdf)[0]
+        text = " ".join(l["text"] for l in led["lines"])
+        for kw in ("FastAPI", "LangGraph", "PyTorch"):
+            assert kw in text, (theme, kw)
+        # the name is the largest line on the page in every look
+        name_sizes[theme] = max(l["size"] for l in led["lines"])
+    assert len(set(name_sizes.values())) == 1, name_sizes

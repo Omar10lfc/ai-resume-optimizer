@@ -47,6 +47,9 @@ const ARTIFACT_META: Record<string, { label: string; icon: React.ElementType; cl
   "cover-pdf": { label: "Cover letter PDF", icon: FilePdf, className: "text-danger" },
   "resume-docx": { label: "Resume DOCX", icon: FileDoc, className: "text-info" },
   "resume-tex": { label: "LaTeX source", icon: FileCode, className: "text-ok" },
+  // Round 14: the adopted page html - the source of the PDF print, also
+  // mounted in the Resume tab's Preview view.
+  "resume-html": { label: "Resume HTML", icon: FileCode, className: "text-ok" },
 };
 
 function useCopyFeedback(): { copied: string | null; copy: (text: string, label: string) => void } {
@@ -71,6 +74,10 @@ function useCopyFeedback(): { copied: string | null; copy: (text: string, label:
 
 export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, originalResume }) => {
   const [activeTab, setActiveTab] = useState<TabId>("resume");
+  // Round 14: Resume tab view mode - the persisted adopted page html (the
+  // preview IS the printed document) only exists on HTML-renderer runs, so
+  // the Preview toggle is conditional and the effective mode falls back.
+  const [viewMode, setViewMode] = useState<"text" | "preview">("text");
   const [artifactUrls, setArtifactUrls] = useState<Record<string, string>>({});
   const [showDiff, setShowDiff] = useState(false);
   const { copied, copy } = useCopyFeedback();
@@ -136,6 +143,15 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
       isMounted = false;
     };
   }, [result]);
+
+  // Round 14: the print-preview artifact and its resolved URL. The sandbox
+  // strips everything (the page is static markup with an inline-CSP that
+  // fails any fetch closed) - the frame is a pure visual surface.
+  const previewArtifact = result.artifacts.find((a) => a.kind === "resume-html");
+  const previewUrl = previewArtifact
+    ? (artifactUrls[previewArtifact.url] || `/${previewArtifact.url}`)
+    : null;
+  const showingPreview = viewMode === "preview" && Boolean(previewUrl);
 
   // ARIA tablist: roving tabindex with arrow keys, Home/End support.
   const onTablistKeyDown = (e: React.KeyboardEvent) => {
@@ -292,31 +308,76 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
         {activeTab === "resume" && (
           <div id="panel-resume" role="tabpanel" aria-labelledby="tab-resume" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
             <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-line">
-              <span className="text-2xs text-ink-3 font-mono">Markdown preview of the rewritten resume</span>
-              {renderCopyRow("resume", result.optimized_resume)}
+              <span className="text-2xs text-ink-3 font-mono">
+                {showingPreview
+                  ? "Print preview - the exact page the PDF prints"
+                  : "Markdown preview of the rewritten resume"}
+              </span>
+              <div className="flex items-center gap-2">
+                {previewUrl && (
+                  <div
+                    className="flex items-center gap-0.5 p-0.5 rounded-sm2 bg-raised border border-line"
+                    role="group" aria-label="Resume view mode"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setViewMode("text")}
+                      aria-pressed={viewMode === "text"}
+                      className={`px-2 py-0.5 rounded-sm text-2xs font-semibold transition-colors ${
+                        !showingPreview ? "bg-surface text-accent shadow-card" : "text-ink-3 hover:text-ink"
+                      }`}
+                    >
+                      Text
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewMode("preview")}
+                      aria-pressed={viewMode === "preview"}
+                      className={`px-2 py-0.5 rounded-sm text-2xs font-semibold transition-colors ${
+                        showingPreview ? "bg-surface text-accent shadow-card" : "text-ink-3 hover:text-ink"
+                      }`}
+                    >
+                      Preview
+                    </button>
+                  </div>
+                )}
+                {!showingPreview && renderCopyRow("resume", result.optimized_resume)}
+              </div>
             </div>
 
-            {canDiff && (
-              <div className="mb-3">
-                <button
-                  type="button"
-                  onClick={() => setShowDiff((s) => !s)}
-                  aria-expanded={showDiff}
-                  aria-controls="resume-diff"
-                  className="flex items-center gap-1.5 text-2xs font-medium text-accent hover:text-accent-strong transition-colors px-2 py-1 rounded-sm2 bg-accent-tint border border-accent/20"
-                >
-                  <ArrowsLeftRight weight="bold" className="w-3.5 h-3.5" />
-                  {showDiff ? "Hide before/after" : "Compare with original"}
-                </button>
-              </div>
-            )}
-            {showDiff && canDiff && (
-              <div id="resume-diff" className="animate-in rounded-md2 bg-surface border border-line p-3 mb-4">
-                <DiffView original={originalResume!} optimized={result.optimized_resume} />
-              </div>
-            )}
+            {showingPreview ? (
+              <iframe
+                src={previewUrl!}
+                title="Print preview"
+                sandbox=""
+                loading="lazy"
+                className="block mx-auto w-full max-w-[816px] h-[1056px] rounded-md2 bg-white border border-line"
+              />
+            ) : (
+              <>
+                {canDiff && (
+                  <div className="mb-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowDiff((s) => !s)}
+                      aria-expanded={showDiff}
+                      aria-controls="resume-diff"
+                      className="flex items-center gap-1.5 text-2xs font-medium text-accent hover:text-accent-strong transition-colors px-2 py-1 rounded-sm2 bg-accent-tint border border-accent/20"
+                    >
+                      <ArrowsLeftRight weight="bold" className="w-3.5 h-3.5" />
+                      {showDiff ? "Hide before/after" : "Compare with original"}
+                    </button>
+                  </div>
+                )}
+                {showDiff && canDiff && (
+                  <div id="resume-diff" className="animate-in rounded-md2 bg-surface border border-line p-3 mb-4">
+                    <DiffView original={originalResume!} optimized={result.optimized_resume} />
+                  </div>
+                )}
 
-            <Markdown>{result.optimized_resume}</Markdown>
+                <Markdown>{result.optimized_resume}</Markdown>
+              </>
+            )}
 
             {result.feedback && (
               <div className="mt-4 pt-3 border-t border-line">

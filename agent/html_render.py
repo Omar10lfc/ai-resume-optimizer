@@ -34,8 +34,11 @@ with a CSS density knob and a MEASURED 1-page loop:
   base render and surfaces the overflow warning.
 
 Env knobs (agent/config.py): ``RESUME_RENDERER`` = auto (default) | html |
-latex; ``RENDER_BROWSER_PATH`` forces a browser binary. The LaTeX path
-stays the classic/conservative theme; Unicode is preserved verbatim (the
+latex; ``RENDER_BROWSER_PATH`` forces a browser binary; ``RESUME_THEME``
+selects the HTML look (``THEMES`` below: classic | serif | modern - fonts,
+colors, and heading decoration ONLY, never sizes, so the density ladder
+stays the single size authority). The LaTeX path always prints the
+classic/conservative look; Unicode is preserved verbatim (the
 LaTeX renderer must ASCII-fold it - HTML does not, a rendering-quality win).
 
 Note: unit placement is "ATS-safe by construction" - real text (no tables,
@@ -373,36 +376,92 @@ def _density_css(density: int) -> str:
             f"--contactfs:{v['contactfs']};--h2fs:{v['h2fs']};}}")
 
 
+# ---------------------------------------------------------------------------
+# Themes (round 14): looks, never sizes
+# ---------------------------------------------------------------------------
+# A theme is a pure CSS-variable set over FONTS, COLORS, and heading
+# decoration. It must never set a size: the density variables stay the only
+# size authority, so the measured tier ladder and its pdfplumber-verified
+# floors hold for every theme (the ladder re-measures per render anyway).
+# "classic" reproduces the round-12 look byte-for-byte in effect.
+_THEME_VARS: dict[str, dict[str, str]] = {
+    "classic": {
+        "font-body": '"Segoe UI", "Helvetica Neue", Arial, "DejaVu Sans", sans-serif',
+        "font-head": '"Segoe UI", "Helvetica Neue", Arial, "DejaVu Sans", sans-serif',
+        "ink": "#111", "date": "#333", "muted": "#444",
+        "name-tracking": "0.3pt", "name-color": "inherit",
+        "h2-case": "uppercase", "h2-tracking": "0.6pt",
+        "h2-rule": "0.8pt solid #444", "h2-color": "inherit",
+    },
+    "serif": {
+        # Editorial contrast: serif body, sans bold headings, no rule.
+        "font-body": 'Charter, Georgia, Cambria, "Times New Roman", serif',
+        "font-head": '"Segoe UI", "Helvetica Neue", Arial, sans-serif',
+        "ink": "#1a1a1a", "date": "#3a3a3a", "muted": "#555",
+        "name-tracking": "0.5pt", "name-color": "inherit",
+        "h2-case": "none", "h2-tracking": "0.2pt",
+        "h2-rule": "none", "h2-color": "inherit",
+    },
+    "modern": {
+        # System sans throughout; the name and headings carry the only hue.
+        "font-body": 'system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+        "font-head": 'system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+        "ink": "#14181d", "date": "#3f4a56", "muted": "#52606d",
+        "name-tracking": "1.2pt", "name-color": "#155e75",
+        "h2-case": "none", "h2-tracking": "0.4pt",
+        "h2-rule": "none", "h2-color": "#155e75",
+    },
+}
+
+THEMES = frozenset(_THEME_VARS)
+DEFAULT_THEME = "classic"
+
+# Human labels for the UI picker (id -> label).
+THEME_LABELS = {"classic": "Classic", "serif": "Serif", "modern": "Modern"}
+
+
+def _theme_css(theme: str) -> str:
+    v = _THEME_VARS.get(theme, _THEME_VARS[DEFAULT_THEME])
+    parts = ";".join(f"--{k}:{val}" for k, val in v.items())
+    return f"  :root{{{parts};}}"
+
+
 _PAGE_CSS = """
   @page { size: letter; margin: 36pt 40pt 36pt 40pt; }
   * { box-sizing: border-box; }
   body {
-    margin: 0; color: #111;
-    font-family: "Segoe UI", "Helvetica Neue", Arial, "DejaVu Sans", sans-serif;
+    margin: 0; color: var(--ink);
+    font-family: var(--font-body);
     font-size: var(--fs); line-height: var(--lh);
     -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
   header { text-align: center; margin: 0 0 2pt; }
-  h1 { font-size: var(--namefs); margin: 0; letter-spacing: 0.3pt; }
+  h1 {
+    font-family: var(--font-head); font-size: var(--namefs);
+    margin: 0; letter-spacing: var(--name-tracking);
+    color: var(--name-color);
+  }
   .contact { font-size: var(--contactfs); }
   .contact a { color: inherit; }
   section { margin-top: var(--secgap); }
   h2 {
+    font-family: var(--font-head);
     font-size: var(--h2fs); margin: 0 0 2.5pt;
-    text-transform: uppercase; letter-spacing: 0.6pt;
-    border-bottom: 0.8pt solid #444; padding-bottom: 1.5pt;
+    text-transform: var(--h2-case); letter-spacing: var(--h2-tracking);
+    color: var(--h2-color);
+    border-bottom: var(--h2-rule); padding-bottom: 1.5pt;
   }
   .entry { margin-top: var(--entrygap); }
   .entry:first-of-type { margin-top: 0; }
   .eh { display: flex; justify-content: space-between; align-items: baseline;
         gap: 12pt; }
   .eh .left { min-width: 0; }
-  .eh .right { white-space: nowrap; flex-shrink: 0; color: #333;
+  .eh .right { white-space: nowrap; flex-shrink: 0; color: var(--date);
                font-size: calc(var(--fs) - 0.5pt); }
   .sub-row { display: flex; justify-content: space-between;
              align-items: baseline; gap: 12pt; color: #222; }
   .sub-row .right { white-space: nowrap; flex-shrink: 0; }
-  .psep, .loc { color: #444; }
+  .psep, .loc { color: var(--muted); }
   ul.bullets { margin: 2pt 0 0 0; padding-left: 14pt; }
   ul.bullets li { margin-bottom: var(--itemgap); }
   ul.bullets li:last-child { margin-bottom: 0; }
@@ -416,16 +475,21 @@ _PAGE_CSS = """
 """
 
 
-def render_resume_html(data: ResumeData, density: int = 0) -> str:
+def render_resume_html(data: ResumeData, density: int = 0,
+                       theme: str = DEFAULT_THEME) -> str:
     """Renders the structured resume into ONE self-contained HTML page.
 
     ``density`` selects the tier's CSS variables (0 base, 1-3 progressively
     tighter - the same airy-to-floor ladder the LaTeX compact tiers walk,
-    expressed as typography instead of spacing surgery). Content is never
+    expressed as typography instead of spacing surgery). ``theme`` selects
+    the look (fonts/colors/decoration; never sizes - see ``_THEME_VARS``).
+    An unknown theme falls back to ``DEFAULT_THEME``. Content is never
     altered; Unicode is preserved verbatim.
     """
     if density not in _DENSITY_VARS:
         density = 0
+    if theme not in _THEME_VARS:
+        theme = DEFAULT_THEME
     out: list[str] = [
         "<!DOCTYPE html>",
         '<html lang="en"><head>',
@@ -434,6 +498,7 @@ def render_resume_html(data: ResumeData, density: int = 0) -> str:
         "<title>Resume</title>",
         "<style>",
         _density_css(density),
+        _theme_css(theme),
         _PAGE_CSS,
         "</style></head><body>",
     ]
@@ -591,7 +656,8 @@ _HTML_BOTTOM_STOP = 743.2
 
 
 def render_density_tiers(data: ResumeData, output_dir,
-                         filename: str = "Optimized_Resume.pdf"
+                         filename: str = "Optimized_Resume.pdf",
+                         theme: str = DEFAULT_THEME
                          ) -> Optional[dict]:
     """The measured loop: probe-renders tiers 1-3 and adopts the first that
     fits ONE page (tier 1 additionally gated by ``_HTML_BOTTOM_STOP``),
@@ -600,6 +666,10 @@ def render_density_tiers(data: ResumeData, output_dir,
     last-resort fallback, None when no tier fits one page (the caller keeps
     the base render and surfaces the overflow warning).
 
+    ``theme`` is forwarded to every probe render (unknown -> default), so
+    the measured adoption is per-theme: a serif face reflows differently
+    than the classic sans and each gets its own measurement.
+
     Returns {"pdf_path", "html", "density", "pages"} for the adopted render.
     """
     output_dir = Path(output_dir)
@@ -607,7 +677,7 @@ def render_density_tiers(data: ResumeData, output_dir,
     fallback_tier = None
     chosen_tier = None
     for tier in (1, 2, 3):
-        page = render_resume_html(data, density=tier)
+        page = render_resume_html(data, density=tier, theme=theme)
         probe = html_to_pdf(page, output_dir, f"__density_tier{tier}.pdf")
         probes[tier] = (page, probe)
         if not probe or (pdf_page_count(probe) or 99) != 1:

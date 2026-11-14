@@ -43,6 +43,28 @@ function readSavedWebNotes(): string {
   }
 }
 
+// Round 14: the selected resume look persists across reloads the same way
+// (web path). Extension restores own their storage; unknown values fall
+// back server-side, so a stale id is harmless.
+function readSavedTheme(): string {
+  try {
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      return "";
+    }
+    return localStorage.getItem("resume_theme") || "";
+  } catch {
+    return "";
+  }
+}
+
+// Mirrors agent/html_render.THEME_LABELS (the backend owns the truth and
+// re-validates; this only names the picker options).
+const THEME_OPTIONS = [
+  { id: "classic", label: "Classic" },
+  { id: "serif", label: "Serif" },
+  { id: "modern", label: "Modern" },
+] as const;
+
 const RESUME_SAVE_DEBOUNCE_MS = 500;
 
 export function App() {
@@ -74,6 +96,9 @@ export function App() {
 
   const [missingSkills, setMissingSkills] = useState<string>("");
   const [userNotes, setUserNotes] = useState<string>(readSavedWebNotes());
+  // Round 14: the resume look (classic | serif | modern) - a per-run input
+  // to step 2, persisted as a preference.
+  const [resumeTheme, setResumeTheme] = useState<string>(readSavedTheme() || "classic");
   // True after the scan produced gap chips; false when the zero-gap
   // straight-through path skips the review dialog entirely.
   const [reviewOpen, setReviewOpen] = useState<boolean>(false);
@@ -144,6 +169,18 @@ export function App() {
     const t = setTimeout(persist, RESUME_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(t);
   }, [userNotes]);
+
+  // Round 14: the look preference survives reloads (immediate - a tiny
+  // string, no debounce). Never purged by Settings · Reset: it is a look
+  // preference, not per-application content.
+  useEffect(() => {
+    try {
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) return;
+      localStorage.setItem("resume_theme", resumeTheme);
+    } catch {
+      // storage unavailable (embedded webview) - session-only default
+    }
+  }, [resumeTheme]);
 
   useEffect(() => {
     latestResumeRef.current = { text: resumeText, mode: resumeMode, file: resumeFile };
@@ -366,6 +403,9 @@ export function App() {
     // BB1 Phase B (PB3): ask the server to echo the parsed original in the
     // result so the before/after diff also works for uploaded resumes.
     fd.append("include_diff", "original");
+    // Round 14: the selected resume look (the server validates against the
+    // THEMES vocabulary and falls back to the env knob / default).
+    fd.append("resume_theme", resumeTheme);
 
     runStep2(fd, {
       onStatus: handleStreamStatus,
@@ -535,6 +575,30 @@ export function App() {
                 placeholder={`e.g. "I built an n8n workflow cutting delivery errors 30% — feature it." or "Do NOT feature MCP, I have no hands-on experience."`}
                 className="input mt-2 w-full"
               />
+              {/* Round 14: the resume look - a pure CSS-variable set over
+                  fonts/colors/decoration (never sizes, so the measured
+                  1-page density ladder holds for every theme). Applies to
+                  the HTML-rendered PDF; the LaTeX fallback prints the
+                  classic look. Shown in the results Print preview tab. */}
+              <div className="flex items-center gap-2 mt-2.5">
+                <label htmlFor="resume-theme" className="text-2xs font-semibold text-ink shrink-0">
+                  Resume look
+                </label>
+                <select
+                  id="resume-theme"
+                  value={resumeTheme}
+                  onChange={(e) => setResumeTheme(e.target.value)}
+                  disabled={stage === "step1_running" || stage === "step2_running"}
+                  className="input !w-auto text-2xs py-1 pr-6"
+                >
+                  {THEME_OPTIONS.map((t) => (
+                    <option key={t.id} value={t.id}>{t.label}</option>
+                  ))}
+                </select>
+                <span className="text-2xs text-ink-3 truncate">
+                  Applied to the PDF render
+                </span>
+              </div>
             </div>
           </>
         )}

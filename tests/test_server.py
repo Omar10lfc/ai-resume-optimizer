@@ -938,6 +938,44 @@ def test_step_passes_client_groq_key_header_to_runner(client, fake_llms,
     assert captured["step2"] is None
 
 
+def test_step2_forwards_resume_theme_and_resolves_the_look(
+        client, fake_llms, monkeypatch):
+    """Round 14: the step-2 Form field reaches the runner and the look is
+    resolved ONCE (per-request wins -> env knob -> default); the endpoint
+    passes the raw value through - downstream owns the fallbacks."""
+    from server.runners import _resolve_theme
+
+    # resolution unit contract
+    assert _resolve_theme("serif") == "serif"
+    assert _resolve_theme("bogus") == "classic"
+    monkeypatch.setattr(agent.config, "RESUME_THEME", "modern")
+    assert _resolve_theme("") == "modern"
+    assert _resolve_theme("hacker-green") == "modern"  # env fallback
+    monkeypatch.setattr(agent.config, "RESUME_THEME", "bogus-env")
+    assert _resolve_theme("") == "classic"  # bogus env falls back too
+    monkeypatch.setattr(agent.config, "RESUME_THEME", "")
+    assert _resolve_theme("serif") == "serif"  # request still wins
+
+    # the endpoint forwards the raw form value to the runner
+    received: dict = {}
+
+    def fake_stream(job_description, resume_source, notes, session,
+                    groq_api_key=None, include_original=False,
+                    resume_theme=""):
+        received["resume_theme"] = resume_theme
+        yield {"type": "result", "session": session or "stub",
+               "artifacts": [], "score": 0, "score_class": "bad",
+               "resume_theme": resume_theme, "status": "done"}
+
+    monkeypatch.setattr(runners, "stream_step2", fake_stream)
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "resume_theme": "modern"})
+    assert r.status_code == 200
+    _ = parse_sse(r.text)
+    assert received["resume_theme"] == "modern"
+
+
 def test_health_with_user_key_validates_that_key(client, monkeypatch):
     seen: dict[str, str] = {}
 
