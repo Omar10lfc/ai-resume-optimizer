@@ -1680,6 +1680,32 @@ def test_find_unused_context_terms_flags_missing_context_terms():
     assert agent.find_unused_context_terms("", final, source) == []
 
 
+def test_find_unused_context_terms_filters_deploy_verbs():
+    """Live smoke (session 17f5cfff, Nov 14 2026): the notes' "deployed on a
+    4-node home lab" was flagged as an unused context term even though the
+    substantive context (Aegis/Kubernetes) was already woven - the one-shot
+    weave attempt was spent on a generic verb. Deployment verbs and their
+    nominalizations are noise, like ran/run before them."""
+    notes = ("Aegis: built a heat-risk agent, deployed on Kubernetes.\n"
+             "Ran the deploy pipeline at work.")
+    source = "Jane Roe\nSUMMARY\nPython developer.\n"
+    final = ("Jane Roe\nSUMMARY\nPython developer.\nPROJECTS\n"
+             "Built the Aegis heat-risk agent and its deploy pipeline "
+             "on Kubernetes.\n")
+    # the substantive terms are covered by the final text -> fully silent
+    assert agent.find_unused_context_terms(notes, final, source) == []
+    # negative control: the filter is term-level, not a blanket silencer -
+    # with a draft that really drops the context, the distinctive terms
+    # still surface while the deployment verbs stay out
+    out = agent.find_unused_context_terms(notes, "Jane Roe\nPython.\n", source)
+    lowers = [t.lower() for t in out]
+    assert "aegis" in lowers and "heat-risk" in lowers
+    assert "kubernetes" in lowers
+    for noise in ("deployed", "deploy", "deployment", "deploying",
+                  "deployments", "ran", "lab"):
+        assert noise not in lowers
+
+
 def test_improver_postprocess_flags_unused_context_terms():
     """The tripwire rides the shared writer tail, so both the improver and
     the polisher passes surface notes-sourced terms the final draft never

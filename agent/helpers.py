@@ -388,9 +388,14 @@ def find_unused_context_terms(human_notes: str, final_text: str,
     source_l = (source_resume or "").lower()
     # Verb/preposition noise beyond the chip stoplist ("Ran the deploy
     # pipeline on a home lab") - kept local so _CHIP_STOPWORDS' contract
-    # with the scrubber's suppression matching stays untouched.
+    # with the scrubber's suppression matching stays untouched. The deploy
+    # family joins after the live round-11 smoke (session 17f5cfff, Nov 14
+    # 2026): "deployed on a 4-node home lab" was flagged while the
+    # substantive context (Aegis/Kubernetes) was already woven, so the
+    # weave's one-shot attempt was spent on a generic verb.
     extra_stop = frozenset(
-        "ran run runs running home lab".split())
+        "ran run runs running home lab "
+        "deploy deployed deploys deploying deployment deployments".split())
     seen: set[str] = set()
     findings: list[str] = []
     for raw in _WORD_SPLIT_RE.split(human_notes):
