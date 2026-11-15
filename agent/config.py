@@ -66,11 +66,15 @@ LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", 120))
 # value that truncates full resumes. Generous default; env-overridable.
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", 8192))
 
-# --- Resume renderer (BB2, env-overridable) ---
-# auto (default): the HTML/CSS theme rendered by the system's headless
-# Chromium/Edge when one is found, LaTeX (the classic theme) otherwise.
-# html: the HTML theme, falling back to LaTeX when no browser is available
-# or the print fails. latex: the historical LaTeX path, unchanged.
+# --- Resume renderer (BB2, env-overridable; Nov 15 2026: auto is
+# look-driven - LaTeX prints the default again) ---
+# auto (default): the classic look (the runner's canonical fill and any
+# explicit classic pick) prints through the bundled LaTeX template - the
+# historical engine; serif/modern looks route to the HTML/CSS theme
+# printed by the system's headless Chromium/Edge when one is found, and
+# to LaTeX otherwise. html: the HTML theme for EVERY look, falling back
+# to LaTeX when no browser is available or the print fails. latex: the
+# historical LaTeX path for every look, unchanged.
 _RESUME_RENDERER_RAW = os.environ.get("RESUME_RENDERER", "auto").strip().lower()
 RESUME_RENDERER = (_RESUME_RENDERER_RAW
                    if _RESUME_RENDERER_RAW in {"auto", "html", "latex"}

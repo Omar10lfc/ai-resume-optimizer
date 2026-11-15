@@ -12,14 +12,23 @@ import os
 # directly against tmp_path in test_resume_agent.py.
 os.environ["CHECKPOINTER_DB_PATH"] = "off"
 
-# BB2 (Nov 14 2026) made the HTML/CSS renderer (headless Chromium) the
-# auto-selected resume engine when a browser is found. Tests pin the LaTeX
-# path instead: every LaTeX-geometry pin (test_latex_render.py) and the
+# BB2 (Nov 14 2026) routed the default to the HTML/CSS renderer (headless
+# Chromium) when a browser is found; Nov 15 2026 made auto look-driven
+# (the classic look prints LaTeX again). Tests pin the LaTeX path either
+# way: every LaTeX-geometry pin (test_latex_render.py) and the
 # existing export expectations were written for it, and the suite must not
 # depend on a browser binary being installed. The HTML renderer is
 # exercised directly in test_html_render.py (engine-selection tests opt in
 # explicitly; the scripted acceptance skips when no browser is present).
 os.environ["RESUME_RENDERER"] = "latex"
+
+# The repo .env (agent.config load_dotenv()s it at import) carries
+# LANGCHAIN_TRACING_V2=true; the tracer activates at agent.tracing import
+# time and feedback writes would leave the process. Most modules pin it
+# off at the top (historical belt); this pin makes EVERY module order
+# hermetic (test_html_render.py never carried the belt - running it first
+# activated a real client for the whole run, Nov 15 2026).
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
 # Round 15 (roadmap item 13) made the chat-model family selectable
 # (LLM_PROVIDER: groq | openai | anthropic | openai-compatible). Tests pin

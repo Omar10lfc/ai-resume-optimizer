@@ -397,8 +397,9 @@ def test_export_documents_latex_mode_stamps_classic_engine(
     assert got["cover_letter_pdf_path"]  # the cover letter path unchanged
 
 
-def test_export_documents_auto_prefers_html(monkeypatch, tmp_path,
-                                            latex_engine_fakes):
+def test_export_documents_auto_prints_nonclassic_looks_through_chromium(
+        monkeypatch, tmp_path, latex_engine_fakes):
+    """auto honors a serif/modern pick: the CSS looks need Chromium."""
     monkeypatch.setattr(config, "RESUME_RENDERER", "auto")
     monkeypatch.setattr(_exporter._html, "HAVE_BROWSER", True)
     monkeypatch.setattr(_exporter._html, "html_to_pdf",
@@ -406,17 +407,34 @@ def test_export_documents_auto_prefers_html(monkeypatch, tmp_path,
     (tmp_path / "Optimized_Resume.pdf").write_bytes(b"%PDF-fake")
     monkeypatch.setattr(_exporter._latex, "pdf_page_count", lambda p: 1)
     got = _exporter.export_documents("# J\n\n## Summary\nDid things.\n",
-                                     "Dear hiring manager,\n", tmp_path)
+                                     "Dear hiring manager,\n", tmp_path,
+                                     theme="modern")
     assert got["render_engine"] == HTML_RENDERER_VERSION
     assert got["resume_tex_path"], ".tex source still written (contract)"
 
 
-def test_export_documents_auto_without_browser_falls_to_latex(
+def test_export_documents_auto_keeps_the_classic_look_on_latex(
+        monkeypatch, tmp_path, latex_engine_fakes):
+    """Nov 15: LaTeX is the default print again - the classic look (both
+    the runner's canonical fill and an empty theme) prints through the
+    LaTeX template even with a browser present."""
+    monkeypatch.setattr(config, "RESUME_RENDERER", "auto")
+    monkeypatch.setattr(_exporter._html, "HAVE_BROWSER", True)
+    for theme in ("", "classic"):
+        got = _exporter.export_documents("# J\n\n## Summary\nDid things.\n",
+                                         "Dear hiring manager,\n", tmp_path,
+                                         theme=theme)
+        assert got["render_engine"] == "latex@1", theme
+        assert got["resume_pdf_path"]
+
+
+def test_export_documents_auto_nonclassic_without_browser_falls_to_latex(
         monkeypatch, tmp_path, latex_engine_fakes):
     monkeypatch.setattr(config, "RESUME_RENDERER", "auto")
     monkeypatch.setattr(_exporter._html, "HAVE_BROWSER", False)
     got = _exporter.export_documents("# J\n\n## Summary\nDid things.\n",
-                                     "Dear hiring manager,\n", tmp_path)
+                                     "Dear hiring manager,\n", tmp_path,
+                                     theme="modern")
     assert got["render_engine"] == "latex@1"
 
 

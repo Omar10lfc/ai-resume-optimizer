@@ -33,8 +33,10 @@ with a CSS density knob and a MEASURED 1-page loop:
   last-resort fallback; when no tier fits one page the caller keeps the
   base render and surfaces the overflow warning.
 
-Env knobs (agent/config.py): ``RESUME_RENDERER`` = auto (default) | html |
-latex; ``RENDER_BROWSER_PATH`` forces a browser binary; ``RESUME_THEME``
+Env knobs (agent/config.py): ``RESUME_RENDERER`` = auto (default: the
+classic look prints LaTeX; serif/modern print this theme) | html (this
+theme for every look) | latex; ``RENDER_BROWSER_PATH`` forces a browser
+binary; ``RESUME_THEME``
 selects the HTML look (``THEMES`` below: classic | serif | modern - fonts,
 colors, and heading decoration ONLY, never sizes, so the density ladder
 stays the single size authority). The LaTeX path always prints the
@@ -121,7 +123,8 @@ BROWSER_PATH = _find_browser()
 HAVE_BROWSER = BROWSER_PATH is not None
 if not HAVE_BROWSER:
     logger.info("HTML renderer: no Chromium-family browser found - the HTML "
-                "theme is unavailable (RESUME_RENDERER falls back to LaTeX).")
+                "theme is unavailable (non-classic looks fall back to the "
+                "LaTeX classic).")
 
 # The Dossier pool's MAX_CONCURRENT_RENDERS: a bounded semaphore the print
 # call waits on, so parallel runs queue instead of stampeding the browser.

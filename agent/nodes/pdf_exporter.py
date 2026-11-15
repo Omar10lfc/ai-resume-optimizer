@@ -10,6 +10,12 @@ from the same parsed data. The cover letter keeps the simpler HTML->PDF
 path. If every renderer fails, exports still work via the xhtml2pdf
 fallback. The chosen engine is stamped ``render_engine`` for forensics.
 
+Revised Nov 15 2026 (the user's call after the first Chromium-rendered
+download read as a regression): under the default ``auto``, the CLASSIC
+look prints through the bundled LaTeX template again - the historical
+behavior; the Chromium theme prints only for the serif/modern looks
+(or always under ``RESUME_RENDERER=html``). Engine stamps unchanged.
+
 BB1 Phase B (PB2): the export core is factored into ``export_documents`` so
 the history panel can REGENERATE artifacts from a past run's stored text
 (the pipeline node and the server endpoint share one implementation).
@@ -198,21 +204,27 @@ def _export_resume_html(resume_text: str, request_dir: Path,
 
 def _export_resume(resume_text: str, request_dir: Path,
                    theme: str = "") -> dict:
-    """Engine selection: the config knob routes the resume to the HTML/CSS
-    theme (when a browser is available and the print succeeds) or the
-    classic LaTeX path. ``latex`` pins the historical behavior exactly;
-    ``html`` forces the theme with the LaTeX fallback; ``auto`` prefers the
-    theme whenever a browser was found. ``theme`` selects the look
-    (classic | serif | modern; LaTeX ignores it entirely)."""
+    """Engine selection (Nov 15 2026 revision - LaTeX is the default print
+    again): ``auto`` (the default) is LOOK-driven - the classic look IS
+    the bundled LaTeX template, so it prints through LaTeX exactly as
+    before; a serif/modern pick needs the CSS engine and routes to the
+    Chromium theme when a browser is found (LaTeX classic otherwise).
+    ``html`` forces the theme for every look (LaTeX fallback on print
+    failure); ``latex`` pins the historical behavior for every look.
+    ``theme`` selects the look (classic | serif | modern; the LaTeX
+    engine prints the classic template regardless)."""
     from .. import config
     mode = config.RESUME_RENDERER
-    if mode in ("html", "auto"):
-        if mode == "auto" and not _html.HAVE_BROWSER:
-            result = None  # no browser: straight to the classic theme
-        else:
-            result = _export_resume_html(resume_text, request_dir, theme=theme)
-        if result is not None:
-            return result
+    if mode == "latex":
+        return _export_resume_latex(resume_text, request_dir)
+    # html always tries the theme; auto only for a non-classic look (the
+    # classic look IS the LaTeX template - no browser roundtrip for it).
+    if mode == "html" or (mode == "auto" and theme not in ("", "classic")):
+        if mode == "html" or _html.HAVE_BROWSER:
+            result = _export_resume_html(resume_text, request_dir,
+                                         theme=theme)
+            if result is not None:
+                return result
     return _export_resume_latex(resume_text, request_dir)
 
 
