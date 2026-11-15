@@ -949,6 +949,27 @@ The integrity channels were aggregate: `find_dropped_source_metrics` could say "
 
 > Status: `venv\Scripts\python.exe -m pytest tests -q` → **454 passed** (~7:38, record `%TEMP%\opencode\pytest_full_nov15_round16.txt`) — 17 new tests and 1 assert: the new `tests/test_bullet_sources.py` (17: the four statuses + the rounding-tolerance kept-case + the drifted-drop + one-to-one strongest-first binding + the order contract + education/link-only skip + caps/truncation/empty/prose + the $/count metric classes + the re-export), the graph-wiring best-of test in `test_resume_agent.py` (225 → 226: unchanged + reworded rows where the rewrite dropped `$1.2M`), and the wire payload assert in `test_fake_llm_wire.py` (`bullet_sources == []` on the bullet-free fake resume). Restart the backend to serve the provenance table.
 
+### Maintenance - Nov 15 2026 (dependency refresh: every direct requirement to latest)
+
+No product changes — a `pip list --outdated` audit, wave-upgrades (langchain family first, then standalone deps), and one extractor adaptation. Rollback snapshot taken before (`pip freeze`, 153 packages).
+
+| Package | Move | Note |
+|---------|------|------|
+| `langgraph` + checkpoint + checkpoint-sqlite | 1.2.16 → **1.2.22** (4.3.2 / 3.1.3) | The 4.x-checkpoint pairing holds |
+| `langchain-classic` | transitively 1.0.0 → **1.0.8, newly PINNED** | Direct import in `agent/llms.py` since round 15 (`init_chat_model` dispatch) — it was never in `requirements.txt`, riding whatever its parents pulled |
+| `pydantic` (+ `pydantic-settings`, `python-dotenv`) | 2.12.4 → **2.14.3** (2.16.3 / 1.2.4) | gradio 6.1.0 caps `pydantic<=2.12.4` and blocked this — cleared by upgrading gradio in the same wave |
+| `gradio` (+ client, huggingface-hub) | 6.1.0 → **6.32.0** | Also un-breaks the stale `>=6.16.0` floor vs the installed 6.1.0 |
+| `fastapi` / `starlette` / `uvicorn[standard]` / `python-multipart` | 0.125 → **0.163** (+ starlette **1.10.0** MAJOR) / **0.54** / **0.0.33** | Backend API line; `httpx` 0.28.1 already latest |
+| `pypdf` | 6.4.2 → **7.1.0** (MAJOR) | Extraction change (see below) |
+| `xhtml2pdf` (+ `reportlab` MAJOR) / `beautifulsoup4` / `markdown` | **0.2.28** (reportlab **5.1.0**) / **4.15.0** / **3.11.3** | Last-resort PDF engine + parsing |
+| `groq` SDK | stays **0.37.1** | `langchain-groq` 1.1.3 caps `groq<1.0.0` — 1.7.0 installs fine but violates the cap; 0.37.1 is the newest 0.x |
+| Already latest, untouched | `langchain-core` 1.8.0, `langchain-groq` 1.1.3, `langchain-openai` 1.8.0 + `openai` 3.51.0, `langchain-anthropic` 1.7.10 + `anthropic` 2.8.0, `python-docx` 1.2.0, `httpx` 0.28.1 | The round-15 provider stack validated as-is by the smoke probe |
+| Transitives | ride their parents | Nothing forced; exception: `matplotlib` 3.11.2 (upgraded because `make_diagram.py` imports it directly) |
+
+**The one suite break and its fix:** the compact-pass baseline-gap regression failed with "min gap 1.0pt" on pypdf 7 — pypdf 7 emits the itemize bullet glyph (U+2022) as its OWN fragment sitting ~1pt above its line's baseline, where pypdf 6 folded it into the line text. Verified on the identical compact PDF: 64 rows on 6.4.2 vs 74 on 7.1.0, the 10 extras all lone bullet markers (the console showed them as `�`, which hid the codepoint until repr'd as hex). The actual text rows never collide; the test's visitor filter now drops lone bullet markers beside its pre-existing `'| |'` page-origin artifact filter. `pip check` clean throughout; remaining outdated packages are transitives only.
+
+> Status: suite **454 passed** (~6:42, record `%TEMP%\opencode\pytest_full_nov15_deps.txt`), `pip check` clean, provider smoke probe green on the upgraded stack (`%TEMP%\opencode\probe2_deps.txt`), backend restarted to serve the new modules. Known heads-up (documented, not acted on): `langchain-classic` 1.0.8 deprecates its `init_chat_model` entry point (added in LangChain 1.0.5; retained for import-compat) — migrating `agent/llms.py` to the maintained `langchain.chat_models` home means adding the `langchain` umbrella package (not installed; parked for a future round).
+
 ### UI Fixes
 
 | Change | Reason |
