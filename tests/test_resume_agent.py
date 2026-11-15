@@ -4004,6 +4004,50 @@ def test_graph_writes_bullet_source_rows(fake_llms, monkeypatch):
     assert not any("Wrote some scripts" in r["bullet"] for r in rows)
 
 
+def test_graph_binds_provenance_for_file_uploads(fake_llms, monkeypatch, tmp_path):
+    """Live-trace gap (cab7f3f7, Nov 15): for PDF/DOCX uploads
+    original_resume carries the temp-file PATH, not text - the provenance
+    binder saw zero source bullets and the Bullet-sources tab never
+    shipped on a fully bulleted resume. ats_check now falls back to the
+    loader's resume_text (the actual original content)."""
+    loaded_original = ("## Experience\n**Engineer** | Corp | 2024\n"
+                       "- Built Python services on Kubernetes with Docker, cutting latency 40%.\n"
+                       "- Led the migration of 12 services to Docker, saving $1.2M.")
+    good = ("## Experience\n**Engineer** | Corp | 2024\n"
+            "- Built Python services on Kubernetes with Docker, cutting latency 40%.\n"
+            "- Led the migration of 12 services onto Docker.")
+    worse = "## Skills\nPython\n## Experience\nWrote some scripts."
+
+    class FixedReviewer(FakeStrictLLM):
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    return agent.ReviewOutput(score=60, feedback="Add metrics.",
+                                              sections=[])
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", FixedReviewer())
+    seq = SeqCreativeLLM([good, worse])
+    monkeypatch.setattr(agent.llms, "llm_creative", seq)
+    upload = tmp_path / "resume_upload.pdf"
+    upload.write_bytes(b"%PDF-fake")
+    monkeypatch.setattr("agent.nodes.loader._load_resume_pdf",
+                        lambda path: loaded_original)
+    inputs = _base_inputs()
+    inputs["original_resume"] = str(upload)
+    result = agent.full_app.invoke(inputs)
+
+    rows = result.get("bullet_sources")
+    # the shipped provenance describes the SHIPPED resume against the
+    # LOADED original, not the path string
+    assert rows == agent.compute_bullet_sources(loaded_original, good)
+    assert rows, "provenance must not be empty for a bulleted upload"
+    assert rows[0]["status"] == "unchanged"
+    assert rows[0]["metrics"] == ["40%"]
+    assert rows[1]["status"] == "reworded"
+    assert rows[1]["dropped"] == ["$1.2M"]
+
+
 # ==========================================
 # Scoring truth: reviewer flattening + ATS link-target alignment
 # ==========================================

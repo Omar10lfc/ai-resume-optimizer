@@ -55,6 +55,13 @@ _MIN_WORDS = 4
 # 2. Dollar amounts ("saved $1.2M", "$50,000").
 # 3. Scaled numbers ("10K events", "3M requests", "1.5 million users").
 # 4. Curated count units ("2,195 instances", "12 services", "40 users").
+# 5. Precision-point deltas ("34 points", "3.5-point gain") - the
+#    retrieval/NLP vocabulary lives entirely outside 1-4 (live-trace
+#    evidence cab7f3f7, Nov 15: a 34-point P@1 improvement audited LOW
+#    with the false reason "no outcome is measured").
+# 6. Explicit before->after decimal deltas ("WER 42.69 -> 20.61",
+#    "P@1 0.64 -> 0.86") - the arrow IS the measured-outcome signature.
+#    Deliberately NOT the word "to" ("2019 to 2020" is a date range).
 _DOLLAR_RE = re.compile(
     r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:[KMB]\b|thousand|million|billion))?",
     re.IGNORECASE)
@@ -77,8 +84,13 @@ _COUNT_STEMS = (
 _COUNT_UNITS_RE = re.compile(
     r"\b\d[\d,]*(?:\.\d+)?(?:\s+|-)(?:" + "|".join(_COUNT_STEMS) + r")s?\b",
     re.IGNORECASE)
+_DELTA_SCORE_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:\u2192|->)\s*\d+(?:\.\d+)?\b")
+_POINTS_RE = re.compile(
+    r"\b\d[\d,]*(?:\.\d+)?(?:\s+|-)points?\b", re.IGNORECASE)
 
-_QUANT_RES = (_METRIC_TOKEN_RE, _DOLLAR_RE, _SCALED_RE, _COUNT_UNITS_RE)
+_QUANT_RES = (_METRIC_TOKEN_RE, _DOLLAR_RE, _SCALED_RE, _COUNT_UNITS_RE,
+              _DELTA_SCORE_RE, _POINTS_RE)
 
 
 def _quant_tokens(text: str, cap: int = 4) -> list[str]:

@@ -215,3 +215,33 @@ def test_parser_is_the_single_extraction_source():
 def test_scorer_exported_from_package():
     assert agent.compute_bullet_impact is compute_bullet_impact
     assert agent.grade_bullet is grade_bullet
+
+# ---------------------------------------------------------------------------
+# Vocabulary calibration (Nov 15 2026, live trace cab7f3f7): precision-point
+# deltas and before->after decimal arrows are measured outcomes.
+# ---------------------------------------------------------------------------
+
+def test_precision_points_and_arrow_deltas_count_as_outcomes():
+    """The live false-low: "Boosted semantic search precision 34 points
+    (P@1 0.64 -> 0.86 on ARCD)" audited LOW with "no outcome is measured"
+    - both signals were outside the vocabulary."""
+    verdict = grade_bullet(
+        "Boosted semantic search precision 34 points (P@1 0.64 \u2192 0.86 "
+        "on ARCD) by adding a cross-encoder reranker.")
+    assert verdict["grade"] == "medium"   # 'boosted' is not in the strong set
+    assert "0.64 \u2192 0.86" in verdict["metrics"]
+    assert "34 points" in verdict["metrics"]
+    assert "no outcome is measured" not in verdict["reason"]
+
+
+def test_ascii_arrow_delta_counts_too():
+    """'improved' is in _STRONG_VERBS - strong verb + metric = high."""
+    verdict = grade_bullet("Improved reranker quality (P@1 0.64 -> 0.86).")
+    assert "0.64 -> 0.86" in verdict["metrics"]
+    assert verdict["grade"] == "high"
+
+
+def test_word_to_ranges_are_not_score_deltas():
+    """The arrow is the signature - '2019 to 2020' is a date range."""
+    verdict = grade_bullet("Built pipelines from 2019 to 2020 and in 2021.")
+    assert verdict["metrics"] == []

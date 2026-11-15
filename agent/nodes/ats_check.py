@@ -81,9 +81,19 @@ def ats_check_node(state: AgentState):
     # original bullet each optimized bullet traces to and which measured
     # outcomes a rewrite dropped (the integrity scan's rounding tolerance
     # applies, so "96.2% -> 96%" is kept). Deterministic, zero LLM calls;
-    # rides the SAME best-of guard.
-    source_table = compute_bullet_sources(state.get('original_resume', ''),
+    # rides the SAME best-of guard. For file/URL imports original_resume
+    # carries the SOURCE (a path/URL), not text - live trace cab7f3f7
+    # (Nov 15): a PDF upload left the provenance empty on a fully
+    # bulleted resume. The loader's resume_text IS the original content
+    # then, so bind against whichever side has bullets.
+    original_text = state.get('original_resume') or ''
+    source_table = compute_bullet_sources(original_text,
                                           state['optimized_resume'])
+    if not source_table:
+        loaded = (state.get('resume_text') or '').strip()
+        if loaded and loaded != original_text.strip():
+            source_table = compute_bullet_sources(
+                loaded, state['optimized_resume'])
 
     llm_quality = state.get('llm_quality_score', 0)
     composite = round(
