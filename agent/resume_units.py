@@ -30,7 +30,7 @@ from typing import NamedTuple, Optional
 from pydantic import BaseModel, Field
 
 from .helpers import (_strip_code_fences, canonical_feedback_section,
-                      extract_declined_requests, markdown_link_count)
+                      extract_declined_requests, markdown_link_targets)
 
 # The whole-document unit id (heading-less pastes). The prompt offers it
 # verbatim and the test fakes key on "[id=\"Resume\"]" to mirror the offer.
@@ -218,7 +218,7 @@ def _gated_rewrite(unit: SourceUnit,
             return _emit_source_unit(unit), None   # empty -> empty: no-op
         return None, (f"writer returned an empty rewrite for '{unit.id}' "
                       f"- kept the source section")
-    if markdown_link_count(body) < markdown_link_count(unit.body):
+    if not (markdown_link_targets(unit.body) <= markdown_link_targets(body)):
         return None, (f"rewrite for '{unit.id}' dropped a source link - "
                       f"kept the source section")
     return _emit_rewrite(unit, body), None
@@ -260,7 +260,8 @@ def assemble_resume_units(units: ResumeUnits,
                     f"dropped: {', '.join(outsiders)}")
             return source, warnings, declined
         body = replacement.body.strip()
-        if markdown_link_count(body) < markdown_link_count(units.sections[0].body):
+        if not (markdown_link_targets(units.sections[0].body)
+                <= markdown_link_targets(body)):
             warnings.append(
                 "whole-document rewrite dropped a source link - kept the "
                 "source resume verbatim")

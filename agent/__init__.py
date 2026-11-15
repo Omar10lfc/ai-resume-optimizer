@@ -5,6 +5,7 @@ from .helpers import (_force_ascii, _strip_emoji_for_pdf, _strip_emoji_from_html
                       find_dropped_source_metrics,
                       find_unused_context_terms,
                       scrub_unsupported_content, preserve_contact_links,
+                      normalize_markdown_links,
                       split_markdown_sections, canonical_feedback_section,
                       merge_rewritten_sections, extract_declined_requests)
 from .ats import _extract_keywords, _simple_stem, _keyword_found_in_text, compute_ats_match, apply_semantic_matches, _job_brief, _boundary_contains, freq_ok

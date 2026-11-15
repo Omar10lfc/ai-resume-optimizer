@@ -1075,6 +1075,17 @@ def _unwrap_contact_link(part: str, normalized: list[str]) -> str:
     return url
 
 
+# A link construct whose LABEL spans pipe-separated fields: PDF ingestion
+# wraps link-ANNOTATED text as [text](url), and a source PDF's link
+# rectangle can cover a whole contact line - so the line's full text
+# becomes ONE label ("[City | phone | email |](linkedin-url)" or
+# "[url1 | url2 | url3](linkedin-url)"). Live run bf58e700 (Nov 15 2026):
+# BB1-B pins the identity header verbatim, these constructs reached the
+# renderers, and the contact classifier emitted \href garbage per
+# fragment ("\href{https://](https://...)}", a "](" location field).
+_CONTACT_SPAN_LINK_RE = re.compile(r"\[([^\[\]]*\|[^\[\]]*)\]\(([^)]*)\)")
+
+
 def preserve_contact_links(
         draft: str,
         source_resume: str) -> tuple[str, list[str], list[str], list[str]]:
@@ -1085,7 +1096,11 @@ def preserve_contact_links(
     (run bf0f7941 shipped "...github.com/Omar10lfc | N/A | ..."), and
     normalizes label-form markdown links to their bare URLs (round 7, Nov
     12 2026: "[Portfolio](https://huggingface.co/...)" printed the label
-    instead of the URL).
+    instead of the URL), and flattens span-label link constructs to their
+    visible text (bf58e700, Nov 15 2026: a PDF link annotation covering a
+    whole contact line wrapped its full text as ONE "[a | b | c](url)"
+    link, which the renderers' per-segment classifier turned into broken
+    \\href output).
 
     Returns (draft, restored_tokens, removed_placeholders, normalized_links)
     with tokens in display form (scheme stripped). Idempotent: an
@@ -1116,13 +1131,34 @@ def preserve_contact_links(
     if not region_idx:
         return draft, [], [], []
 
-    # Sanitation pass on the contact line: placeholder tokens out (a
-    # restored link must never land after a fake "N/A" token), label-form
-    # markdown links unwrapped to bare URLs. A contact line keeps at least
-    # two tokens.
     removed: list[str] = []
     normalized: list[str] = []
     changed = False
+
+    # Flatten span-label link constructs to their visible text (bf58e700,
+    # Nov 15 2026): a PDF link annotation can cover a whole contact line,
+    # so ingestion wrapped the line's text as ONE link whose label spans
+    # the pipe-separated fields. The renderers' contact classifier works
+    # per pipe-segment and turned the fragments into broken \href output;
+    # the visible text (city, phone, email, and the bare profile URLs)
+    # classifies cleanly on its own. The target survives whenever it is
+    # also visible text (the "[linkedin.com/... | ...](linkedin)" shape);
+    # the re-inject below restores any target that is not.
+    for i in region_idx:
+        if not _CONTACT_SPAN_LINK_RE.search(lines[i]):
+            continue
+        flat = _CONTACT_SPAN_LINK_RE.sub(lambda m: m.group(1), lines[i])
+        flat = re.sub(r"\s*\|\s*$", "", flat.rstrip())
+        if flat != lines[i]:
+            lines[i] = flat
+            changed = True
+            head = flat.split("|")[0].strip()[:48]
+            normalized.append(f"flattened header link construct to its "
+                              f"visible text ({head})")
+            _safe_print("   [Contact] Flattened a span-label header link "
+                        "to its visible text")
+
+    # Sanitation pass on the contact line: placeholder tokens out (a
     contact_idx = None
     for i in region_idx:
         if ("|" in lines[i] or "http" in lines[i].lower() or "@" in lines[i]):
@@ -1189,6 +1225,85 @@ _MD_LINK_RE = re.compile(r"\]\([^)]+\)")
 def markdown_link_count(text: str) -> int:
     """Number of markdown links ``[label](url)`` in ``text``."""
     return len(_MD_LINK_RE.findall(text or ""))
+
+
+def markdown_link_targets(text: str) -> frozenset:
+    """The DISTINCT normalized targets of the markdown links in ``text``.
+
+    The unit/merge gates compare TARGET SETS, not instance counts: the
+    broken-source shapes a PDF upload can carry link the SAME url several
+    times (live run bf58e700: one project title line carried three links
+    to the same lnkd.in target), so a faithful canonical rewrite that
+    merges duplicates must not be refused for "dropping" an instance -
+    only losing a DISTINCT target is a real loss.
+    """
+    return frozenset(_norm_link(m.group(0)[2:-1])
+                     for m in _MD_LINK_RE.finditer(text or ""))
+
+
+# A complete [label](url) construct (the span-label regex above is the
+# pipe-bearing subset; this is the general form for the cleanup pass).
+_MD_LINK_FULL_RE = re.compile(r"\[([^\[\]]*)\]\(([^)]*)\)")
+_BULLET_MARKER_RE = re.compile(r"^[-*•]\s+")
+
+
+def normalize_markdown_links(text: str) -> str:
+    """Deterministic cleanup of PDF-ingestion damage in the improver's
+    INPUT (bf58e700, Nov 15 2026) - run once before the writer sees the
+    resume so the broken shapes never reach the prompt, AND a unit the
+    writer skips ships the cleaned text instead of the damage:
+
+    - a link label spanning pipe-separated fields ("[City | phone |](url)")
+      is flattened to its visible text;
+    - a raw list marker riding inside a link label ("[- AWS ...](url)") or
+      in front of a link ("- [GitHub](url)") is stripped;
+    - links to the SAME target repeated on one line keep the first
+      instance only (no target is lost, so the target-set gates agree);
+    - a line holding ONLY link constructs whose every target already
+      appeared on an earlier line (the standalone "[GitHub](same-url)"
+      repeat) is dropped - a pure link line carries nothing but a URL.
+
+    Clean markdown passes through byte-identical.
+    """
+    text = (text or "").replace("\r\n", "\n")
+    out: list[str] = []
+    seen: set = set()
+    for line in text.split("\n"):
+        # 1. flatten span-label constructs to their visible text
+        line = _CONTACT_SPAN_LINK_RE.sub(lambda m: m.group(1), line)
+        # 2. strip a raw list marker from inside a link label ...
+        line = _MD_LINK_FULL_RE.sub(
+            lambda m: f"[{_BULLET_MARKER_RE.sub('', m.group(1).strip())}]"
+                      f"({m.group(2)})",
+            line)
+        #    ... and from in front of the line's first link
+        line = re.sub(r"^(\s*)[-*•]\s+(?=\[)", r"\1", line)
+        # 3. duplicate links to the same target on one line: keep the first
+        #    (absorb one adjacent space at the cut so no double space remains)
+        parts: list[str] = []
+        last = 0
+        line_targets: set = set()
+        for m in _MD_LINK_FULL_RE.finditer(line):
+            target = _norm_link(m.group(2))
+            if target in line_targets:
+                end = m.end()
+                if end < len(line) and line[end] == " ":
+                    end += 1
+                parts.append(line[last:m.start()])
+                last = end
+                continue
+            line_targets.add(target)
+        parts.append(line[last:])
+        line = "".join(parts)
+        # 4. a pure-link line whose every target was already seen on an
+        #    earlier line is dropped
+        if line_targets:
+            if (not _MD_LINK_FULL_RE.sub("", line).strip()
+                    and line_targets <= seen):
+                continue
+            seen |= line_targets
+        out.append(line)
+    return "\n".join(out)
 
 
 def accumulate_unique(existing: Optional[list], added: Optional[list]) -> list:

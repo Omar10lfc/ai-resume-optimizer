@@ -764,6 +764,15 @@ def test_polisher_section_gate_rejects_rewrites_that_drop_links():
     assert _rewrite_kept_links("", "New [link](https://n)")   # vacuous on empty original
 
 
+def test_polisher_section_gate_counts_distinct_targets():
+    """Run bf58e700 (Nov 15): a broken source can link the same URL several
+    times - merging duplicates into one instance loses nothing."""
+    from agent.nodes.polisher import _rewrite_kept_links
+    old = "[A](https://same.io) [B](https://same.io) [C](https://same.io)"
+    assert _rewrite_kept_links(old, "**Title** [A](https://same.io) | Tech")
+    assert not _rewrite_kept_links(old, "No links at all.")
+
+
 def test_merge_rewritten_sections_refuses_partial_match():
     md = "## Skills\nPython.\n## Experience\nWork."
     merged, replaced = agent.merge_rewritten_sections(md, {"Education": "Uni."})
@@ -1097,6 +1106,32 @@ def test_assemble_refuses_rewrites_that_drop_links_or_ship_empty():
         agent.ImproverSection(id="Projects", body="- Built it without links.")])
     text2, warns2, _ = agent.assemble_resume_units(units, linkless)
     assert "https://x.io/aegis" in text2
+    assert any("dropped a source link" in w for w in warns2)
+
+
+def test_assemble_gate_counts_distinct_targets_not_instances():
+    """Run bf58e700 (Nov 15): the broken source linked the SAME url three
+    times on one project title line - a canonical rewrite keeping one
+    instance must pass; only losing a DISTINCT target rejects."""
+    units = agent.parse_resume_units(
+        "## Projects\n"
+        "[Alexandria Port](https://lnkd.in/x) [(Graduation Project)]"
+        "(https://lnkd.in/x) [GitHub](https://lnkd.in/x)\n"
+        "- Engineered the solver.")
+    rewrite = agent.ImproverOutput(sections=[agent.ImproverSection(
+        id="Projects",
+        body="**Alexandria Port** [GitHub](https://lnkd.in/x) | tech | date\n"
+             "- Engineered the solver.")])
+    text, warns, _ = agent.assemble_resume_units(units, rewrite)
+    assert "**Alexandria Port**" in text
+    assert not any("dropped a source link" in w for w in warns)
+
+    lost = agent.ImproverOutput(sections=[agent.ImproverSection(
+        id="Projects",
+        body="**Alexandria Port** [Live Demo](https://other.io) | tech\n"
+             "- Engineered the solver.")])
+    text2, warns2, _ = agent.assemble_resume_units(units, lost)
+    assert "https://lnkd.in/x" in text2
     assert any("dropped a source link" in w for w in warns2)
 
 
@@ -1624,6 +1659,129 @@ def test_preserve_contact_links_normalizes_label_links_to_bare_urls():
         fixed, source)
     assert fixed2 == fixed and normalized2 == []
     assert restored2 == [] and removed2 == []
+
+
+def test_preserve_contact_links_flattens_span_label_header_links():
+    """Live run bf58e700 (Nov 15): BB1-B pins the identity header verbatim,
+    and PDF ingestion had wrapped whole contact lines as single links with
+    pipe-spanning labels - the renderers' per-segment contact classifier
+    turned the fragments into \href garbage. The guard flattens the
+    constructs to their visible text; every target survives as text."""
+    draft = (
+        "Omar Mashaly\n"
+        "AI/ML Engineer\n"
+        "[Alexandria, Egypt | +20 100 170 1821 | "
+        "omarmashaly86@gmail.com |](https://linkedin.com/in/omar-mashaly)\n"
+        "[linkedin.com/in/omar-mashaly | github.com/Omar10lfc | "
+        "huggingface.co/Omar10lfc](https://linkedin.com/in/omar-mashaly)\n"
+        "SUMMARY\n"
+        "AI engineer.\n"
+    )
+    fixed, restored, removed, normalized = agent.preserve_contact_links(
+        draft, draft)
+    lines = fixed.splitlines()
+    assert lines[2] == ("Alexandria, Egypt | +20 100 170 1821 | "
+                        "omarmashaly86@gmail.com")
+    assert lines[3] == ("linkedin.com/in/omar-mashaly | github.com/Omar10lfc"
+                        " | huggingface.co/Omar10lfc")
+    assert "](" not in fixed.split("SUMMARY")[0]
+    assert any("flattened header link construct" in n for n in normalized)
+    assert restored == [] and removed == []
+    # idempotent: the flattened header passes through unchanged
+    fixed2, restored2, removed2, normalized2 = agent.preserve_contact_links(
+        fixed, draft)
+    assert fixed2 == fixed
+    assert normalized2 == [] and restored2 == [] and removed2 == []
+
+
+_BROKEN_SOURCE_SHAPES = (
+    "Omar Mashaly\n"
+    "AI/ML Engineer\n"
+    "[Alexandria, Egypt | +20 100 170 1821 | omarmashaly86@gmail.com |]"
+    "(https://linkedin.com/in/omar)\n"
+    "[linkedin.com/in/omar | github.com/omar | huggingface.co/omar]"
+    "(https://linkedin.com/in/omar)\n"
+    "## Projects\n"
+    "[Alexandria Port](https://lnkd.in/x) [(Graduation Project)]"
+    "(https://lnkd.in/x) [Sep 2025 - Jun 2026 | Live Demo |]"
+    "(https://lnkd.in/x)\n"
+    "[GitHub](https://lnkd.in/x)\n"
+    "- Engineered a CP-SAT solver.\n"
+    "## Certifications\n"
+    "[- AWS Nanodegree, Udacity - Nov 2025](https://ud.io/cert)\n"
+    "- [Maven NLP, Oct 2025](https://maven.io/c)\n"
+)
+
+
+def test_normalize_markdown_links_cleans_broken_shapes():
+    """Run bf58e700 (Nov 15): the deterministic pre-pass flattens span-label
+    links, strips list markers from labels, dedupes same-target links per
+    line, and drops pure-link repeat lines - clean markdown passes through
+    byte-identical."""
+    out = agent.normalize_markdown_links(_BROKEN_SOURCE_SHAPES)
+    # header spans flattened to visible text
+    assert ("Alexandria, Egypt | +20 100 170 1821 | omarmashaly86@gmail.com"
+            in out)
+    assert "](https://linkedin.com/in/omar)" not in out.split("##")[0]
+    # title line: one link survives, span text kept, dup and standalone
+    # repeat gone
+    assert out.count("https://lnkd.in/x") == 1
+    assert "[(Graduation Project)]" not in out
+    assert "[GitHub]" not in out
+    assert "Sep 2025 - Jun 2026 | Live Demo |" in out
+    # markers stripped from inside and in front of link labels
+    assert "[AWS Nanodegree, Udacity - Nov 2025](https://ud.io/cert)" in out
+    assert "[- AWS" not in out
+    assert "[Maven NLP, Oct 2025](https://maven.io/c)" in out
+    assert "- [Maven" not in out
+    # real bullets untouched
+    assert "- Engineered a CP-SAT solver." in out
+
+
+def test_normalize_markdown_links_is_byte_stable_on_clean_input():
+    clean = (
+        "Omar Mashaly\n"
+        "AI/ML Engineer\n"
+        "## Projects\n"
+        "**Aegis** [Live Demo](https://a.io/demo) [GitHub](https://g.io/x) "
+        "| OR-Tools | Sep 2025 - Jun 2026\n"
+        "- Built the solver.\n"
+        "## Certifications\n"
+        "[AWS Nanodegree, Udacity (Nov 2025)](https://ud.io/cert)\n"
+    )
+    assert agent.normalize_markdown_links(clean) == clean
+
+
+def test_full_rewrite_normalizes_broken_source_before_the_writer(monkeypatch):
+    """The pre-pass runs at the _full_rewrite entry: the writer's prompt
+    shows the cleaned shapes, and an all-skip answer ships the CLEANED
+    source instead of the damaged original (bf58e700 mechanism)."""
+    prompts = []
+
+    class SkippingLLM:
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    prompts.append(
+                        "\n".join(str(m.content) for m in messages))
+                    return agent.ImproverOutput(sections=[], declined=[])
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_creative", SkippingLLM())
+    state = {"resume_text": _BROKEN_SOURCE_SHAPES, "optimized_resume": "",
+             "human_notes": "", "job_text": "Python engineer with Docker.",
+             "missing_skills": "", "feedback": "", "iteration": 0,
+             "scrub_removals": [], "unevidenced_metrics": [],
+             "declined_requests": []}
+    out = agent.nodes.improver._full_rewrite(
+        state, node_label="improver", version_key="improver",
+        version=agent.nodes.improver.IMPROVER_PROMPT_VERSION)
+    opt = out["optimized_resume"]
+    assert "[(Graduation Project)]" not in opt and "[GitHub]" not in opt
+    assert "[- AWS" not in opt
+    assert "[AWS Nanodegree, Udacity - Nov 2025](https://ud.io/cert)" in opt
+    assert "Sep 2025 - Jun 2026 | Live Demo |" in opt
+    assert prompts and "[(Graduation Project)]" not in prompts[0]
 
 
 def test_improver_postprocess_restores_dropped_contact_links():

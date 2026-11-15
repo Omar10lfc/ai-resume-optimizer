@@ -23,7 +23,7 @@ from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
 from ..helpers import (_safe_print, _strip_code_fences, _safe_truncate,
                        split_markdown_sections, canonical_feedback_section,
-                       merge_rewritten_sections, markdown_link_count)
+                       merge_rewritten_sections, markdown_link_targets)
 from .improver import _full_rewrite, _postprocess_draft
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -41,12 +41,14 @@ POLISHER_TARGET_VERSION = "polisher-target@2"
 _MAX_TARGETS_PER_PASS = 3
 
 def _rewrite_kept_links(old_body: str, new_body: str) -> bool:
-    """Deterministic gate: a section rewrite must not drop markdown links
-    (project/demo/GitHub URLs) the original body carried - the improver's
-    "preserve all real links" contract is enforced in code, not trusted to
-    the model."""
-    return (markdown_link_count(new_body or "")
-            >= markdown_link_count(old_body or ""))
+    """Deterministic gate: a section rewrite must not drop markdown link
+    TARGETS (project/demo/GitHub URLs) the original body carried - the
+    improver's "preserve all real links" contract is enforced in code, not
+    trusted to the model. Distinct targets, not instance counts: a broken
+    source can link the same URL several times (run bf58e700), and a
+    canonical rewrite that merges duplicates loses nothing."""
+    return (markdown_link_targets(old_body or "")
+            <= markdown_link_targets(new_body or ""))
 
 
 def _build_section_prompt(state: AgentState, header_line: str, section_body: str,

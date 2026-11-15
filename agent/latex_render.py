@@ -1199,7 +1199,13 @@ def _render_section(section: Section, compact: bool = False) -> str:
 
                     if total_len <= 85 or not tech_text:
                         # Fits on a single line via \resumeProjectHeading
-                        left_items = [title_bold]
+                        # (a link-only title has an empty clean_title - the
+                        # label rides the link - so no empty \textbf{}
+                        # segment, no stray $|$ separator: bf58e700
+                        # follow-up, Nov 15 2026).
+                        left_items = []
+                        if clean_title:
+                            left_items.append(title_bold)
                         if formatted_links:
                             left_items.extend(formatted_links)
                         if tech_text:
@@ -1209,7 +1215,9 @@ def _render_section(section: Section, compact: bool = False) -> str:
                         last_header_kind = "ph"
                     else:
                         # Multi-line: Title + links on Row 1, tech stack on Row 2
-                        row1_items = [_latex_escape(clean_title)]
+                        row1_items = []
+                        if clean_title:
+                            row1_items.append(_latex_escape(clean_title))
                         if formatted_links:
                             row1_items.append(r"\textnormal{" + " $|$ ".join(formatted_links) + r"}")
                         row1_left = " $|$ ".join(row1_items)
@@ -1312,7 +1320,13 @@ def _render_section(section: Section, compact: bool = False) -> str:
                                  _render_text_with_links(cm.group(2)) + r"}")
                     is_label_row = True
                 else:
-                    item_text = _render_text_with_links(ln)
+                    # A simple line can still carry a raw list marker when a
+                    # verbatim-shipped section keeps its bullet lines (the
+                    # cert links ride "- [label](url)" lines). Strip the
+                    # marker so it does not print inside the \underline
+                    # label (bf58e700 follow-up, Nov 15 2026).
+                    item_text = _render_text_with_links(
+                        re.sub(r'^\s*[-*•]\s+', '', ln))
                     is_label_row = False
             items.append(item_text)
             hang_flags.append(is_label_row)

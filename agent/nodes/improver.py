@@ -15,7 +15,8 @@ from ..helpers import (_safe_print, _filter_hallucinated_sections,
                        _tame_unicode_bullets, find_unevidenced_metric_claims,
                        find_dropped_source_metrics, find_unused_context_terms,
                        scrub_unsupported_content, extract_declined_requests,
-                       accumulate_unique, preserve_contact_links)
+                       accumulate_unique, preserve_contact_links,
+                       normalize_markdown_links)
 from ..provider import invoke_structured_with_repair, extract_failed_generation
 from ..resume_units import (ImproverOutput, RESUME_UNIT_ID,
                             assemble_resume_units,
@@ -128,7 +129,14 @@ def _build_improver_prompt(state: AgentState, units) -> str:
     6. PRESERVE ALL REAL LINKS inside the bodies you return: never drop
        GitHub links, live demos, portfolio URLs, LinkedIn profile links, or
        email addresses the source shows. Attach project links to the project
-       title line, NEVER as a standalone bullet item.
+       title line, NEVER as a standalone bullet item. The source markdown
+       can arrive malformed from PDF extraction - a link label spanning
+       pipe-separated fields ("[City | phone | email |](url)"), stray "["
+       fragments around dates, the same URL linked several times, links as
+       standalone lines. You may NORMALIZE these into the canonical shapes
+       above (flatten a line-wide link to its visible text, merge duplicate
+       links to one instance, move links onto the title line) as long as
+       every DISTINCT link target still appears in your output.
     7. Retain legitimate existing sections from the candidate's background:
        any unit you skip ships verbatim, so a section stays in the resume
        unless you explicitly replace its body.
@@ -454,6 +462,10 @@ def _full_rewrite(state: AgentState, *, node_label: str, version_key: str,
     integrity warning - an outage degrades to "untailored but honest"
     instead of killing the run."""
     base_content = state['optimized_resume'] if state['optimized_resume'] else state['resume_text']
+    # Deterministic pre-pass (bf58e700, Nov 15 2026): clean the PDF-ingestion
+    # damage out of the input BEFORE the writer sees it - a skipped unit
+    # then ships the cleaned text, and the prompt shows canonical shapes.
+    base_content = normalize_markdown_links(base_content)
     units = parse_resume_units(base_content)
     messages = [
         SystemMessage(content=SYSTEM_GUARDRAIL),

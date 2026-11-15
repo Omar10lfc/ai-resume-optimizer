@@ -280,13 +280,14 @@ def _entry_head_rows(entry: Entry, title_lower: str) -> list[tuple[str, str]]:
         left = _inline(clean_title)
         if _links:
             link_html = "".join(
-                ' <span class="psep">|</span> <a href="{}">{}</a>'.format(
+                '{}<a href="{}">{}</a>'.format(
+                    ' <span class="psep">|</span> ' if left else "",
                     _esc(u), _esc(_display_url_text(lbl)))
                 for lbl, u in _links)
             left += link_html
         if clean_tech:
-            left += (f' <span class="psep">|</span> '
-                     f"<em>{_inline(clean_tech)}</em>")
+            left += ((f' <span class="psep">|</span> ' if left else "")
+                     + f"<em>{_inline(clean_tech)}</em>")
         rows.append((left, _esc(date_field)))
     elif is_exp:
         role = entry.header
@@ -335,7 +336,11 @@ def _simple_rows(lines: list[str]) -> list[tuple[bool, str]]:
             if cm and len(cm.group(1)) <= 35:
                 m = cm
             else:
-                rows.append((False, _inline(ln)))
+                # A verbatim-shipped section can keep raw bullet lines
+                # ("- [label](url)"); strip the marker outside the link so
+                # it does not print as stray text (parity with the LaTeX
+                # simple-line path, Nov 15 2026).
+                rows.append((False, _inline(re.sub(r"^\s*[-*•]\s+", "", ln))))
                 continue
         label = _strip_inline(m.group(1))
         value = m.group(2)
