@@ -987,6 +987,18 @@ The dependency-refresh round's heads-up closed the same day: `agent/llms.py` now
 
 > Status: suite **457 passed** (~6:02, record `%TEMP%\opencode\pytest_full_nov15_lcmig.txt`), `pip check` clean, provider smoke probe green, backend restarted.
 
+### LangSmith eval set - Nov 15 2026 (Phase-4 bet: evals from real traces)
+
+`agent/evals.py` + `scripts/build_eval_set.py` turn the project's real LangSmith root runs into the **`resume-optimizer-evals`** dataset and score them with three **code-only** evaluators (zero LLM calls):
+
+- **score_sanity** — the recorded composite score + ATS % are numbers in 0..100.
+- **integrity** — the pipeline's OWN fabrication scan (`find_unevidenced_metric_claims`) re-runs on the SHIPPED optimized resume + cover letter against the evidence (source resume + user notes): a fresh finding = an unevidenced metric survived every in-pipeline gate.
+- **keyword_precision** — every ATS keyword surfaced in `ats_result` must appear in the JD text (floor 0.8; an unparseable report is *unscored*, never failed).
+
+Build/live facts: fetched via `client.runs.query` (the `list_runs` replacement; the export script's traps handled: project name → UUID first, explicit `min_start_time`, `selects` fallback ladder); 30 roots → 9 step-2 examples → 9 pushed, re-run pushed 0 / skipped 9; live quirk — streamed roots store `{"input": None}` server-side (the invoke payload never reached storage), so jd/resume fall back to the outputs' final state; everything PII re-redacted; replay report 27/27 green.
+
+Usage: `venv\Scripts\python.exe scripts\build_eval_set.py [--limit 30] [--no-push] [--strict]` (needs `LANGCHAIN_API_KEY` in env or `.env`).
+
 ### UI Fixes
 
 | Change | Reason |
