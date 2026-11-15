@@ -2,9 +2,11 @@ langgraph==1.2.22
 langgraph-checkpoint==4.3.2   # 4.x is the checkpoint line that pairs with langgraph 1.2.x
 langgraph-checkpoint-sqlite==3.1.3   # SQLite persistence for CHECKPOINTER_DB_PATH
 langchain-core==1.8.0
-# langchain-classic is a DIRECT import (agent/llms.py init_chat_model dispatch,
-# round 15) - pinned explicitly instead of riding transitively.
-langchain-classic==1.0.8
+# langchain 1.5.0 is the DIRECT import (agent/llms.py init_chat_model dispatch;
+# Nov 15 2026: migrated off langchain-classic, which deprecated the entry
+# point in 1.0.5 and removes it in 2.0.0). langchain-classic remains
+# installed locally but is no longer a repo dependency.
+langchain==1.5.0
 langsmith==0.14.17
 langchain-groq==1.1.3
 # Round 15 (roadmap item 13): first-class LLM_PROVIDER=openai|anthropic

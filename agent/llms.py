@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from typing import Iterator
 
 # pyrefly: ignore [missing-import]
-from langchain_classic.chat_models import init_chat_model
+from langchain.chat_models import init_chat_model
 
 from .config import (_EMERGENCY_MODEL, _FALLBACK_MODEL, _PRIMARY_MODEL,
                      LLM_BASE_URL, LLM_MAX_TOKENS, LLM_PROVIDER,
