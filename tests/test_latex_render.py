@@ -1202,8 +1202,17 @@ def test_compact_pass_renders_one_page_without_baseline_collision(tmp_path):
         # pypdf reports empty separator fragments ('| |') at the page origin
         # (y=0) - not glyphs, and they'd fake a collision.
         stripped = (text or "").strip()
-        if stripped and set(stripped) - {"|", " "}:
-            chunks.append(tm[5])
+        if not stripped or not set(stripped) - {"|", " "}:
+            return
+        # pypdf 7 (Nov 15 2026 dep refresh) emits the itemize bullet glyph
+        # U+2022 as its own fragment sitting ~1pt above its own line's
+        # baseline; pypdf 6 folded it into the line text (verified on the
+        # same compact PDF: 64 rows on 6.4.2, 74 on 7.1.0, the 10 extras
+        # all lone-U+2022 markers). Not a text row - it would fake a
+        # collision with its own line.
+        if set(stripped) == {"\u2022"}:
+            return
+        chunks.append(tm[5])
 
     for page in reader.pages:
         page.extract_text(visitor_text=visit)
