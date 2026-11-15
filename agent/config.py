@@ -7,27 +7,64 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Model Configuration (env-overridable) ---
-_PRIMARY_MODEL = os.environ.get("PRIMARY_MODEL", "openai/gpt-oss-120b")
-_FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "openai/gpt-oss-20b")
-# 'llama-3.1-8b-instant' was decommissioned from the Groq catalog (Nov 10 2026 -
-# live 404 'model_not_found' once a run fell through primary+fallback).
-# Verified present on the live catalog: 'qwen/qwen3.8-27b'.
-_EMERGENCY_MODEL = os.environ.get("EMERGENCY_MODEL", "qwen/qwen3.8-27b")
+# --- LLM provider (round 15, roadmap item 13; env-overridable) ---
+# LLM_PROVIDER selects the chat-model family: groq (default, the historical
+# engine) | openai | anthropic | openai-compatible (ANY OpenAI-wire endpoint:
+# a local Ollama/LM Studio/vLLM server - the PII-on-device posture, the raw
+# JD + resume never leave the machine). GROQ_API_KEY stays the UNIVERSAL
+# API-key slot for every provider (historical name); LLM_BASE_URL overrides
+# the endpoint when set (for anthropic, an anthropic-compatible endpoint).
+_LLM_PROVIDER_RAW = os.environ.get("LLM_PROVIDER", "groq").strip().lower()
+LLM_PROVIDER = (_LLM_PROVIDER_RAW
+                if _LLM_PROVIDER_RAW in {"groq", "openai", "anthropic",
+                                         "openai-compatible"}
+                else "groq")
+
+# Per-provider tier defaults: (primary, fallback, emergency) - the classic
+# three-tier ladder kept WITHIN one provider (a degraded run falls to a
+# weaker model of the same vendor, never a silent cross-vendor hop).
+# PRIMARY_MODEL / FALLBACK_MODEL / EMERGENCY_MODEL env overrides win over
+# these for every provider.
+_PROVIDER_MODEL_DEFAULTS = {
+    # 'llama-3.1-8b-instant' was decommissioned from the Groq catalog
+    # (Nov 10 2026 - live 404 'model_not_found' once a run fell through
+    # primary+fallback). Verified present on the live catalog:
+    # 'qwen/qwen3.8-27b'.
+    "groq": ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"),
+    "openai": ("gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"),
+    "anthropic": ("claude-sonnet-4-5", "claude-haiku-4-5",
+                  "claude-3-5-haiku-latest"),
+    # A self-hosted endpoint serves whatever models it has - set
+    # PRIMARY_MODEL/FALLBACK_MODEL/EMERGENCY_MODEL to its names (Ollama's
+    # gpt-oss tags assumed as the default; the health check lists what the
+    # endpoint serves).
+    "openai-compatible": ("gpt-oss:120b", "gpt-oss:20b", "gpt-oss:20b"),
+}
+_default_primary, _default_fallback, _default_emergency = (
+    _PROVIDER_MODEL_DEFAULTS.get(LLM_PROVIDER,
+                                 _PROVIDER_MODEL_DEFAULTS["groq"]))
+_PRIMARY_MODEL = os.environ.get("PRIMARY_MODEL", _default_primary)
+_FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", _default_fallback)
+_EMERGENCY_MODEL = os.environ.get("EMERGENCY_MODEL", _default_emergency)
 
 # --- MR5 provider abstraction (env-overridable) ---
 # LLM_BASE_URL: any OpenAI-compatible endpoint (Ollama http://localhost:11434/v1,
 # LM Studio http://localhost:1234/v1, OpenRouter https://openrouter.ai/api/v1, ...).
-# Empty = Groq's official API (the historical default). When set, the chat models
-# are pointed at that endpoint (ChatGroq speaks the OpenAI wire protocol - proven
-# by the MR4 wire tests against the fake server) and the Groq-specific
-# reasoning_effort parameter is omitted. GROQ_API_KEY doubles as the generic
-# API-key slot; a custom endpoint that needs no auth (local Ollama) runs without
-# one, which also relaxes the import-time key requirement below.
+# Empty = the provider's official API. When set, the chat models
+# are pointed at that endpoint (the groq/openai-compatible classes speak the
+# OpenAI wire protocol - proven by the MR4 wire tests against the fake server)
+# and the Groq-specific reasoning_effort parameter is omitted. GROQ_API_KEY
+# doubles as the generic API-key slot; a custom endpoint that needs no auth
+# (local Ollama) runs without one, which also relaxes the import-time key
+# requirement below.
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").strip()
 # Hard cap per LLM call in seconds (the SDK's own default is 10 minutes - a hung
 # call used to stall the serialized pipeline for everyone).
 LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", 120))
+# Output-token cap for providers that require one explicitly: langchain-
+# anthropic leaves max_tokens None, which the API then defaults to a small
+# value that truncates full resumes. Generous default; env-overridable.
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", 8192))
 
 # --- Resume renderer (BB2, env-overridable) ---
 # auto (default): the HTML/CSS theme rendered by the system's headless

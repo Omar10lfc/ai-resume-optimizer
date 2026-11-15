@@ -20,3 +20,11 @@ os.environ["CHECKPOINTER_DB_PATH"] = "off"
 # exercised directly in test_html_render.py (engine-selection tests opt in
 # explicitly; the scripted acceptance skips when no browser is present).
 os.environ["RESUME_RENDERER"] = "latex"
+
+# Round 15 (roadmap item 13) made the chat-model family selectable
+# (LLM_PROVIDER: groq | openai | anthropic | openai-compatible). Tests pin
+# the historical groq engine: every chain/health expectation was written for
+# it, and the suite must not depend on which provider a developer's .env
+# selects. The openai/anthropic construction paths are exercised directly in
+# test_resume_agent.py (the provider matrix opts in explicitly).
+os.environ["LLM_PROVIDER"] = "groq"

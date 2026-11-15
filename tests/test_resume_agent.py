@@ -3499,6 +3499,8 @@ def test_groq_models_status_missing_emergency_only_warns(monkeypatch):
 
 # ==========================================
 # MR5 provider knobs: LLM_BASE_URL / LLM_TIMEOUT_SECONDS
+# (round 15, roadmap item 13, extended per provider: LLM_PROVIDER selects
+# groq | openai | anthropic | openai-compatible)
 # ==========================================
 
 def test_models_endpoint_official_and_custom(monkeypatch):
@@ -3510,10 +3512,10 @@ def test_models_endpoint_official_and_custom(monkeypatch):
     assert is_groq is False
 
 
-def test_chat_kwargs_official_groq(monkeypatch):
+def test_provider_kwargs_official_groq(monkeypatch):
     monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
-    kwargs = agent.llms._chat_kwargs("m1", 0.2, reasoning_effort="low",
-                                     api_key="k")
+    kwargs = agent.llms._provider_kwargs("groq", "m1", 0.2, reasoning_effort="low",
+                                         api_key="k")
     assert kwargs["model"] == "m1"
     assert kwargs["temperature"] == 0.2
     assert kwargs["max_retries"] == 2
@@ -3523,23 +3525,203 @@ def test_chat_kwargs_official_groq(monkeypatch):
     assert "base_url" not in kwargs
 
 
-def test_chat_kwargs_never_injects_none_key_or_reasoning(monkeypatch):
+def test_provider_kwargs_never_injects_none_key_or_reasoning(monkeypatch):
     monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
-    kwargs = agent.llms._chat_kwargs("m", 0.0)
-    # api_key=None must never override ChatGroq's env-var default factory
+    kwargs = agent.llms._provider_kwargs("groq", "m", 0.0)
+    # api_key=None must never override the env-var default factory (every
+    # provider's key field is only ADDED when truthy)
     assert "groq_api_key" not in kwargs
     # reasoning_effort is set only by the Groq-tuned tiers that pass it
     assert "reasoning_effort" not in kwargs
 
 
-def test_chat_kwargs_custom_endpoint(monkeypatch):
+def test_provider_kwargs_custom_endpoint(monkeypatch):
     """Any OpenAI-compatible base rides the MR4-proven ChatGroq seam; the
     Groq-specific reasoning_effort is omitted (custom endpoints may reject
     unknown params)."""
     monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "http://localhost:1234/v1")
-    kwargs = agent.llms._chat_kwargs("m2", 0.2, reasoning_effort="low")
+    kwargs = agent.llms._provider_kwargs("groq", "m2", 0.2, reasoning_effort="low")
     assert kwargs["base_url"] == "http://localhost:1234/v1"
     assert "reasoning_effort" not in kwargs
+
+
+# ==========================================
+# Round 15 (roadmap item 13): LLM_PROVIDER matrix
+# groq | openai | anthropic | openai-compatible
+# ==========================================
+
+def test_provider_kwargs_openai_and_anthropic_fields(monkeypatch):
+    """Per-provider kwarg wiring: OpenAI rides request_timeout +
+    openai_api_key and never receives reasoning_effort (Groq-GPT-OSS
+    vocabulary). Anthropic needs an explicit max_tokens (langchain-anthropic
+    leaves it None and the API then truncates) and its own timeout field
+    name (default_request_timeout - request_timeout is dumped into
+    model_kwargs with a warning)."""
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
+    kwargs = agent.llms._provider_kwargs("openai", "gpt-4.1-mini", 0.0,
+                                         reasoning_effort="low", api_key="k")
+    assert kwargs["openai_api_key"] == "k"
+    assert "reasoning_effort" not in kwargs
+    assert kwargs["request_timeout"] == agent.llms.LLM_TIMEOUT_SECONDS
+    assert "max_tokens" not in kwargs
+
+    kwargs = agent.llms._provider_kwargs("anthropic", "claude-sonnet-4-5", 0.0,
+                                         reasoning_effort="low", api_key="k")
+    assert kwargs["anthropic_api_key"] == "k"
+    assert "reasoning_effort" not in kwargs
+    assert kwargs["default_request_timeout"] == agent.llms.LLM_TIMEOUT_SECONDS
+    assert kwargs["max_tokens"] == agent.config.LLM_MAX_TOKENS
+
+
+def test_build_chat_model_provider_isinstance_matrix():
+    """init_chat_model dispatch: openai -> ChatOpenAI, anthropic ->
+    ChatAnthropic, openai-compatible deliberately rides the MR4-proven
+    ChatGroq class (the OpenAI-wire seam)."""
+    from langchain_anthropic import ChatAnthropic
+    from langchain_groq import ChatGroq
+    from langchain_openai import ChatOpenAI
+
+    m = agent.llms._build_chat_model("openai", "gpt-4.1-mini", 0.0, api_key="x")
+    assert isinstance(m, ChatOpenAI)
+    m = agent.llms._build_chat_model("anthropic", "claude-sonnet-4-5", 0.0,
+                                     api_key="x")
+    assert isinstance(m, ChatAnthropic)
+    assert m.max_tokens == agent.config.LLM_MAX_TOKENS
+    m = agent.llms._build_chat_model("openai-compatible", "gpt-oss:20b", 0.0,
+                                     api_key="x")
+    assert isinstance(m, ChatGroq)
+
+
+def test_create_llm_tiers_stay_within_provider(monkeypatch):
+    """Round 15 contract: the 3-tier ladder degrades WITHIN one vendor - a
+    fallback is a weaker model of the SAME provider, never a silent
+    cross-vendor hop. (conftest pins LLM_PROVIDER=groq for the suite; the
+    matrix opts in explicitly.)"""
+    from langchain_anthropic import ChatAnthropic
+    from langchain_openai import ChatOpenAI
+
+    def _model_name(model):
+        return getattr(model, "model_name", None) or getattr(model, "model", "")
+
+    monkeypatch.setattr(agent.llms, "LLM_PROVIDER", "openai")
+    chain = agent.llms._create_llm(temperature=0.0, api_key="k")
+    tiers = [chain.runnable, *chain.fallbacks]
+    assert all(isinstance(m, ChatOpenAI) for m in tiers)
+    assert [_model_name(m) for m in tiers] == [agent.llms._PRIMARY_MODEL,
+                                               agent.llms._FALLBACK_MODEL,
+                                               agent.llms._EMERGENCY_MODEL]
+    fast = agent.llms._create_llm_fast(temperature=0.3, api_key="k")
+    assert isinstance(fast.runnable, ChatOpenAI)
+    assert all(isinstance(f, ChatOpenAI) for f in fast.fallbacks)
+
+    monkeypatch.setattr(agent.llms, "LLM_PROVIDER", "anthropic")
+    chain = agent.llms._create_llm(temperature=0.0, api_key="k")
+    tiers = [chain.runnable, *chain.fallbacks]
+    assert all(isinstance(m, ChatAnthropic) for m in tiers)
+    assert [_model_name(m) for m in tiers] == [agent.llms._PRIMARY_MODEL,
+                                               agent.llms._FALLBACK_MODEL,
+                                               agent.llms._EMERGENCY_MODEL]
+
+
+def test_retryable_exceptions_per_provider_module():
+    """with_fallbacks retries each vendor's own rate-limit / internal /
+    connection / timeout classes; an unknown provider inherits the Groq
+    table rather than the catch-all Exception default."""
+    groq_tuple = agent.llms._retryable_exceptions("groq")
+    assert groq_tuple[0].__module__ == "groq"
+    assert agent.llms._retryable_exceptions("unknown-x") is groq_tuple
+    assert agent.llms._retryable_exceptions("openai")[0].__module__ == "openai"
+    assert agent.llms._retryable_exceptions("anthropic")[0].__module__ == "anthropic"
+
+
+def test_models_endpoint_per_provider(monkeypatch):
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
+    assert agent.llms._models_endpoint("openai") == ("https://api.openai.com/v1/models", False)
+    assert agent.llms._models_endpoint("anthropic") == ("https://api.anthropic.com/v1/models", False)
+    assert agent.llms._models_endpoint("groq") == ("https://api.groq.com/openai/v1/models", True)
+    # provider=None rides LLM_PROVIDER (pinned to groq by conftest)
+    assert agent.llms._models_endpoint() == ("https://api.groq.com/openai/v1/models", True)
+    # a custom LLM_BASE_URL wins for EVERY provider and skips the
+    # Groq-catalog tier-gap warning
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "http://localhost:1234/v1")
+    for provider in ("groq", "openai", "anthropic", "openai-compatible"):
+        url, is_groq = agent.llms._models_endpoint(provider)
+        assert url == "http://localhost:1234/v1/models"
+        assert is_groq is False
+
+
+def test_models_headers_per_provider():
+    """Auth headers: Bearer for the OpenAI-wire families,
+    x-api-key + anthropic-version for Anthropic; an empty key sends no
+    auth header at all (local Ollama)."""
+    h = agent.llms._models_headers("anthropic", "k-ant")
+    assert h["x-api-key"] == "k-ant"
+    assert h["anthropic-version"] == "2023-06-01"
+    assert "Authorization" not in h
+    h = agent.llms._models_headers("openai", "k-o")
+    assert h["Authorization"] == "Bearer k-o"
+    h = agent.llms._models_headers("groq", "k-g")
+    assert h["Authorization"] == "Bearer k-g"
+    for provider in ("groq", "openai", "anthropic", "openai-compatible"):
+        h = agent.llms._models_headers(provider, "")
+        assert "Authorization" not in h
+        assert "x-api-key" not in h
+
+
+def test_check_provider_health_missing_key_names_right_console(monkeypatch):
+    """GROQ_API_KEY is the UNIVERSAL key slot (historical name); the
+    missing-key guidance names the right console per provider."""
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
+    monkeypatch.setattr(agent.llms, "LLM_PROVIDER", "groq")
+    ok, message = agent.llms.check_provider_health()
+    assert ok is False and "console.groq.com" in message
+    monkeypatch.setattr(agent.llms, "LLM_PROVIDER", "openai")
+    ok, message = agent.llms.check_provider_health()
+    assert ok is False and "platform.openai.com" in message
+    monkeypatch.setattr(agent.llms, "LLM_PROVIDER", "anthropic")
+    ok, message = agent.llms.check_provider_health()
+    assert ok is False and "console.anthropic.com" in message
+
+
+def test_check_provider_health_openai_compatible_requires_base_url(monkeypatch):
+    """openai-compatible has no magic default: without LLM_BASE_URL the
+    health check fails naming a concrete local endpoint."""
+    monkeypatch.setattr(agent.llms, "LLM_PROVIDER", "openai-compatible")
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    ok, message = agent.llms.check_provider_health()
+    assert ok is False
+    assert "LLM_BASE_URL" in message
+    assert "localhost:11434" in message
+
+
+def test_provider_package_ok_surfaces_pip_install(monkeypatch):
+    """A missing provider package fails with the pip install command in the
+    health check BEFORE the first run, instead of a bare ImportError
+    mid-pipeline."""
+    monkeypatch.setitem(agent.llms._PROVIDER_PACKAGES, "openai",
+                        "bogus-package-xyz")
+    ok, message = agent.llms._provider_package_ok("openai")
+    assert ok is False
+    assert "pip install bogus-package-xyz" in message
+    monkeypatch.setattr(agent.llms, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(agent.llms, "LLM_BASE_URL", "")
+    monkeypatch.setenv("GROQ_API_KEY", "k-real")
+    ok, message = agent.llms.check_provider_health()
+    assert ok is False
+    assert "bogus-package-xyz" in message
+
+
+def test_build_chat_model_missing_package_actionable(monkeypatch):
+    """A missing provider package surfaces as an actionable RuntimeError
+    naming the pip install, not a bare ImportError mid-pipeline."""
+    def _boom(*args, **kwargs):
+        raise ImportError("No module named 'langchain_bogus'")
+
+    monkeypatch.setattr(agent.llms, "init_chat_model", _boom)
+    with pytest.raises(RuntimeError, match=r"pip install langchain-groq"):
+        agent.llms._build_chat_model("groq", "m", 0.0, api_key="x")
 
 
 def test_check_provider_health_custom_endpoint_needs_no_key(monkeypatch):

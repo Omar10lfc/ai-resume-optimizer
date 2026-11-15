@@ -1,45 +1,107 @@
-"""LLM factory functions and pre-configured instances."""
+"""LLM factory functions and pre-configured instances.
+
+Round 15 (roadmap item 13): the factory dispatches on ``LLM_PROVIDER``
+(groq | openai | anthropic | openai-compatible) through
+``init_chat_model`` - the 3-profile structure (strict/creative/fast) and
+the three-tier fallback chain (primary -> fallback -> emergency, all
+within ONE provider) are unchanged. ``GROQ_API_KEY`` stays the universal
+API-key slot (historical name); ``reasoning_effort`` is Groq-GPT-OSS
+vocabulary and is only sent to the official Groq API.
+"""
 import logging
 import os
 from contextlib import contextmanager
 from typing import Iterator
 
 # pyrefly: ignore [missing-import]
-from langchain_groq import ChatGroq
+from langchain_classic.chat_models import init_chat_model
 
-from .config import (_PRIMARY_MODEL, _FALLBACK_MODEL, _EMERGENCY_MODEL,
-                     LLM_BASE_URL, LLM_TIMEOUT_SECONDS)
+from .config import (_EMERGENCY_MODEL, _FALLBACK_MODEL, _PRIMARY_MODEL,
+                     LLM_BASE_URL, LLM_MAX_TOKENS, LLM_PROVIDER,
+                     LLM_TIMEOUT_SECONDS)
 
 logger = logging.getLogger(__name__)
 
+# --- Provider construction table -------------------------------------------
+# model_provider is the string init_chat_model dispatches on. The
+# OpenAI-compatible seam (local Ollama / LM Studio / vLLM) deliberately rides
+# the ChatGroq CLASS: it speaks the OpenAI wire protocol and has carried the
+# MR4 fake-server seam + every custom LLM_BASE_URL since MR5.
+_PROVIDER_MODEL_IDS = {"groq": "groq", "openai": "openai",
+                       "anthropic": "anthropic", "openai-compatible": "groq"}
+# Per-class API-key field names (all truthy-added only - never pass None,
+# which would override the env-var default factory).
+_PROVIDER_KEY_FIELDS = {"groq": "groq_api_key", "openai": "openai_api_key",
+                        "anthropic": "anthropic_api_key",
+                        "openai-compatible": "groq_api_key"}
+# Per-class request-timeout field names (ChatAnthropic rejects
+# request_timeout - its field is default_request_timeout).
+_PROVIDER_TIMEOUT_FIELDS = {"groq": "request_timeout",
+                            "openai": "request_timeout",
+                            "anthropic": "default_request_timeout",
+                            "openai-compatible": "request_timeout"}
+# pip package each provider needs (import name = pip name with dashes
+# replaced; surfaced verbatim in the actionable startup/health errors).
+_PROVIDER_PACKAGES = {"groq": "langchain-groq", "openai": "langchain-openai",
+                      "anthropic": "langchain-anthropic",
+                      "openai-compatible": "langchain-groq"}
 
-def _chat_kwargs(model: str, temperature: float, *,
-                 reasoning_effort: str | None = None,
-                 api_key: str | None = None) -> dict:
-    """MR5: the single construction point for every chat model.
 
-    - ``request_timeout`` caps one call (the SDK default is 10 minutes - a
-      hung call stalled the serialized pipeline for everyone).
-    - ``base_url`` rides the MR4-proven OpenAI-compatible seam: any endpoint
-      speaking the OpenAI wire protocol (Ollama, LM Studio, OpenRouter, the
-      MR4 fake server) works behind the same ChatGroq client.
-    - ``reasoning_effort`` is Groq-specific - omitted for custom endpoints,
-      which may reject unknown params.
+def _provider_kwargs(provider: str, model: str, temperature: float, *,
+                     reasoning_effort: str | None = None,
+                     api_key: str | None = None) -> dict:
+    """Round 15: the single construction-point kwargs builder, per provider.
+
+    - The provider's request-timeout field caps one call (the SDK default is
+      10 minutes - a hung call stalled the serialized pipeline for everyone).
+    - ``base_url`` rides the MR4-proven OpenAI-compatible seam for every
+      provider (anthropic-compatible endpoints included).
+    - ``reasoning_effort`` is Groq-GPT-OSS vocabulary: sent ONLY to the
+      official Groq API. Custom OpenAI-wire endpoints may reject unknown
+      params; openai/anthropic gate it per model, so it is never sent there.
     - ``api_key`` (optional) pins a concrete key instead of the
       GROQ_API_KEY environment variable - used by the per-request BYO-key
-      override below. NOTE: never pass ``api_key=None`` explicitly into the
-      ChatGroq kwargs - that would override the env-var default factory and
-      silently drop the server's own key (only ADDED when truthy).
+      override below, written to the provider's own field name. NOTE: never
+      pass the key field with a None value - that would override the
+      env-var default factory and silently drop the server's own key
+      (only ADDED when truthy).
+    - Anthropic requires an explicit ``max_tokens`` (langchain-anthropic
+      leaves it None and the API then truncates at a small default).
     """
-    kwargs = dict(model=model, temperature=temperature, max_retries=2,
-                  request_timeout=LLM_TIMEOUT_SECONDS)
-    if reasoning_effort and not LLM_BASE_URL:
+    kwargs = dict(model=model, temperature=temperature, max_retries=2)
+    kwargs[_PROVIDER_TIMEOUT_FIELDS[provider]] = LLM_TIMEOUT_SECONDS
+    if reasoning_effort and provider == "groq" and not LLM_BASE_URL:
         kwargs["reasoning_effort"] = reasoning_effort
+    if provider == "anthropic":
+        kwargs["max_tokens"] = LLM_MAX_TOKENS
     if LLM_BASE_URL:
         kwargs["base_url"] = LLM_BASE_URL
     if api_key:
-        kwargs["groq_api_key"] = api_key
+        kwargs[_PROVIDER_KEY_FIELDS[provider]] = api_key
     return kwargs
+
+
+def _build_chat_model(provider: str, model: str, temperature: float, *,
+                      reasoning_effort: str | None = None,
+                      api_key: str | None = None):
+    """One chat model of ``provider`` via ``init_chat_model`` - a missing
+    provider package surfaces as an actionable runtime error (naming the
+    pip install) instead of a bare ImportError mid-pipeline."""
+    try:
+        kwargs = _provider_kwargs(provider, model, temperature,
+                                  reasoning_effort=reasoning_effort,
+                                  api_key=api_key)
+        # init_chat_model takes the model positionally; the kwargs builder
+        # keeps it for a complete description of one model (asserted in the
+        # construction tests), so it is popped here, not dropped there.
+        model_name = kwargs.pop("model")
+        return init_chat_model(model_name, model_provider=_PROVIDER_MODEL_IDS[provider],
+                               **kwargs)
+    except ImportError as exc:
+        package = _PROVIDER_PACKAGES[provider]
+        raise RuntimeError(
+            f"LLM_PROVIDER={provider} needs the {package} package - "
+            f"pip install {package} ({exc})") from exc
 
 
 def _catalog_gap_warning(ids: list[str]) -> str | None:
@@ -69,33 +131,60 @@ def _catalog_gap_warning(ids: list[str]) -> str | None:
             f"to models the account can access.")
 
 
-def _models_endpoint() -> tuple[str, bool]:
-    """MR5: (models URL, is_groq_official).
+def _models_endpoint(provider: str | None = None) -> tuple[str, bool]:
+    """Round 15: (models URL, is_groq_catalog) per provider.
 
-    Custom ``LLM_BASE_URL`` endpoints get ``<base>/models`` and skip the
-    Groq-catalog tier-gap warning (tier names are Groq-catalog-specific).
+    A custom ``LLM_BASE_URL`` wins for every provider and skips the
+    Groq-catalog tier-gap warning (tier names are Groq-catalog-specific);
+    the official endpoints default to each vendor's models list. The
+    Groq-catalog flag stays True ONLY for the official Groq API.
     """
-    if not LLM_BASE_URL:
-        return "https://api.groq.com/openai/v1/models", True
-    return LLM_BASE_URL.rstrip("/") + "/models", False
+    provider = provider or LLM_PROVIDER
+    if LLM_BASE_URL:
+        return LLM_BASE_URL.rstrip("/") + "/models", False
+    if provider == "openai":
+        return "https://api.openai.com/v1/models", False
+    if provider == "anthropic":
+        return "https://api.anthropic.com/v1/models", False
+    return "https://api.groq.com/openai/v1/models", True
+
+
+def _models_headers(provider: str, key: str) -> dict[str, str]:
+    """Auth headers per provider: Bearer for the OpenAI-wire families,
+    ``x-api-key`` + the required ``anthropic-version`` for Anthropic."""
+    if provider == "anthropic":
+        headers = {"User-Agent": "JobApplicationOptimizer/1.0",
+                   "anthropic-version": "2023-06-01"}
+        if key:
+            headers["x-api-key"] = key
+        return headers
+    headers = {"User-Agent": "JobApplicationOptimizer/1.0"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
 
 
 def _groq_models_status(key: str, timeout_seconds: float = 8.0) -> tuple[bool, str]:
     """One cheap REST call (GET <provider>/models) - no generation tokens are
-    spent. Works against Groq's official API or any configured OpenAI-compatible
-    ``LLM_BASE_URL`` (no auth header sent when the key is empty - local Ollama).
+    spent. Provider-aware since round 15 (the name stays for the tests and
+    the app.py import): Groq / OpenAI / Anthropic official APIs or any
+    configured ``LLM_BASE_URL`` (no auth header sent when the key is empty -
+    local Ollama).
 
     Returns (ok, message). Auth failures and missing keys are hard problems;
     network failures and odd statuses are soft warnings.
     """
     import json
-    import os
     import urllib.error
     import urllib.request
 
-    url, is_groq = _models_endpoint()
-    key_label = "GROQ_API_KEY" if is_groq else "API key"
-    provider_label = "the Groq API" if is_groq else "the provider"
+    provider = LLM_PROVIDER
+    url, is_groq = _models_endpoint(provider)
+    key_label = "GROQ_API_KEY"  # the universal API-key slot (historical name)
+    provider_label = {"groq": "the Groq API", "openai": "the OpenAI API",
+                      "anthropic": "the Anthropic API",
+                      "openai-compatible": "the provider"}.get(
+        provider, "the provider")
 
     def _finish(ok: bool, ids: list[int | str] | None, status: int | None,
                 err: str | None) -> tuple[bool, str]:
@@ -113,11 +202,10 @@ def _groq_models_status(key: str, timeout_seconds: float = 8.0) -> tuple[bool, s
             return True, "API rate-limited (HTTP 429) - the key is valid; free-tier quota resets shortly."
         return True, f"API reachable but returned HTTP {status} - key looks valid."
 
+    headers = _models_headers(provider, key)
+
     # If urllib.request.urlopen has been monkeypatched (e.g. by unit tests), use the mock
     if getattr(urllib.request.urlopen, "__module__", "") != "urllib.request":
-        headers = {"User-Agent": "JobApplicationOptimizer/1.0"}
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
         request = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -132,9 +220,6 @@ def _groq_models_status(key: str, timeout_seconds: float = 8.0) -> tuple[bool, s
     # Production path: httpx handles modern TLS/ALPN and avoids Cloudflare 1010 signature blocks
     try:
         import httpx
-        headers = {"User-Agent": "JobApplicationOptimizer/1.0"}
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
         with httpx.Client(timeout=timeout_seconds) as client:
             resp = client.get(url, headers=headers)
             if resp.status_code == 200:
@@ -145,19 +230,52 @@ def _groq_models_status(key: str, timeout_seconds: float = 8.0) -> tuple[bool, s
         return _finish(False, None, None, str(e))
 
 
+def _provider_package_ok(provider: str) -> tuple[bool, str]:
+    """Round 15: is the provider's langchain package importable? Surfaced by
+    the health check BEFORE the first run so a hand-edited provider fails
+    with the pip install command, not a mid-pipeline crash (the import-time
+    chain build already fails loudly for a broken config)."""
+    import importlib
+    try:
+        importlib.import_module(_PROVIDER_PACKAGES[provider].replace("-", "_"))
+        return True, ""
+    except ImportError as exc:
+        package = _PROVIDER_PACKAGES[provider]
+        return False, (f"LLM_PROVIDER={provider} needs the {package} package - "
+                       f"pip install {package} ({exc}).")
+
+
 def check_provider_health(timeout_seconds: float = 8.0) -> tuple[bool, str]:
     """Startup health check for the LLM provider.
 
     Fails quickly with an actionable message instead of letting the user hit a
     confusing error deep in Step 2. Returns (ok, message); never raises.
-    With a custom ``LLM_BASE_URL`` the key is optional (a local Ollama/LM
-    Studio server needs none), so the missing-key guidance only applies to
-    Groq's official API.
+    ``GROQ_API_KEY`` is the UNIVERSAL API-key slot (historical name) - its
+    guidance names the right console per provider. A custom
+    ``LLM_BASE_URL`` (and the keyless local Ollama posture) skips the
+    missing-key guidance entirely.
     """
+    provider = LLM_PROVIDER
     api_key = os.environ.get("GROQ_API_KEY", "")
-    if not LLM_BASE_URL and (not api_key or "your_groq_key" in api_key.lower()):
-        return False, "GROQ_API_KEY is not set. Add it to .env (get a free key: https://console.groq.com/keys)."
+    if provider == "openai-compatible" and not LLM_BASE_URL:
+        return False, ("LLM_PROVIDER=openai-compatible needs LLM_BASE_URL - "
+                       "point it at an OpenAI-wire endpoint, e.g. "
+                       "http://localhost:11434/v1 for a local Ollama.")
+    if LLM_BASE_URL or provider == "openai-compatible":
+        pass  # custom endpoint / local server: the key is optional
+    elif not api_key or "your_groq_key" in api_key.lower():
+        hint = {
+            "groq": "get a free key: https://console.groq.com/keys",
+            "openai": "get a key: https://platform.openai.com/api-keys",
+            "anthropic": "get a key: https://console.anthropic.com",
+        }.get(provider, "set it to your provider's key")
+        return False, (f"GROQ_API_KEY is not set (the universal API-key slot - "
+                       f"historical name). {hint}.")
+    package_ok, package_message = _provider_package_ok(provider)
+    if not package_ok:
+        return False, package_message
     return _groq_models_status(api_key, timeout_seconds)
+
 
 try:
     from groq import APITimeoutError, APIConnectionError, InternalServerError, RateLimitError
@@ -166,22 +284,52 @@ except ImportError:
     _RETRYABLE_EXCEPTIONS = (Exception,)
 
 
+def _retryable_exceptions(provider: str) -> tuple:
+    """Round 15: per-provider retryable SDK errors for ``with_fallbacks`` -
+    the same four classes (rate limit / internal / connection / timeout)
+    from each vendor's SDK. Unknown providers (package missing) inherit the
+    Groq table rather than the catch-all default, so a KeyError-style bug
+    can never be silently retried as a transient failure."""
+    if provider == "openai":
+        try:
+            from openai import (APIConnectionError, APITimeoutError,
+                                InternalServerError, RateLimitError)
+            return (RateLimitError, InternalServerError,
+                    APIConnectionError, APITimeoutError)
+        except ImportError:
+            return _RETRYABLE_EXCEPTIONS
+    if provider == "anthropic":
+        try:
+            from anthropic import (APIConnectionError, APITimeoutError,
+                                   InternalServerError, RateLimitError)
+            return (RateLimitError, InternalServerError,
+                    APIConnectionError, APITimeoutError)
+        except ImportError:
+            return _RETRYABLE_EXCEPTIONS
+    return _RETRYABLE_EXCEPTIONS
+
+
 def _create_llm(temperature: float, reasoning_effort: str | None = None,
                 api_key: str | None = None):
     """Creates an LLM with automatic fallback for transient provider failures.
 
-    api_key (optional) pins a concrete Groq key instead of the GROQ_API_KEY
+    All three tiers stay WITHIN the configured provider (round 15): a
+    degraded run falls to a weaker model of the same vendor, never a silent
+    cross-vendor hop.
+    api_key (optional) pins a concrete key instead of the GROQ_API_KEY
     environment variable - used by the per-request BYO-key override below.
     """
-    emergency = ChatGroq(**_chat_kwargs(_EMERGENCY_MODEL, temperature,
-                                        api_key=api_key))
-    return ChatGroq(**_chat_kwargs(_PRIMARY_MODEL, temperature,
-                                   reasoning_effort=reasoning_effort,
-                                   api_key=api_key)).with_fallbacks(
-        [ChatGroq(**_chat_kwargs(_FALLBACK_MODEL, temperature,
-                                 api_key=api_key)),
+    provider = LLM_PROVIDER
+    retryable = _retryable_exceptions(provider)
+    emergency = _build_chat_model(provider, _EMERGENCY_MODEL, temperature,
+                                  api_key=api_key)
+    return _build_chat_model(provider, _PRIMARY_MODEL, temperature,
+                             reasoning_effort=reasoning_effort,
+                             api_key=api_key).with_fallbacks(
+        [_build_chat_model(provider, _FALLBACK_MODEL, temperature,
+                           api_key=api_key),
          emergency],
-        exceptions_to_handle=_RETRYABLE_EXCEPTIONS,
+        exceptions_to_handle=retryable,
     )
 
 
@@ -189,12 +337,13 @@ def _create_llm_fast(temperature: float, api_key: str | None = None):
     """Creates a faster LLM for non-critical tasks."""
     # Same BYO-key passthrough as _create_llm's tiers: without it a pinned
     # client key would silently launder fallback spend onto the server key.
-    return ChatGroq(**_chat_kwargs(_FALLBACK_MODEL, temperature,
-                                   reasoning_effort="low",
-                                   api_key=api_key)).with_fallbacks(
-        [ChatGroq(**_chat_kwargs(_EMERGENCY_MODEL, temperature,
-                                 api_key=api_key))],
-        exceptions_to_handle=_RETRYABLE_EXCEPTIONS,
+    provider = LLM_PROVIDER
+    return _build_chat_model(provider, _FALLBACK_MODEL, temperature,
+                             reasoning_effort="low",
+                             api_key=api_key).with_fallbacks(
+        [_build_chat_model(provider, _EMERGENCY_MODEL, temperature,
+                           api_key=api_key)],
+        exceptions_to_handle=_retryable_exceptions(provider),
     )
 
 
