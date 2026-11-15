@@ -591,6 +591,23 @@ def render_resume_html(data: ResumeData, density: int = 0,
 # ---------------------------------------------------------------------------
 
 
+# Hardened CI/container images (GitHub Actions' current Ubuntu, Docker hosts
+# with unprivileged user namespaces restricted) abort Chrome's namespace
+# sandbox at startup: the process dies with rc<0 and the sandbox
+# initialization marker on stderr (observed live in CI: rc=-6,
+# "Impl::Initialize()"). The print is a LOCAL file:// document with a strict
+# CSP and no external fetchables by construction, so on that specific abort
+# the engine retries ONCE with the sandbox disabled - the standard
+# headless-CI posture (Playwright's chromiumSandbox:false, Puppeteer's
+# --no-sandbox). Sandboxed-first stays the default everywhere else.
+_SANDBOX_ABORT_MARKERS = (
+    "Impl::Initialize()",
+    "Failed to move to new namespace",
+    "SUID sandbox helper",
+)
+_SANDBOX_OFF_FLAGS = ("--no-sandbox", "--disable-dev-shm-usage")
+
+
 def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
                 timeout: int = 90) -> Optional[str]:
     """Prints the HTML page to PDF with the system's headless Chromium/Edge.
@@ -600,7 +617,8 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
     is available or the print failed (the caller falls back - an export
     never fails because of the renderer). Concurrency is bounded by
     ``_RENDER_SLOTS`` (the Dossier pool's MAX_CONCURRENT_RENDERS = 2; calls
-    beyond that queue).
+    beyond that queue). A sandbox-init abort (hardened CI/container images)
+    gets exactly one retry with ``--no-sandbox --disable-dev-shm-usage``.
     """
     if not HAVE_BROWSER:
         logger.info("HTML renderer: no browser available - skipping.")
@@ -627,10 +645,24 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
             proc = subprocess.run(args, capture_output=True, text=True,
                                   timeout=timeout, cwd=str(output_dir))
         if not pdf_path.exists() or pdf_path.stat().st_size == 0:
-            tail = (proc.stderr or proc.stdout or "")[-800:]
-            logger.warning("HTML renderer: print produced no PDF (rc=%s): %s",
-                           proc.returncode, tail)
-            return None
+            combined = (proc.stderr or "") + "\n" + (proc.stdout or "")
+            aborted = (proc.returncode is not None and proc.returncode < 0
+                       and any(m in combined for m in _SANDBOX_ABORT_MARKERS))
+            if aborted and "--no-sandbox" not in args:
+                logger.warning("HTML renderer: Chrome sandbox init aborted "
+                               "(rc=%s) - retrying once with the sandbox "
+                               "disabled (CI/container posture).",
+                               proc.returncode)
+                # switch syntax: keep the flags grouped, URI last
+                args = args[:-1] + list(_SANDBOX_OFF_FLAGS) + [args[-1]]
+                with _RENDER_SLOTS:
+                    proc = subprocess.run(args, capture_output=True, text=True,
+                                          timeout=timeout, cwd=str(output_dir))
+            if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+                tail = (proc.stderr or proc.stdout or "")[-800:]
+                logger.warning("HTML renderer: print produced no PDF (rc=%s): %s",
+                               proc.returncode, tail)
+                return None
         return str(pdf_path)
     except subprocess.TimeoutExpired:
         logger.warning("HTML renderer: print timed out after %ss.", timeout)

@@ -760,3 +760,90 @@ def test_html_render_acceptance_themes_are_looks_never_sizes(tmp_path):
         # the name is the largest line on the page in every look
         name_sizes[theme] = max(l["size"] for l in led["lines"])
     assert len(set(name_sizes.values())) == 1, name_sizes
+
+
+# ==========================================
+# The print engine's sandbox-abort retry (Nov 15 2026 CI fix)
+# ==========================================
+
+
+class _FakeProc:
+    def __init__(self, returncode, stderr="", stdout=""):
+        self.returncode = returncode
+        self.stderr = stderr
+        self.stdout = stdout
+
+
+@pytest.fixture
+def print_engine_fakes(monkeypatch):
+    """Pins BROWSER_PATH/HAVE_BROWSER and records every subprocess.run call
+    so the sandbox-retry contract is asserted on the exact argv."""
+    import agent.html_render as hr
+
+    calls = []
+
+    def fake_run(args, capture_output, text, timeout, cwd):
+        calls.append(list(args))
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(hr, "BROWSER_PATH", "fake-chrome")
+    monkeypatch.setattr(hr, "HAVE_BROWSER", True)
+    monkeypatch.setattr(hr.subprocess, "run", fake_run)
+    return calls
+
+
+def test_html_to_pdf_retries_once_without_sandbox_after_sandbox_abort(
+        monkeypatch, tmp_path, print_engine_fakes):
+    """CI posture: hardened Linux images abort Chrome's namespace sandbox at
+    startup (rc<0 + Impl::Initialize() - observed live: rc=-6). The engine
+    retries ONCE with --no-sandbox --disable-dev-shm-usage, flags kept ahead
+    of the source URI, and ships the retried print."""
+    import agent.html_render as hr
+
+    pdf = tmp_path / "out.pdf"
+
+    def run_side_effect(args, capture_output, text, timeout, cwd):
+        print_engine_fakes.append(list(args))
+        if "--no-sandbox" in args:  # the retried print succeeds
+            pdf.write_bytes(b"%PDF-fake-real")
+            return _FakeProc(returncode=0)
+        return _FakeProc(returncode=-6,
+                         stderr="Failed to move to new namespace: ... "
+                                "Impl::Initialize() failed.")
+    monkeypatch.setattr(hr.subprocess, "run", run_side_effect)
+
+    result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
+    assert result == str(pdf)
+    assert len(print_engine_fakes) == 2
+    first, second = print_engine_fakes
+    assert "--no-sandbox" not in first       # sandboxed-first stays default
+    assert "--no-sandbox" in second
+    assert "--disable-dev-shm-usage" in second
+    # the flags stay grouped ahead of the file:// URI
+    assert second[-1].startswith("file://")
+    assert "--no-sandbox" in second[:-1]
+
+
+def test_html_to_pdf_plain_failure_never_retries(tmp_path, print_engine_fakes):
+    """A clean run that produces no PDF (no abort signature) reports None
+    after exactly ONE attempt - no speculative second browser launch."""
+    result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
+    assert result is None
+    assert len(print_engine_fakes) == 1
+
+
+def test_html_to_pdf_retry_failure_reports_none_after_two_calls(
+        monkeypatch, tmp_path, print_engine_fakes):
+    """When the sandboxless retry also fails, None is reported after exactly
+    two attempts - the export falls back (html -> latex -> xhtml2pdf)."""
+    import agent.html_render as hr
+
+    def run_side_effect(args, capture_output, text, timeout, cwd):
+        print_engine_fakes.append(list(args))
+        return _FakeProc(returncode=-6, stderr="Impl::Initialize() failed.")
+    monkeypatch.setattr(hr.subprocess, "run", run_side_effect)
+    result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
+    assert result is None
+    assert len(print_engine_fakes) == 2
+    assert print_engine_fakes[1][-1].startswith("file://")
+    assert "--no-sandbox" in print_engine_fakes[1]
