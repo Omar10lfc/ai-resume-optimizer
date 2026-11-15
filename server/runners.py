@@ -126,7 +126,7 @@ def _recovery_reset() -> dict:
         "render_engine": "",
         "scrub_removals": [], "unevidenced_metrics": [],
         "declined_requests": [], "requirement_matches": [],
-        "bullet_impact": [],
+        "bullet_impact": [], "bullet_sources": [],
         "feedback_sections": [], "polish_sections_targeted": [],
         "cover_letter_metrics": [],
         "human_notes": "", "missing_skills": "",
@@ -364,6 +364,9 @@ def _extract_results(final_state: dict) -> dict:
         # Round 13 (roadmap 12): the deterministic XYZ bullet-impact audit
         # (high/medium/low grades + human reasons per achievement bullet).
         "bullet_impact": final_state.get("bullet_impact") or [],
+        # Round 16: per-bullet typed source rows (provenance: which original
+        # bullet each optimized bullet came from + dropped metrics).
+        "bullet_sources": final_state.get("bullet_sources") or [],
         # Round 14: the resolved resume look (classic | serif | modern) -
         # the invocation input echoed so the UI's picker and the shipped
         # PDF agree (the LaTeX path ignores it and prints the classic look;

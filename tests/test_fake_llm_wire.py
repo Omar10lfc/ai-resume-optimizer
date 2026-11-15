@@ -308,6 +308,9 @@ def test_step2_over_the_wire_end_to_end(client, wire_llms, monkeypatch):
     # too. The fake's canned resume is bullet-free prose (not "- " items), so
     # the audit is correctly empty - the key + shape is what is pinned here.
     assert result["bullet_impact"] == []
+    # Round 16: the per-bullet typed source rows ride it too (same
+    # bullet-free fake resume -> no provenance rows on either side).
+    assert result["bullet_sources"] == []
     # Round 14: the resolved look echoes back (no theme sent -> the
     # pipeline default), and the LaTeX engine leaves the preview artifact
     # out of the artifact list entirely.

@@ -23,6 +23,20 @@ export interface BulletImpactRow {
   reason: string;
 }
 
+/** Round 16: one row of the per-bullet provenance table (computed in code,
+ *  never by a model) - which original bullet the optimized bullet came from
+ *  and which measured outcomes a rewrite dropped. */
+export interface BulletSourceRow {
+  bullet: string;
+  section: string;
+  status: "unchanged" | "reworded" | "new" | "dropped";
+  source: string | null;
+  similarity: number;
+  metrics: string[];
+  dropped: string[];
+  reason: string;
+}
+
 export interface OptimizationResult {
   session: string;
   optimized_resume: string;
@@ -54,6 +68,8 @@ export interface OptimizationResult {
   requirement_matches?: RequirementMatch[];
   /** Round 13: deterministic Google XYZ bullet-impact audit rows (high/medium/low + reasons). */
   bullet_impact?: BulletImpactRow[];
+  /** Round 16: per-bullet provenance rows (unchanged/reworded/new/dropped + dropped metrics). */
+  bullet_sources?: BulletSourceRow[];
   /** Round 14: the resolved resume look (classic | serif | modern) the
    *  shipped PDF was rendered with. The LaTeX/xhtml2pdf paths ignore it
    *  and print the classic look (render_engine disambiguates). */

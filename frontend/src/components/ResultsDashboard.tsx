@@ -20,13 +20,13 @@ import {
   X,
   Lightning,
 } from "@phosphor-icons/react";
-import type { OptimizationResult, RequirementMatch, BulletImpactRow } from "../types";
+import type { OptimizationResult, RequirementMatch, BulletImpactRow, BulletSourceRow } from "../types";
 import { resolveArtifactUrl } from "../api";
 import { ScoreGauge } from "./ScoreGauge";
 import { DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 
-type TabId = "resume" | "cover" | "ats" | "fit" | "impact" | "interview" | "integrity" | "usage";
+type TabId = "resume" | "cover" | "ats" | "fit" | "impact" | "sources" | "interview" | "integrity" | "usage";
 
 interface ResultsDashboardProps {
   result: OptimizationResult;
@@ -97,6 +97,9 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   // Integrity (QW2/QW3 channels), Usage (MR5 per-task token accounting).
   const fitRows = (result.requirement_matches ?? []) as RequirementMatch[];
   const impactRows = (result.bullet_impact ?? []) as BulletImpactRow[];
+  // Round 16: per-bullet provenance rows (which original bullet each
+  // optimized bullet came from + dropped metrics).
+  const sourceRows = (result.bullet_sources ?? []) as BulletSourceRow[];
   const taskUsage = result.task_usage ?? {};
   const usageRows = Object.entries(taskUsage);
   const usageTotals = usageRows.length
@@ -118,6 +121,13 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   if (impactRows.length > 0) {
     // Bullet impact sits beside Fit - both are code-classified analytical views.
     effectiveTabs.splice(fitRows.length > 0 ? 4 : 3, 0, { id: "impact" as TabId, label: "Bullet impact", icon: TrendUp });
+  }
+  if (sourceRows.length > 0) {
+    // Bullet sources sits beside Bullet impact - provenance is its sibling
+    // forensic surface (both computed in code, never by a model).
+    effectiveTabs.splice(
+      (fitRows.length > 0 ? 1 : 0) + (impactRows.length > 0 ? 1 : 0) + 3, 0,
+      { id: "sources" as TabId, label: "Bullet sources", icon: ArrowsLeftRight });
   }
   if (integrityList.length > 0) {
     effectiveTabs.push({ id: "integrity" as TabId, label: "Integrity", icon: ShieldWarning });
@@ -199,6 +209,22 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   const impactCopy = impactRows.length
     ? `Bullet impact (${impactCounts![0]} high / ${impactCounts![1]} medium / ${impactCounts![2]} low of ${impactRows.length} bullets):\n` +
       impactRows.map((r) => `[${r.grade.toUpperCase()}] ${r.bullet} — ${r.reason}`).join("\n")
+    : "";
+  const sourceCounts = sourceRows.length
+    ? [
+        sourceRows.filter((r) => r.status === "unchanged").length,
+        sourceRows.filter((r) => r.status === "reworded").length,
+        sourceRows.filter((r) => r.status === "new").length,
+        sourceRows.filter((r) => r.status === "dropped").length,
+      ]
+    : null;
+  const sourceCopy = sourceRows.length
+    ? `Bullet sources (${sourceCounts![0]} unchanged / ${sourceCounts![1]} reworded / ${sourceCounts![2]} new / ${sourceCounts![3]} dropped):\n` +
+      sourceRows.map((r) =>
+        r.status === "dropped"
+          ? `[DROPPED] ${r.source} — ${r.reason}`
+          : `[${r.status.toUpperCase()}] ${r.bullet}${r.source ? ` ← ${r.source}` : ""}${r.dropped.length ? ` (dropped: ${r.dropped.join(", ")})` : ""} — ${r.reason}`
+      ).join("\n")
     : "";
   const usageCopy = usageRows.length
     ? `Per-task token usage (${usageTotals!.llm_calls} LLM calls, ${usageTotals!.total_tokens} tokens):\n` +
@@ -531,6 +557,79 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                 </span>
               </div>
             )}
+          </div>
+        )}
+
+        {activeTab === "sources" && (
+          <div id="panel-sources" role="tabpanel" aria-labelledby="tab-sources" tabIndex={0} className="rounded-md2 bg-inset border border-line p-4">
+            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-line">
+              <span className="text-2xs text-ink-3 font-mono">Bullet sources — per-bullet provenance, matched in code against your original</span>
+              {renderCopyRow("sources", sourceCopy)}
+            </div>
+
+            <p className="text-2xs text-ink-3 leading-relaxed mb-3">
+              Which bullet of your original every optimized bullet came from, and which measured outcomes a rewrite dropped
+              (rounded numbers like 96.2% &rarr; 96% count as kept).
+            </p>
+            {sourceCounts && (
+              <div className="flex items-center gap-2 mb-3 flex-wrap">
+                <span className="px-2 py-0.5 rounded-sm2 bg-ok-tint border border-ok/25 text-2xs text-ok font-semibold">{sourceCounts[0]} unchanged</span>
+                <span className="px-2 py-0.5 rounded-sm2 bg-warn-tint border border-warn/25 text-2xs text-warn font-semibold">{sourceCounts[1]} reworded</span>
+                <span className="px-2 py-0.5 rounded-sm2 bg-inset border border-line text-2xs text-ink-2 font-semibold">{sourceCounts[2]} new</span>
+                <span className="px-2 py-0.5 rounded-sm2 bg-danger-tint border border-danger/25 text-2xs text-danger font-semibold">{sourceCounts[3]} dropped</span>
+              </div>
+            )}
+            <ul className="space-y-2">
+              {sourceRows.map((row, i) => (
+                <li key={`source-${i}`} className="rounded-md2 bg-surface border border-line p-2.5">
+                  <div className="flex items-start gap-2">
+                    <span
+                      aria-label={row.status}
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-sm2 border text-2xs font-semibold uppercase tracking-wide shrink-0 ${
+                        row.status === "unchanged"
+                          ? "bg-ok-tint border-ok/25 text-ok"
+                          : row.status === "reworded"
+                            ? "bg-warn-tint border-warn/25 text-warn"
+                            : row.status === "new"
+                              ? "bg-inset border-line text-ink-2"
+                              : "bg-danger-tint border-danger/25 text-danger"
+                      }`}
+                    >
+                      {row.status === "unchanged"
+                        ? <Check weight="bold" className="w-3 h-3" />
+                        : row.status === "new"
+                          ? <Sparkle weight="bold" className="w-3 h-3" />
+                          : <Warning weight="bold" className="w-3 h-3" />}
+                      {row.status}
+                    </span>
+                    <span className="flex-1 min-w-0 text-2xs text-ink leading-relaxed">
+                      {row.status === "dropped" ? <span className="text-ink-3 italic">removed from the optimized resume</span> : row.bullet}
+                    </span>
+                  </div>
+                  {row.source && (
+                    <p className="mt-1.5 text-2xs text-ink-3 leading-relaxed">
+                      <span className="font-mono">original:</span> {row.source}
+                      {row.similarity > 0 && row.status === "reworded" && (
+                        <span className="ml-1.5 font-mono">({Math.round(row.similarity * 100)}% overlap)</span>
+                      )}
+                    </p>
+                  )}
+                  {(row.metrics.length > 0 || row.dropped.length > 0) && (
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {row.metrics.map((metric, j) => (
+                        <span key={`source-${i}-m-${j}`} className="px-1.5 py-0.5 rounded-sm2 bg-inset border border-line text-2xs text-ink-2 font-mono">{metric}</span>
+                      ))}
+                      {row.dropped.map((metric, j) => (
+                        <span key={`source-${i}-d-${j}`} className="px-1.5 py-0.5 rounded-sm2 bg-danger-tint border border-danger/25 text-2xs text-danger font-mono line-through">{metric}</span>
+                      ))}
+                    </div>
+                  )}
+                  {row.reason && (
+                    <p className="mt-1.5 text-2xs text-ink-2 leading-relaxed">{row.reason}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 

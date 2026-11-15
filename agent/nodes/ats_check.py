@@ -6,6 +6,7 @@ from ..ats import compute_ats_match, apply_semantic_matches
 from ..helpers import _safe_print, _safe_truncate
 from ..match import compute_requirement_match_table
 from ..bullet_impact import compute_bullet_impact
+from ..bullet_sources import compute_bullet_sources
 from ..provider import invoke_structured_with_repair
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -76,6 +77,14 @@ def ats_check_node(state: AgentState):
     # audit that describes the resume that actually ships.
     bullet_table = compute_bullet_impact(state['optimized_resume'])
 
+    # Round 16: the per-bullet typed source rows for THIS draft - which
+    # original bullet each optimized bullet traces to and which measured
+    # outcomes a rewrite dropped (the integrity scan's rounding tolerance
+    # applies, so "96.2% -> 96%" is kept). Deterministic, zero LLM calls;
+    # rides the SAME best-of guard.
+    source_table = compute_bullet_sources(state.get('original_resume', ''),
+                                          state['optimized_resume'])
+
     llm_quality = state.get('llm_quality_score', 0)
     composite = round(
         ATS_SCORE_WEIGHT * result['percentage'] + LLM_SCORE_WEIGHT * llm_quality
@@ -101,6 +110,8 @@ def ats_check_node(state: AgentState):
             "requirement_matches": requirement_table,
             # Round 13: the bullet audit travels with it for the same reason.
             "bullet_impact": bullet_table,
+            # Round 16: the per-bullet provenance travels with it too.
+            "bullet_sources": source_table,
         }
     if composite < best_score:
         _safe_print(f"-> Draft {state.get('iteration', 0)} regressed ({composite} < {best_score}); keeping the best draft.")
@@ -113,6 +124,7 @@ def ats_check_node(state: AgentState):
             "best_result": best,
             "requirement_matches": list(best.get("requirement_matches") or []),
             "bullet_impact": list(best.get("bullet_impact") or []),
+            "bullet_sources": list(best.get("bullet_sources") or []),
             "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
         }
 
@@ -123,5 +135,6 @@ def ats_check_node(state: AgentState):
         "best_result": best,
         "requirement_matches": requirement_table,
         "bullet_impact": bullet_table,
+        "bullet_sources": source_table,
         "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
     }

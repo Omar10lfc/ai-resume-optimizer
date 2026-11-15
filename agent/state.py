@@ -104,6 +104,13 @@ class AgentState(TypedDict):
     # and follows the SAME best-of guard as requirement_matches, so the audit
     # always describes the resume that ships.
     bullet_impact: NotRequired[list]
+    # Round 16 (per-bullet typed source rows, Nov 15 2026): per-bullet
+    # provenance - which original bullet each optimized bullet came from
+    # (unchanged/reworded/new) and which source metrics a rewrite dropped,
+    # with the integrity scan's rounding tolerance so "96.2% -> 96%" reads
+    # as kept. Zero LLM calls; follows the SAME best-of guard, so the
+    # provenance always describes the resume that ships.
+    bullet_sources: NotRequired[list]
     # Round 14 (BB2 follow-on, Nov 14 2026): the selected resume look -
     # an invocation INPUT (classic | serif | modern), not derived state,
     # so it survives crash-rewind naturally (no reset entry needed).

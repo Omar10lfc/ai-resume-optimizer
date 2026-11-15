@@ -3962,6 +3962,45 @@ def test_graph_writes_bullet_impact_table(fake_llms, monkeypatch):
     assert row["bullet"] == "Built Python services on Kubernetes with Docker."
     # the shipped audit describes the SHIPPED resume, verbatim the scorer
     assert rows == agent.compute_bullet_impact(good)
+
+
+def test_graph_writes_bullet_source_rows(fake_llms, monkeypatch):
+    """Round 16 wiring: ats_check computes the per-bullet provenance every
+    pass and the best-of guard keeps the WINNER's rows - a regressed polish
+    pass cannot ship provenance for a resume that is not the download."""
+    original = ("## Experience\n**Engineer** | Corp | 2024\n"
+                "- Built Python services on Kubernetes with Docker, cutting latency 40%.\n"
+                "- Led the migration of 12 services to Docker, saving $1.2M.")
+    good = ("## Experience\n**Engineer** | Corp | 2024\n"
+            "- Built Python services on Kubernetes with Docker, cutting latency 40%.\n"
+            "- Led the migration of 12 services onto Docker.")
+    worse = "## Skills\nPython\n## Experience\nWrote some scripts."
+
+    class FixedReviewer(FakeStrictLLM):
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    return agent.ReviewOutput(score=60, feedback="Add metrics.",
+                                              sections=[])
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", FixedReviewer())
+    seq = SeqCreativeLLM([good, worse])
+    monkeypatch.setattr(agent.llms, "llm_creative", seq)
+    inputs = _base_inputs()
+    inputs["original_resume"] = original
+    result = agent.full_app.invoke(inputs)
+
+    rows = result.get("bullet_sources")
+    # the shipped provenance describes the SHIPPED resume, verbatim the scorer
+    assert rows == agent.compute_bullet_sources(original, good)
+    first, second = rows
+    assert first["status"] == "unchanged"
+    assert first["metrics"] == ["40%"]
+    assert second["status"] == "reworded"
+    assert second["metrics"] == ["12 services"]
+    assert second["dropped"] == ["$1.2M"]  # the headline: the source measured it, the rewrite dropped it
+    assert "$1.2M no longer appear in this bullet" in second["reason"]
     assert not any("Wrote some scripts" in r["bullet"] for r in rows)
 
 
