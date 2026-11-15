@@ -970,6 +970,17 @@ No product changes — a `pip list --outdated` audit, wave-upgrades (langchain f
 
 > Status: suite **454 passed** (~6:42, record `%TEMP%\opencode\pytest_full_nov15_deps.txt`), `pip check` clean, provider smoke probe green on the upgraded stack (`%TEMP%\opencode\probe2_deps.txt`), backend restarted to serve the new modules. Known heads-up (documented, not acted on): `langchain-classic` 1.0.8 deprecates its `init_chat_model` entry point (added in LangChain 1.0.5; retained for import-compat) — migrating `agent/llms.py` to the maintained `langchain.chat_models` home means adding the `langchain` umbrella package (not installed; parked for a future round).
 
+### Session - Nov 15 2026 (CI green: the print engine's sandbox-abort retry)
+
+CI had been red since round 12 (the BB2 HTML renderer) — last green Nov 11 (`5e8e8b5`), and both failed runs (round-12 `5b29560`, deps-refresh `1b23907`) failed the SAME way: the 3 real-print acceptance tests in `tests/test_html_render.py` with `pdf = None`, Chrome aborting at startup with `rc=-6` and `Impl::Initialize()` on stderr. Coverage was never the problem (89.11% on Linux vs the 84 gate; 449/452 passed). Root cause: hardened GitHub Actions Ubuntu images restrict unprivileged user namespaces, so Chrome's namespace sandbox cannot initialize and the process SIGABRTs.
+
+| Change | Why | Impact |
+|--------|-----|--------|
+| **The sandbox-abort retry** (`agent/html_render.py` `html_to_pdf`) | Sandboxed-first stays the default; on the detected abort signature (`rc < 0` + `Impl::Initialize()` / `Failed to move to new namespace` / `SUID sandbox helper` on stderr) the engine retries ONCE with `--no-sandbox --disable-dev-shm-usage`, flags grouped ahead of the `file://` URI | The standard headless-CI posture (Playwright's `chromiumSandbox: false`, Puppeteer's `--no-sandbox`); the print is a local `file://` document with a strict CSP and no external fetchables by construction, so the sandbox's marginal protection is small; any other failure still reports no-PDF and the html → latex → xhtml2pdf fallback engages |
+| **Tests** (+3, `test_html_render.py` 37 → 40) | The contract pinned on the exact argv, with every `subprocess.run` call recorded | Sandbox abort → exactly one retry, flags present and ahead of the URI, PDF shipped; plain no-PDF failure (no abort signature) → exactly one attempt, no speculative second launch; retry also fails → `None` after exactly two attempts |
+
+> Status: suite **457 passed** (~5:19, record `%TEMP%\opencode\pytest_full_nov15_cifix.txt`) — the three real-print acceptance tests exercise the fix against the actual browser. The next push verifies CI green.
+
 ### UI Fixes
 
 | Change | Reason |
