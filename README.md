@@ -981,6 +981,12 @@ CI had been red since round 12 (the BB2 HTML renderer) — last green Nov 11 (`5
 
 > Status: suite **457 passed** (~5:19, record `%TEMP%\opencode\pytest_full_nov15_cifix.txt`) — the three real-print acceptance tests exercise the fix against the actual browser. The next push verifies CI green.
 
+### Maintenance - Nov 15 2026 (init_chat_model migrated to langchain.chat_models)
+
+The dependency-refresh round's heads-up closed the same day: `agent/llms.py` now imports `init_chat_model` from the **maintained `langchain` home** (umbrella package 1.5.0, pinned as a direct dep) instead of `langchain_classic` — which deprecated its entry point in 1.0.5 and removes it in 2.0.0. Dispatch is identical (verified: groq → `ChatGroq`, openai → `ChatOpenAI`, anthropic → `ChatAnthropic`); `langchain-classic` is un-pinned (nothing in the repo imports it anymore; it remains installed locally). The suite's `LangChainDeprecationWarning` is gone (warnings 3 → 2).
+
+> Status: suite **457 passed** (~6:02, record `%TEMP%\opencode\pytest_full_nov15_lcmig.txt`), `pip check` clean, provider smoke probe green, backend restarted.
+
 ### UI Fixes
 
 | Change | Reason |
