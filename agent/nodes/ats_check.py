@@ -3,7 +3,7 @@ from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted, SemanticReview
 from .. import llms as _llms
 from ..config import ATS_SCORE_WEIGHT, LLM_SCORE_WEIGHT
 from ..ats import compute_ats_match, apply_semantic_matches
-from ..helpers import _safe_print, _safe_truncate
+from ..helpers import _safe_print, _safe_truncate, normalize_markdown_links
 from ..match import compute_requirement_match_table
 from ..bullet_impact import compute_bullet_impact
 from ..bullet_sources import compute_bullet_sources
@@ -85,15 +85,19 @@ def ats_check_node(state: AgentState):
     # carries the SOURCE (a path/URL), not text - live trace cab7f3f7
     # (Nov 15): a PDF upload left the provenance empty on a fully
     # bulleted resume. The loader's resume_text IS the original content
-    # then, so bind against whichever side has bullets.
-    original_text = state.get('original_resume') or ''
+    # then, so bind against whichever side has bullets. Both sides go
+    # through the pre-pass (run d946bb5f, Nov 16): the raw upload's
+    # hyphen-split words and wrapped fragments never bind against the
+    # cleaned optimized text otherwise.
+    raw_original = state.get('original_resume') or ''
+    original_text = normalize_markdown_links(raw_original)
     source_table = compute_bullet_sources(original_text,
                                           state['optimized_resume'])
     if not source_table:
         loaded = (state.get('resume_text') or '').strip()
-        if loaded and loaded != original_text.strip():
+        if loaded and loaded != raw_original.strip():
             source_table = compute_bullet_sources(
-                loaded, state['optimized_resume'])
+                normalize_markdown_links(loaded), state['optimized_resume'])
 
     llm_quality = state.get('llm_quality_score', 0)
     composite = round(

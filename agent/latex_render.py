@@ -117,8 +117,15 @@ _HR_RE = re.compile(r'^\s*([-*_])\s*(?:\1\s*){2,}\s*$')
 # Regexes reused for contact / subheading parsing
 # Matches a trailing date range like "June 2020 -- Present", "2020-2021",
 # "Aug 2018 -- May 2021". Month is optional. End-anchored and searched.
+# The separator also accepts the worded form ("Oct 2022 to Jun 2026" -
+# pypdf-7 extraction keeps it, run d946bb5f's Education row shipped
+# dateless): guarded by a lookahead so prose like "grew users from 10K in
+# 2021 to 50K" (no 4-digit year / Present after the word) never matches.
 _DATE_RANGE_RE = re.compile(
-    r'((?:[A-Za-z]{3,9}\.?\s+)?\d{4}|\d{4})\s*[-–—]{1,3}\s*(.+?)\s*$',
+    r'((?:[A-Za-z]{3,9}\.?\s+)?\d{4}|\d{4})'
+    r'(?:\s*[-–—]{1,3}\s*|\s+(?:to|through|till|until)\s+'
+    r'(?=(?:[A-Za-z]{3,9}\.?\s*,?\s*)?\d{4}|\bPresent\b))'
+    r'(.+?)\s*$',
     re.IGNORECASE,
 )
 
@@ -128,8 +135,9 @@ _DATE_RANGE_RE = re.compile(
 # "… | Aug – Sep 2026" lost its date entirely). End-anchored to avoid
 # matching month words mid-stack ("May" inside a tool list).
 _MONTH_RANGE_RE = re.compile(
-    r'(?:[A-Za-z]{3,9}\.?\s*)?[-–—]?\s*[A-Za-z]{3,9}\.?\s*[-–—]{1,3}\s*'
-    r'[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$', re.IGNORECASE)
+    r'(?:[A-Za-z]{3,9}\.?\s*)?[-–—]?\s*[A-Za-z]{3,9}\.?\s*'
+    r'(?:[-–—]{1,3}|\s+(?:to|through)\s+)'
+    r'\s*[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$', re.IGNORECASE)
 # A field whose ENTIRE content is a standalone date-ish token
 # ("Aug 2026 - Present", "2020-2022", "Aug – Sep 2026"). Only whole-segment
 # matches pop a column off, never inline mentions inside longer text.
@@ -138,6 +146,10 @@ _STANDALONE_DATE_RE = re.compile(
     r'(?:[A-Za-z]{3,9}\.?\s+)?\d{4}\s*[-–—]{1,3}\s*(?:.+?)?\s*\d{0,4}\s*'
     r'|[A-Za-z]{3,9}\.?\s+\d{4}\s*$'
     r'|[A-Za-z]{3,9}\.?\s*[-–—]{1,3}\s*[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$'
+    r'|(?:[A-Za-z]{3,9}\.?\s+)?\d{4}\s+(?:to|through|till|until)\s+'
+    r'(?:[A-Za-z]{3,9}\.?\s*,?\s*)?(?:\d{4}|Present)\s*$'
+    r'|[A-Za-z]{3,9}\.?\s*(?:[-–—]{1,3}|\s+(?:to|through)\s+)\s*'
+    r'[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$'
     r')\s*$', re.IGNORECASE)
 
 # A bold label line like "**Languages**: Python" or "**Tools**: Git, Docker"
@@ -257,6 +269,19 @@ def _is_section_heading(line: str) -> Optional[str]:
         label = m.group(1).strip()
         if _is_known_section_title(label):
             return label
+
+    # Bare ALL-CAPS headings from raw PDF extraction ("SUMMARY", "SKILLS",
+    # "PROJECTS", "EXPERIENCE", "CERTIFICATIONS" - pypdf emits section
+    # titles without a colon; run d946bb5f's source parsed to ZERO sections
+    # and the contact collector swallowed 21 of 57 lines). Gated on known
+    # section titles so random uppercase lines ("NTI", "AI & ML") never
+    # become sections. Markdown-native shapes above keep priority.
+    stripped = line.strip()
+    if stripped.isupper() and 2 <= len(stripped) <= 40 \
+            and _is_known_section_title(stripped):
+        words = stripped.split()
+        return " ".join(
+            w if (len(w) <= 3 and w.isalpha()) else w.title() for w in words)
 
     return None
 
@@ -614,6 +639,11 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
             break  # a non-bold "label: value" leaf — not a subheading
         if stripped.startswith('#') and _is_section_heading(stripped):
             break
+        if _is_section_heading(stripped):
+            break  # a bare heading ('## X' / ALL-CAPS / 'Label:') starts a
+                   # new section - never a header field of the entry above
+                   # (run d946bb5f: 'PROJECTS' took the education subheading
+                   # slot and the first two project entries were absorbed).
         if _HR_RE.match(stripped):
             # a decorative divider (---): skip it, don't treat as content
             idx += 1

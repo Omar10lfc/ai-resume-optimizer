@@ -1716,19 +1716,21 @@ _BROKEN_SOURCE_SHAPES = (
 def test_normalize_markdown_links_cleans_broken_shapes():
     """Run bf58e700 (Nov 15): the deterministic pre-pass flattens span-label
     links, strips list markers from labels, dedupes same-target links per
-    line, and drops pure-link repeat lines - clean markdown passes through
-    byte-identical."""
+    line, and drops pure-link repeat lines. Run d946bb5f (Nov 16) adds the
+    shape repairs: the title line reshapes to the canonical bold/linked-
+    demo/date-column form. Clean markdown passes through byte-identical."""
     out = agent.normalize_markdown_links(_BROKEN_SOURCE_SHAPES)
     # header spans flattened to visible text
     assert ("Alexandria, Egypt | +20 100 170 1821 | omarmashaly86@gmail.com"
             in out)
     assert "](https://linkedin.com/in/omar)" not in out.split("##")[0]
     # title line: one link survives, span text kept, dup and standalone
-    # repeat gone
+    # repeat gone - and the survivor reshapes to the canonical title shape
     assert out.count("https://lnkd.in/x") == 1
     assert "[(Graduation Project)]" not in out
     assert "[GitHub]" not in out
-    assert "Sep 2025 - Jun 2026 | Live Demo |" in out
+    assert ("**Alexandria Port** [Live Demo](https://lnkd.in/x) "
+            "| Sep 2025 - Jun 2026" in out)
     # markers stripped from inside and in front of link labels
     assert "[AWS Nanodegree, Udacity - Nov 2025](https://ud.io/cert)" in out
     assert "[- AWS" not in out
@@ -1780,8 +1782,246 @@ def test_full_rewrite_normalizes_broken_source_before_the_writer(monkeypatch):
     assert "[(Graduation Project)]" not in opt and "[GitHub]" not in opt
     assert "[- AWS" not in opt
     assert "[AWS Nanodegree, Udacity - Nov 2025](https://ud.io/cert)" in opt
-    assert "Sep 2025 - Jun 2026 | Live Demo |" in opt
+    assert ("**Alexandria Port** [Live Demo](https://lnkd.in/x) "
+            "| Sep 2025 - Jun 2026" in opt)
     assert prompts and "[(Graduation Project)]" not in prompts[0]
+
+
+# --- run d946bb5f (Nov 16): shape repairs + ALL-CAPS heading parsing -------
+
+def test_normalize_merges_education_two_lines_into_one_subheading():
+    """The university line (with date) + the degree line below it merge
+    into ONE canonical 4-field line - the two-line split parsed as an
+    empty sub row plus a detached one-item itemize (the blank gap in
+    run d946bb5f's Education section)."""
+    src = ("## Education\n"
+           "Egypt-Japan University of Science and Technology (E-JUST), "
+           "Alexandria - Oct 2022 to Jun 2026\n"
+           "B.Sc. in Computer Science, AI & Data Science\n")
+    out = agent.normalize_markdown_links(src)
+    assert ("**Egypt-Japan University of Science and Technology (E-JUST)**"
+            " | Alexandria | B.Sc. in Computer Science, AI & Data Science"
+            " | Oct 2022 to Jun 2026" in out)
+
+
+def test_normalize_merges_education_degree_first_order():
+    src = ("## Education\n"
+           "B.Sc. in Computer Science, AI & Data Science\n"
+           "Egypt-Japan University of Science and Technology (E-JUST), "
+           "Alexandria - Oct 2022 to Jun 2026\n")
+    out = agent.normalize_markdown_links(src)
+    assert ("**Egypt-Japan University of Science and Technology (E-JUST)**"
+            " | Alexandria | B.Sc. in Computer Science, AI & Data Science"
+            " | Oct 2022 to Jun 2026" in out)
+
+
+def test_normalize_merge_never_fires_outside_education_or_on_markup():
+    # a lone degree line has no university-with-date partner
+    src = "## Education\nB.Sc. in Computer Science, AI & Data Science\n"
+    assert agent.normalize_markdown_links(src) == src
+    # other sections never merge
+    src2 = ("## Projects\n"
+            "Super Resolution GAN, Offline - Jun 2025\n"
+            "B.Sc. in Computer Science, AI & Data Science\n")
+    assert agent.normalize_markdown_links(src2) == src2
+    # a markup-bearing line is not a merge partner
+    src3 = ("## Education\n"
+            "Tech University, Cairo - Oct 2022 to Jun 2026\n"
+            "**B.Sc.** | GPA 3.9\n")
+    assert agent.normalize_markdown_links(src3) == src3
+
+
+def test_normalize_joins_soft_hyphenation_and_keeps_compound_hyphens():
+    """PDF soft hyphenation: "pro-"/"gram" and "halluci-"/"nated" fuse
+    WITHOUT the hyphen; "multi-"/"class" is a compound that keeps it;
+    an inflectional tail after a compound stem still fuses
+    ("test-" + "ing" -> "testing")."""
+    src = ("## Experience\n"
+           "- Built models for a 90-hour intensive pro-\n"
+           "gram: 90% accuracy achieved.\n"
+           "- The critic loop catches and removes halluci-\n"
+           "nated skills before sign-off.\n"
+           "- 98.6% pixel accuracy on multi-\n"
+           "class road-lane segmentation.\n"
+           "- Fine-tuned a model for real-\n"
+           "time license-plate detection.\n"
+           "- Trained an image test-\n"
+           "ing pipeline end to end.\n")
+    out = agent.normalize_markdown_links(src)
+    assert "90-hour intensive program: 90% accuracy achieved." in out
+    assert "removes hallucinated skills before sign-off." in out
+    assert "98.6% pixel accuracy on multi-class road-lane segmentation." in out
+    assert "Fine-tuned a model for real-time license-plate detection." in out
+    assert "Trained an image testing pipeline end to end." in out
+
+
+def test_normalize_joins_plus_fragment_and_uppercase_tail():
+    """The sentence's plus sign at a wrap start ('+ FAISS ...') and an
+    uppercase-starting tail after an unterminated bullet ('AUC-PR - a
+    production-ready result...') parsed as their own bullets/lines in
+    run d946bb5f; both join back into the bullet above."""
+    src = ("## Projects\n"
+           "- Boosted semantic search precision 34 points (P@1 0.64 to 0.86 "
+           "on ARCD) by adding a cross-encoder reranker to a CAMeL-BERT\n"
+           "+ FAISS retrieval stack, deployed end-to-end as a Gradio Space.\n"
+           "## Experience\n"
+           "- Led model development over 100K patient records, benchmarking "
+           "7 candidate\n"
+           "algorithms under class-imbalance constraints, F1 0.961, and 0.995\n"
+           "AUC-PR - a production-ready result deployed live via Streamlit.\n")
+    out = agent.normalize_markdown_links(src)
+    assert ("to a CAMeL-BERT + FAISS retrieval stack, deployed end-to-end"
+            " as a Gradio Space." in out)
+    assert "\n+ FAISS" not in out
+    assert ("and 0.995 AUC-PR - a production-ready result deployed live"
+            " via Streamlit." in out)
+
+
+def test_normalize_protects_plus_lists_and_punctuated_bullets():
+    """A real '+' list keeps its items; a title line after a punctuated
+    bullet is never glued into it."""
+    src = ("## Projects\n"
+           "- Migrated the pipeline to Ray.\n"
+           "+ Added a Gradio demo space.\n"
+           "+ Shipped a FastAPI service.\n"
+           "- Shipped the eval harness.\n"
+           "Smart Lecture Assistant: Arabic Audio Mar 2026 - May 2026 "
+           "| Live Demo\n")
+    out = agent.normalize_markdown_links(src)
+    assert "+ Added a Gradio demo space." in out
+    assert "+ Shipped a FastAPI service." in out
+    assert ("**Smart Lecture Assistant: Arabic Audio** | Live Demo"
+            " | Mar 2026 - May 2026" in out)
+
+
+def test_normalize_reshapes_comma_org_date_titles():
+    """The org rode inside the right-aligned date column ('Trainee, NTI
+    Aug - Sep 2025'); the canonical shape moves it into the title row."""
+    src = ("## Experience\n"
+           "Computer Vision & Deep Learning Trainee, NTI Aug - Sep 2025\n"
+           "- Built and evaluated 5 computer vision models.\n"
+           "Data Science Intern (IBM Data Science Track), DEPI Apr - Oct 2024\n"
+           "- Led model development over 100K patient records.\n")
+    out = agent.normalize_markdown_links(src)
+    assert ("**Computer Vision & Deep Learning Trainee** | NTI"
+            " | Aug - Sep 2025" in out)
+    assert ("**Data Science Intern (IBM Data Science Track)** | DEPI"
+            " | Apr - Oct 2024" in out)
+
+
+def test_normalize_reshapes_plain_project_titles():
+    src = ("## Projects\n"
+           "Fil-RAG-Goal: Arabic Football Q&A (Hybrid RAG) Feb 2026 - "
+           "Jun 2026 | Live Demo\n"
+           "- Boosted retrieval relevance 7% over BM25-only baseline.\n"
+           "Smart Lecture Assistant: Arabic Audio Retrieval Mar 2026 - "
+           "May 2026 | Live Demo\n"
+           "- Cut Arabic transcription error rate 51.7%.\n")
+    out = agent.normalize_markdown_links(src)
+    assert ("**Fil-RAG-Goal: Arabic Football Q&A (Hybrid RAG)** | Live Demo"
+            " | Feb 2026 - Jun 2026" in out)
+    assert ("**Smart Lecture Assistant: Arabic Audio Retrieval** | Live Demo"
+            " | Mar 2026 - May 2026" in out)
+
+
+def test_normalize_never_reshapes_skills_summary_or_certs():
+    src = ("## Technical Skills\n"
+           "Machine Learning & Deep Learning: Python, SQL, PyTorch\n"
+           "Languages: Arabic (Native), English (Fluent)\n"
+           "## Certifications\n"
+           "[- AWS Nanodegree, Udacity - Nov 2025](https://ud.io/cert)\n")
+    out = agent.normalize_markdown_links(src)
+    assert ("Machine Learning & Deep Learning: Python, SQL, PyTorch" in out)
+    assert "Languages: Arabic (Native), English (Fluent)" in out
+    assert "[AWS Nanodegree, Udacity - Nov 2025](https://ud.io/cert)" in out
+
+
+def test_parse_recognizes_bare_allcaps_headings():
+    """pypdf emits section titles without a colon ('SUMMARY', 'PROJECTS');
+    they parsed to ZERO sections and the contact collector swallowed 21
+    of 57 source lines (run d946bb5f)."""
+    import agent.latex_render as lr
+    assert lr._is_section_heading("SUMMARY") == "Summary"
+    assert lr._is_section_heading("PROJECTS") == "Projects"
+    assert lr._is_section_heading("TECHNICAL SKILLS") == "Technical Skills"
+    assert lr._is_section_heading("CERTIFICATIONS") == "Certifications"
+    # random uppercase lines never become sections
+    assert lr._is_section_heading("NTI") is None
+    assert lr._is_section_heading("AI & ML") is None
+
+
+def test_contact_collector_stops_at_allcaps_headings():
+    import agent.latex_render as lr
+    lines = ["Omar Mashaly", "AI/ML Engineer",
+             "Alexandria, Egypt | omar@example.com",
+             "SUMMARY", "AI engineer building LLM systems."]
+    contact, remaining = lr._extract_contact(lines)
+    assert contact.name == "Omar Mashaly"
+    assert all("AI engineer" not in d for d in contact.details)
+    assert remaining[0] == "SUMMARY"
+
+
+def test_raw_caps_source_parses_to_sections_and_bullets():
+    src = ("Omar Mashaly\n"
+           "AI/ML Engineer\n"
+           "Alexandria, Egypt | omar@example.com\n"
+           "SUMMARY\n"
+           "AI engineer building LLM systems.\n"
+           "PROJECTS\n"
+           "Smart Lecture Assistant Mar 2026 - May 2026 | Live Demo\n"
+           "- Cut Arabic transcription error rate 51.7% (WER 42.69 to 20.61).\n"
+           "EXPERIENCE\n"
+           "Computer Vision Trainee, NTI Aug - Sep 2025\n"
+           "- Built and evaluated 5 computer vision models.\n")
+    data = agent.parse_markdown_resume(src)
+    assert [s.title for s in data.sections] == ["Summary", "Projects",
+                                                "Experience"]
+    sections = {sec for sec, _ in agent.bullet_sources._achievements(src)}
+    assert sections == {"Projects", "Experience"}
+    assert any("51.7%" in text for _, text in
+               agent.bullet_sources._achievements(src))
+
+
+def test_date_regexes_accept_worded_to_ranges():
+    """'Oct 2022 to Jun 2026' matched no date regex - the 4-field
+    education line silently dropped its date column."""
+    import agent.latex_render as lr
+    assert lr._STANDALONE_DATE_RE.match("Oct 2022 to Jun 2026")
+    assert lr._STANDALONE_DATE_RE.match("2020 to Present")
+    assert lr._STANDALONE_DATE_RE.match("Aug to Sep 2025")
+    m = lr._DATE_RANGE_RE.search(
+        "B.Sc., AI & Data Science | Oct 2022 to Jun 2026")
+    assert m and m.group(0).strip() == "Oct 2022 to Jun 2026"
+    # prose protection: no 4-digit year / Present after the word
+    assert not lr._DATE_RANGE_RE.search("grew users from 10K in 2021 to 50K")
+
+
+def test_education_four_field_line_keeps_worded_date():
+    md = ("## Education\n"
+          "**Egypt-Japan University of Science and Technology (E-JUST)**"
+          " | Alexandria | B.Sc. in Computer Science, AI & Data Science"
+          " | Oct 2022 to Jun 2026\n")
+    tex = agent.render_resume_tex(agent.parse_markdown_resume(md))
+    assert ("\\resumeSubheading{Egypt-Japan University of Science and "
+            "Technology (E-JUST)}{Alexandria}{B.Sc. in Computer Science, "
+            "AI \\& Data Science}{Oct 2022 to Jun 2026}") in tex
+
+
+def test_entry_block_stops_at_bare_heading_lines():
+    """The entry-header gather must not absorb a following ALL-CAPS
+    heading: run d946bb5f's raw parse took 'PROJECTS' as the education
+    subheading's degree slot and the first two project entries with it."""
+    md = ("## Education\n"
+          "**E-JUST** | Alexandria | B.Sc. in CS, AI & Data Science"
+          " | Oct 2022 to Jun 2026\n"
+          "PROJECTS\n"
+          "**Fil-RAG-Goal** | Live Demo | Feb 2026 - Jun 2026\n"
+          "- Boosted retrieval relevance 7%.\n")
+    data = agent.parse_markdown_resume(md)
+    assert [s.title for s in data.sections] == ["Education", "Projects"]
+    assert len(data.sections[0].entries) == 1
+    tex = agent.render_resume_tex(data)
+    assert "PROJECTS" not in tex
 
 
 def test_improver_postprocess_restores_dropped_contact_links():
@@ -4204,6 +4444,66 @@ def test_graph_binds_provenance_for_file_uploads(fake_llms, monkeypatch, tmp_pat
     assert rows[0]["metrics"] == ["40%"]
     assert rows[1]["status"] == "reworded"
     assert rows[1]["dropped"] == ["$1.2M"]
+
+
+def test_graph_binds_provenance_for_raw_caps_uploads(fake_llms, monkeypatch,
+                                                     tmp_path):
+    """Run d946bb5f (Nov 16): a pypdf-7 extraction carries bare ALL-CAPS
+    headings and hyphen-split wrapped words - the raw text parsed to ZERO
+    sections, so the provenance shipped empty even though the optimized
+    resume was fully bulleted (and the A83 resume_text fallback bound
+    against the same broken text). The parser now reads the caps headings
+    and ats_check binds against the pre-pass-cleaned original."""
+    loaded_original = (
+        "Omar Mashaly\n"
+        "AI/ML Engineer\n"
+        "Alexandria, Egypt | +20 100 170 1821 | omar@example.com\n"
+        "SUMMARY\n"
+        "AI engineer building LLM systems.\n"
+        "PROJECTS\n"
+        "Smart Lecture Assistant: Arabic Audio Retrieval Mar 2026 - May 2026 | Live Demo\n"
+        "- Cut Arabic transcription error rate 51.7% (WER 42.69 to 20.61) fine-tuning\n"
+        "Whisper-small, publishing both as reproducible models.\n"
+        "EXPERIENCE\n"
+        "Computer Vision & Deep Learning Trainee, NTI Aug - Sep 2025\n"
+        "- Built and evaluated 5 computer vision models in a 90-hour intensive pro-\n"
+        "gram: 90% accuracy detecting pneumonia from chest X-rays.\n"
+    )
+    good = (
+        "## Projects\n"
+        "**Smart Lecture Assistant: Arabic Audio Retrieval** | Live Demo | Mar 2026 - May 2026\n"
+        "- Cut Arabic transcription error rate 51.7% (WER 42.69 to 20.61) fine-tuning Whisper-small, publishing both as reproducible models.\n"
+        "## Experience\n"
+        "**Computer Vision & Deep Learning Trainee** | NTI | Aug - Sep 2025\n"
+        "- Built and evaluated 5 computer vision models with Python in a 90-hour intensive program: 90% accuracy detecting pneumonia from chest X-rays, deployed as a Docker service.\n"
+    )
+    worse = "## Skills\nPython\n## Experience\nWrote some scripts."
+
+    class FixedReviewer(FakeStrictLLM):
+        def with_structured_output(self, schema):
+            class Structured:
+                def invoke(self, messages):
+                    return agent.ReviewOutput(score=60, feedback="Add metrics.",
+                                              sections=[])
+            return Structured()
+
+    monkeypatch.setattr(agent.llms, "llm_strict", FixedReviewer())
+    seq = SeqCreativeLLM([good, worse])
+    monkeypatch.setattr(agent.llms, "llm_creative", seq)
+    upload = tmp_path / "resume_upload.pdf"
+    upload.write_bytes(b"%PDF-fake")
+    monkeypatch.setattr("agent.nodes.loader._load_resume_pdf",
+                        lambda path: loaded_original)
+    inputs = _base_inputs()
+    inputs["original_resume"] = str(upload)
+    result = agent.full_app.invoke(inputs)
+
+    rows = result.get("bullet_sources")
+    assert rows == agent.compute_bullet_sources(
+        agent.normalize_markdown_links(loaded_original), good)
+    assert rows, "provenance must not be empty for a raw caps upload"
+    assert any(r["status"] == "unchanged" and "51.7%" in r["metrics"]
+               for r in rows)
 
 
 # ==========================================

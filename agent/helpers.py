@@ -1246,6 +1246,358 @@ def markdown_link_targets(text: str) -> frozenset:
 _MD_LINK_FULL_RE = re.compile(r"\[([^\[\]]*)\]\(([^)]*)\)")
 _BULLET_MARKER_RE = re.compile(r"^[-*•]\s+")
 
+# ---------------------------------------------------------------------------
+# Deterministic shape repairs for raw PDF extraction (run d946bb5f, Nov 16
+# 2026). pypdf line-wraps ship damage the writer must never see: hyphenated
+# words split across a wrap ("halluci-" / "nated skills"), the sentence's
+# plus sign landing at a wrap start ("CAMeL-BERT" / "+ FAISS retrieval
+# stack..."), education split across two lines, and entry titles that lost
+# their bold/date-column shape. latex_render imports from this module, so
+# the section word set lives here (no reverse import).
+_PREPASS_SECTION_WORDS = frozenset({
+    "summary", "objective", "profile", "about", "education", "experience",
+    "employment", "history", "projects", "skills", "competencies",
+    "technologies", "certifications", "certificates", "awards", "honors",
+    "publications", "volunteer", "languages", "coursework", "activities",
+})
+# Sections whose entry-title lines the reshapes may touch (certifications
+# and skills carry their own canonical shapes - never reshaped).
+_PREPASS_RESHAPE_SECTIONS = frozenset(
+    {"projects", "experience", "employment", "history", "education"})
+
+_PREPASS_HR_RE = re.compile(r"^\s*[-–—_=*]{3,}\s*$")
+_PREPASS_BULLET_RE = re.compile(r"^\s*[-*+•]\s+")
+_PREPASS_PLUS_LINE_RE = re.compile(r"^\s*\+\s+(.*)$")
+_PREPASS_DEGREE_HINT_RE = re.compile(
+    r"(?i)\b(?:b\.?\s?sc|m\.?\s?sc|b\.?eng|b\.?s\b|b\.?a\b|m\.?s\b|m\.?eng|"
+    r"ph\.?d|bachelor|master|doctorate|diploma|degree)\b")
+
+# Soft-hyphenation vs compound hyphens: a wrapped "halluci-"/"nated" or
+# "pro-"/"gram" must fuse WITHOUT the hyphen, but "multi-"/"class" is a
+# real compound that keeps it ("multiclass" is wrong). Heuristic: when
+# the fragment before the hyphen is a known compound-forming stem, the
+# hyphen stays - unless the remainder after the wrap is a bare
+# inflectional tail ("test-" + "ing" -> "testing").
+_COMPOUND_HYPHEN_PREFIXES = frozenset({
+    "multi", "cross", "co", "self", "end", "real", "open", "high", "low",
+    "big", "deep", "full", "half", "well", "world", "web", "ai", "ml", "cv",
+    "llm", "nlp", "ocr", "ui", "ux", "api", "data", "cloud", "edge", "state",
+    "time", "user", "client", "server", "test", "type", "domain", "level",
+    "side", "chain", "step", "zero", "one", "two", "three",
+})
+_SOFT_SUFFIX_TAILS = frozenset({
+    "s", "es", "ed", "ing", "er", "est", "ly", "ion", "ions", "ment",
+    "ness", "able", "ible", "ance", "ence", "ize", "ise", "ify", "ate",
+    "ive", "ous", "ful", "less", "ish", "al", "ic", "ity",
+})
+
+# End-anchored date for the education merge: dash ranges ("Sep 2025 - Jun
+# 2026", "2020 - Present", "2020-2021"), worded ranges ("Oct 2022 to Jun
+# 2026" - pypdf-7 keeps the words, and latex_render's date regexes needed
+# a dash), month-month ranges ("Aug - Sep 2025") and a single month+year.
+_PREPASS_DATE_TAIL_RE = re.compile(
+    r'(?:'
+    r'(?:[A-Za-z]{3,9}\.?\s+)?\d{4}\s*'
+    r'(?:[-–—]|\s+(?:to|through|till|until)\s+)\s*'
+    r'(?:[A-Za-z]{3,9}\.?\s*,?\s*)?(?:\d{4}|Present|Current|Ongoing)\s*'
+    r'|[A-Za-z]{3,9}\.?\s*[-–—]\s*[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*'
+    r'|[A-Za-z]{3,9}\.?\s+\d{4}\s*'
+    r')$', re.IGNORECASE)
+
+# A date-range START anywhere in a line (the case-C org/date split).
+_PREPASS_DATE_ANY_RE = re.compile(
+    r'(?:[A-Za-z]{3,9}\.?\s+)?\d{4}\s*'
+    r'(?:[-–—]|\s+(?:to|through|till|until)\s+)\s*'
+    r'(?:[A-Za-z]{3,9}\.?\s*,?\s*)?(?:\d{4}|Present|Current|Ongoing)'
+    r'|[A-Za-z]{3,9}\.?\s*[-–—]\s*[A-Za-z]{3,9}\.?\s*,?\s*\d{4}',
+    re.IGNORECASE)
+
+
+def _prepass_section_of(line: str) -> Optional[str]:
+    """The section word a heading line carries ('## Projects' or bare
+    'PROJECTS'), else None - the pre-pass's section context tracker."""
+    s = line.strip()
+    if not s:
+        return None
+    if s.startswith("#"):
+        cand = s.lstrip("#").strip().rstrip(":")
+    elif s.isupper() and 2 <= len(s) <= 40:
+        cand = s.title()
+    else:
+        return None
+    if not cand:
+        return None
+    words = re.sub(r"[^a-zA-Z\s]", " ", cand.lower()).split()
+    for w in words:
+        if w in _PREPASS_SECTION_WORDS:
+            return w
+    return None
+
+
+def _is_degree_line(line: str) -> bool:
+    """True for a short, unadorned education line naming a degree - the
+    merge partner of a university line that ends in a date range."""
+    s = line.strip()
+    if not s or len(s) > 100:
+        return False
+    if _PREPASS_BULLET_RE.match(s) or s.startswith(("*", "#")):
+        return False
+    if "|" in s or "[" in s or "**" in s:
+        return False
+    if _PREPASS_DATE_TAIL_RE.search(s):
+        return False
+    return bool(_PREPASS_DEGREE_HINT_RE.search(s))
+
+
+def _split_university_date(line: str) -> Optional[tuple]:
+    """'Egypt-Japan University of Science and Technology (E-JUST), '
+    'Alexandria - Oct 2022 to Jun 2026' -> (university, location, date)
+    when the line ends in a date range and no link/markup is present."""
+    s = line.strip()
+    if not s or _PREPASS_BULLET_RE.match(s) or s.startswith(("*", "#")):
+        return None
+    if "[" in s or "**" in s or "|" in s:
+        return None
+    m = _PREPASS_DATE_TAIL_RE.search(s)
+    if not m or m.start() == 0:
+        return None
+    date = s[m.start():].strip()
+    head = re.sub(r"[|,\u2013\u2014\-\s]+$", "", s[:m.start()]).strip()
+    if not head or len(head) > 90:
+        return None
+    if "," in head:
+        uni, loc = head.rsplit(",", 1)
+        return uni.strip(), loc.strip(), date
+    return head, "", date
+
+
+def _education_merged(parts: tuple, degree: str) -> str:
+    """Canonical 4-field education line: parses as ONE subheading
+    (university | location | degree | date) instead of a two-line split
+    that rendered an empty sub-row plus a detached itemize (the blank gap
+    in run d946bb5f's Education section)."""
+    uni, loc, date = parts
+    fields = [f"**{uni.strip()}**"]
+    if loc.strip():
+        fields.append(loc.strip())
+    fields.append(degree.strip())
+    fields.append(date)
+    return " | ".join(fields)
+
+
+def _merge_education_lines(lines: list) -> list:
+    """(d) Education two-line merge - runs FIRST so no later rule can grab
+    either half. Accepts both orders (university-with-date + degree line,
+    or degree line + university-with-date)."""
+    out = []
+    section = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        sec = _prepass_section_of(line)
+        if sec:
+            section = sec
+            out.append(line)
+            i += 1
+            continue
+        nxt = lines[i + 1] if i + 1 < len(lines) else None
+        merged = None
+        if section == "education" and nxt is not None:
+            uni_a = _split_university_date(line)
+            if uni_a and _is_degree_line(nxt):
+                merged = _education_merged(uni_a, nxt)
+            else:
+                uni_b = _split_university_date(nxt)
+                if uni_b and _is_degree_line(line):
+                    merged = _education_merged(uni_b, line)
+        if merged is not None:
+            out.append(merged)
+            i += 2
+            continue
+        out.append(line)
+        i += 1
+    return out
+
+
+def _join_dehyphenated(lines: list) -> list:
+    """(b) PDF soft-hyphenation joins: a line ending in a single hyphen
+    whose next line starts lowercase is one wrapped word. The hyphen is
+    dropped when the fragment is a soft-split syllable ("halluci-" +
+    "nated" -> "hallucinated", "pro-" + "gram" -> "program") and kept
+    when it is a compound stem ("multi-" + "class" -> "multi-class").
+    Inflectional tails after a compound stem still fuse ("test-" + "ing"
+    -> "testing")."""
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.rstrip()
+        if (stripped.endswith("-") and not stripped.endswith("--")
+                and not _PREPASS_HR_RE.match(stripped)
+                and i + 1 < len(lines)):
+            nxt = lines[i + 1].strip()
+            if nxt[:1].islower():
+                stem = stripped[:-1]
+                part1 = stem.rsplit(" ", 1)[-1].lower()
+                tokens = nxt.split()
+                part2 = tokens[0].strip(":;,()[]\"'").lower() if tokens else ""
+                if (part1 in _COMPOUND_HYPHEN_PREFIXES
+                        and part2 not in _SOFT_SUFFIX_TAILS):
+                    out.append(stripped + nxt)      # multi- + class
+                else:
+                    out.append(stem + nxt)          # halluci- + nated
+                i += 2
+                continue
+        out.append(line)
+        i += 1
+    return out
+
+
+def _join_plus_fragments(lines: list) -> list:
+    """(a) Fragments that parsed as their own bullets (run d946bb5f):
+
+    - the sentence's plus sign landing at a PDF wrap start ('...to a
+      CAMeL-BERT' / '+ FAISS retrieval stack, deployed...') joined back
+      into the bullet above when that bullet is a '-'/'*'/'•' item
+      without trailing sentence punctuation - a real '+' list is
+      protected because its previous item is itself a plus line;
+    - an uppercase-starting tail after an unterminated bullet/continuation
+      ('...F1 0.961, and 0.995' / 'AUC-PR - a production-ready result
+      deployed live via Streamlit.') - a hard wrap the orphan-continuation
+      rule cannot see because it starts with a capital. Gates: only under
+      Projects/Experience/Education, the tail carries no date/pipe/link/
+      bold and stays short (a following entry title always carries one of
+      those shapes), and section headings are excluded on both sides.
+    """
+    out = []
+    section = None
+    for line in lines:
+        sec = _prepass_section_of(line)
+        if sec:
+            section = sec
+            out.append(line)
+            continue
+        m = _PREPASS_PLUS_LINE_RE.match(line)
+        if m:
+            joined = False
+            if out:
+                prev = out[-1].rstrip()
+                pm = re.match(r"^\s*[-*•]\s+(.*)$", prev)
+                if pm:
+                    ptext = pm.group(1).rstrip()
+                    if ptext and ptext[-1] not in ".!?:":
+                        out[-1] = f"{prev} + {m.group(1).strip()}"
+                        joined = True
+            if not joined:
+                out.append(line)
+            continue
+        s = line.strip()
+        if (out and section in _PREPASS_RESHAPE_SECTIONS and s
+                and len(s) <= 100
+                and not _PREPASS_BULLET_RE.match(s)
+                and not s.startswith(("*", "#", "["))
+                and "|" not in s and "**" not in s and "[" not in s
+                and _first_date_match(s) is None):
+            prev = out[-1].rstrip()
+            # the glue partner must be an unterminated bullet OR a
+            # lowercase-starting continuation chain - an uppercase TITLE
+            # line (a dateless entry heading) is never a wrap of a later
+            # line, so the tail below it stays separate
+            pm = re.match(r"^\s*[-*•]\s+(\S.*)$", prev)
+            if (prev and _prepass_section_of(prev) is None
+                    and prev[-1] not in ".!?:"):
+                if ((pm is not None and pm.group(1).rstrip()[-1]
+                        not in ".!?:")
+                        or (pm is None and prev[:1].islower())):
+                    out[-1] = f"{prev} {s}"
+                    continue
+        out.append(line)
+    return out
+
+
+_MD_LINK_LEAD_RE = re.compile(r"^\s*\[([^\[\]]+)\]\(([^)]*)\)\s*(.*)$")
+
+
+def _reshape_entry_title(line: str) -> str:
+    """Canonical entry-title shapes under Projects/Experience/Education
+    (the model skipped these units three runs in a row, so the shipped
+    shape must parse canonically on its own):
+
+    - A  '[Title](url) Sep 2025 - Jun 2026 | Live Demo |'
+         -> '**Title** [Live Demo](url) | Sep 2025 - Jun 2026'
+       (the plain 'Live Demo' field is dropped - the label carries it;
+         the target is the title's own link, nothing fabricated).
+    - C  'Computer Vision & Deep Learning Trainee, NTI Aug - Sep 2025'
+         -> '**Computer Vision & Deep Learning Trainee** | NTI | Aug - Sep 2025'
+       (the org rode inside the right-aligned date column).
+    - B  'Fil-RAG-Goal: Arabic Football Q&A (Hybrid RAG) Feb 2026 - Jun
+         2026 | Live Demo'
+         -> '**Fil-RAG-Goal: ...** | Live Demo | Feb 2026 - Jun 2026'.
+
+    Gates: no leading bullet marker, no bold/heading marker, no link
+    construct except at position 0 (case A), and a real date range.
+    """
+    s = line.strip()
+    if not s or _PREPASS_BULLET_RE.match(s) or s.startswith(("*", "#")):
+        return line
+
+    # A: link-led title
+    m = _MD_LINK_LEAD_RE.match(s)
+    if m:
+        title, url, rest = (m.group(1).strip(), m.group(2).strip(),
+                            m.group(3).strip())
+        if (title and url and len(title) <= 90 and "[" not in rest
+                and _first_date_match(rest) is not None):
+            fields = [p.strip() for p in rest.split("|")]
+            fields = [p for p in fields
+                      if p and p.lower().strip(" -–—") != "live demo"]
+            tail = f" | {' | '.join(fields)}" if fields else ""
+            return f"**{title}** [Live Demo]({url}){tail}"
+        return line
+
+    if "[" in s or "**" in s:
+        return line
+
+    # C: comma org/date ('Title, ORG <date>')
+    cm = _first_date_match(s)
+    if cm is not None:
+        before = s[:cm[0]].rstrip()
+        if "," in before:
+            title, org = before.rsplit(",", 1)
+            title, org = title.strip(), org.strip()
+            date = s[cm[0]:].strip()
+            if title and org and date and 3 <= len(title) <= 90 \
+                    and title[-1] not in ".!?:":
+                return f"**{title}** | {org} | {date}"
+
+    # B: plain title + mid-line date + pipe fields after it
+    if "|" in s:
+        for cm in _PREPASS_DATE_ANY_RE.finditer(s):
+            if cm.start() and not s[cm.start() - 1].isspace():
+                continue
+            title = s[:cm.start()].strip()
+            fields_after = s[cm.start():].strip()
+            if not title or not fields_after:
+                continue
+            if title[-1] in ".!?:" or not 8 <= len(title) <= 90:
+                continue
+            date_and_rest = fields_after.split("|")
+            date = date_and_rest[0].strip()
+            rest = [p.strip() for p in date_and_rest[1:] if p.strip()]
+            if date and rest:
+                return f"**{title}** | {' | '.join(rest)} | {date}"
+    return line
+
+
+def _first_date_match(s: str):
+    """First date-range match whose start sits on a token boundary (the
+    preceding char is whitespace or line start) - guards against matching
+    the dash inside a hyphenated word ('e-commerce - retail 2024')."""
+    for m in _PREPASS_DATE_ANY_RE.finditer(s):
+        if m.start() == 0 or s[m.start() - 1].isspace():
+            return (m.start(), m.group(0))
+    return None
+
 
 def normalize_markdown_links(text: str) -> str:
     """Deterministic cleanup of PDF-ingestion damage in the improver's
@@ -1263,12 +1615,30 @@ def normalize_markdown_links(text: str) -> str:
       appeared on an earlier line (the standalone "[GitHub](same-url)"
       repeat) is dropped - a pure link line carries nothing but a URL.
 
+    Shape repairs for wrapped PDF extraction (run d946bb5f, Nov 16 2026):
+    the education two-line merge (degree line + university line with date
+    -> one canonical 4-field subheading line), soft-hyphenation joins
+    ("halluci-" + "nated"), the sentence's plus sign at a wrap start
+    joined back into the bullet above, and entry-title reshapes to the
+    canonical bold/date-column shapes under Projects/Experience/
+    Education.
+
     Clean markdown passes through byte-identical.
     """
     text = (text or "").replace("\r\n", "\n")
+    lines = text.split("\n")
+    # shape repairs first: education merge (consumes both halves so no
+    # later rule can grab them), then the wrapped-fragment joins.
+    lines = _merge_education_lines(lines)
+    lines = _join_dehyphenated(lines)
+    lines = _join_plus_fragments(lines)
     out: list[str] = []
     seen: set = set()
-    for line in text.split("\n"):
+    section: Optional[str] = None
+    for line in lines:
+        sec = _prepass_section_of(line)
+        if sec:
+            section = sec
         # 1. flatten span-label constructs to their visible text
         line = _CONTACT_SPAN_LINK_RE.sub(lambda m: m.group(1), line)
         # 2. strip a raw list marker from inside a link label ...
@@ -1302,6 +1672,9 @@ def normalize_markdown_links(text: str) -> str:
                     and line_targets <= seen):
                 continue
             seen |= line_targets
+        # 5. entry-title reshapes under Projects/Experience/Education
+        if section in _PREPASS_RESHAPE_SECTIONS:
+            line = _reshape_entry_title(line)
         out.append(line)
     return "\n".join(out)
 
