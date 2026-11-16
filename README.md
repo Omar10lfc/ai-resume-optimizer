@@ -1080,6 +1080,12 @@ The fix redistributes the same budget: the pull-up inside `\titleformat` is ease
 
 > Status: `venv\Scripts\python.exe -m pytest tests -q` → **522 passed** (~6:33, record `%TEMP%\opencode\pytest_full_nov16_round9.txt`) — same count, re-pinned geometry: tier-1 floor ≥12.0pt (rule→content `d` shrinks 2pt as designed), the tier-3 tex pin `\vspace{-3.0pt}\titlerule \vspace{-5.5pt}`, the pull-up test ≥2.0pt rule-to-content air / ≤16.0pt heading→rule. Base-mode smoke on run 17's real markdown: 1 page, heading ink air 5.5–6.1pt, rule-to-content 3.5–5.1pt, last baseline 774.7 (byte-stable), all 10 bullet first lines full-width (579.6–581.8 of the 579.6pt base rule edge). **Restart the FastAPI backend** to serve the fix.
 
+### Run-19 trace round - Nov 17 2026 (trace analysis only: the pipeline is clean, and the score drop is the best-of guard working)
+
+Run 19 (root `614a7317…`, 95.9s success, 44 nodes, score 62, ATS 62.5%, `latex@1`, theme classic, compact tier 1) analyzed from its LangSmith tree on the user's "is there anything wrong" ask. **Verdict: fully clean, nothing to fix** — zero error nodes, zero slow nodes, no token anomalies, integrity channels clean (`removals []` / `unevidenced []`, 2 honest declines, semantic verdicts all genuinely-missing), and the fresh PDF holds both layout fixes live (heading ink air 5.73–6.33pt, rule-to-content 3.40–5.30pt, all 10 bullet first lines full-width, 1 page, last baseline 759.9).
+
+The score's drop from 68–71 is **the best-of guard working as designed, verified against the real matcher**: the improver's draft scored ATS 62.5% (9/15 — 7 exact + 2 semantic rescues, `automations` and `json`) with reviewer quality 62 → composite 62; the polish pass (per reviewer #2's "highlight workflow automation experience… using the existing project descriptions" reframe) *improved the writing* (quality 66) but its rewrite dropped the `json` semantic rescue (8/15 exact = 56.2%), so the polished draft's composite was 0.6×56.2 + 0.4×66 = **60 < 62** and the guard kept the better composite. Both drafts were re-scored locally with `compute_ats_match` to confirm. The across-run score variance on the same input is driven by the improver's wording and the semantic check's per-pass verdicts (the `json` rescue alone is worth 12.5 ATS points); the reviewer's 62 grade cites its 50–69 anchor ("generic summary that could apply to any role"). The honest lever for a higher score remains unchanged: real n8n / workflow-automation evidence.
+
 ### UI Fixes
 
 | Change | Reason |
