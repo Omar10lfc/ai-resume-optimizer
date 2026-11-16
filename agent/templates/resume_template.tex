@@ -103,15 +103,22 @@
 %  - rule pull-up \vspace -4pt (Nov 16 2026, live run e9f5c016: the user
 %    reported content glued to every section rule - pdfplumber-measured
 %    rule-to-ink gaps of 0.0-1.7pt under all six rules while ~16pt of air
-%    sat between each heading and its rule. The pull-up moves the rule 4pt
-%    up INSIDE the heading block and the after-rule value shrinks by the
-%    same 4pt (-7.5 -> -3.5) so content keeps its exact pre-change
-%    position: rule-to-content air becomes ~4.0-5.7pt under every rule at
-%    ZERO page-height cost, the heading keeps ~3.6pt of underline air, and
-%    the compact ladder's relative steps are untouched.)
+%    sat between each heading and its rule. The pull-up moves the rule up
+%    INSIDE the heading block and the after-rule value compensates so
+%    content keeps its exact pre-change position at ZERO page-height
+%    cost, and the compact ladder's relative steps are untouched.)
+%  - pull-up eased to -2pt (second Nov 16 pass, live run af7f9480 tier 2:
+%    the 4pt lift left only ~3.5-4.1pt of ink between the heading and
+%    its rule - the user's "the space between the section header and the
+%    ruler need to be separated a bit". -2pt puts the heading air at
+%    5.5-6.1pt and the rule-to-content air at 3.5-5.1pt, repro-verified
+%    on the live render: 1 page, last baseline 774.7 unchanged. The sum
+%    (-2) + (-5.5) = -7.5pt is the historic content offset, so content
+%    keeps its exact position; the compact ladder carries per-tier
+%    pull-ups with the same pairing rule - see _COMPACT_TIER_VALUES.)
 \titleformat{\section}{
   \vspace{-6.6pt}\scshape\raggedright\large
-}{}{0em}{}[\color{black}\vspace{-4pt}\titlerule \vspace{-3.5pt}]
+}{}{0em}{}[\color{black}\vspace{-2pt}\titlerule \vspace{-5.5pt}]
 
 % Ensure that generate pdf is machine readable/ATS parsable
 \pdfgentounicode=1

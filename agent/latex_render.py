@@ -1527,7 +1527,8 @@ _COMPACT_BLOCK_TOKEN = "<!--COMPACT_BLOCK-->"
 #       the rule-to-content air to ~2.2pt of visible ink under EVERY
 #       section rule (user-reported crowding). Tier 1 restores ~3pt per
 #       section (~+18pt/page) - list-start glue -1.0pt and after-rule
-#       -2.0pt put the air back at base mode's ~4.7pt - and is adopted
+#       -2.0pt (now -4.0pt paired with the -2pt rule pull-up, Nov 16)
+#       put the air back at base mode's ~4.7pt - and is adopted
 #       only when the render stays one page AND the last baseline stops
 #       above _COMPACT_BOTTOM_STOP.
 #   tier 2 "balanced" (run 03a3ffc1, Nov 12 2026): with the Aegis context
@@ -1542,15 +1543,26 @@ _COMPACT_BLOCK_TOKEN = "<!--COMPACT_BLOCK-->"
 #   tier 3 "floor": the former tight tier - the only unclaimed vertical
 #       levers after the entry-gap floors consumed the page slack.
 #       Adopted whenever it yields one page (today's acceptance rule).
-#       (Nov 16 2026: the tier values are the content-position levers
-#       paired with the -4pt rule pull-up inside \titleformat - the rule
-#       rises 4pt into the heading's air and each after-rule value is the
-#       historic value + 4pt, so content keeps its exact position and the
-#       rule-to-content air gains 4pt: floor ~2.2 -> ~6.2pt ink.)
+#       (Nov 16 2026: each tier carries BOTH content-position levers
+#       paired inside \titleformat - the rule pull-up (how far the rule
+#       rises into the heading's air) and the after-rule value - and the
+#       pair must sum to the historic content offset (base -7.5; tiers
+#       -6.0/-7.5/-8.5) so content keeps its exact position. Second
+#       Nov 16 pass, live run af7f9480 (tier 2): the first pass pulled
+#       the rule 4pt up on every tier and left only ~3.5-4.1pt of ink
+#       between the heading and its rule - the user's "the space between
+#       the section header and the ruler need to be separated a bit".
+#       The pull-up is now tier-dependent: -2.0pt on the airy tiers
+#       (heading air 5.5-6.1pt, rule-to-content 3.5-5.1pt on the live
+#       render) and -3.0pt on the overflow floor, whose rule-to-content
+#       air may never re-enter the glued zone.)
 _COMPACT_TIER_VALUES = {
-    1: {"list_start_glue": r"\vspace{-1.0pt}", "after_rule": r"\vspace{-2.0pt}"},
-    2: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-3.5pt}"},
-    3: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-4.5pt}"},
+    1: {"list_start_glue": r"\vspace{-1.0pt}", "rule_pullup": r"\vspace{-2.0pt}",
+        "after_rule": r"\vspace{-4.0pt}"},
+    2: {"list_start_glue": r"\vspace{-1.5pt}", "rule_pullup": r"\vspace{-2.0pt}",
+        "after_rule": r"\vspace{-5.5pt}"},
+    3: {"list_start_glue": r"\vspace{-1.5pt}", "rule_pullup": r"\vspace{-3.0pt}",
+        "after_rule": r"\vspace{-5.5pt}"},
 }
 
 
@@ -1560,6 +1572,7 @@ def _compact_overrides(tier: int) -> str:
     values = _COMPACT_TIER_VALUES[tier]
     return (_COMPACT_OVERRIDES_TEMPLATE
             .replace("@@LIST_START_GLUE@@", values["list_start_glue"])
+            .replace("@@RULE_PULLUP@@", values["rule_pullup"])
             .replace("@@AFTER_RULE@@", values["after_rule"]))
 
 
@@ -1579,16 +1592,23 @@ _COMPACT_OVERRIDES_TEMPLATE = r"""
 % Tier-dependent value (see _COMPACT_TIER_VALUES in latex_render.py).
 \renewcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}, topsep=0pt, before=@@LIST_START_GLUE@@]}
 % Tighter section heading + rule spacing (tier-dependent after-rule value,
-% paired with the before= start glue above; -4.5 is the tier-3 floor lever).
-% Rule pull-up \vspace -4pt (Nov 16 2026, live run e9f5c016: content sat
-% 0.0-1.7pt under every section rule - the user's "text glued to the
-% header" report. The pull-up lifts the rule 4pt up inside the heading
-% block and every tier's after-rule value is its historic value + 4pt, so
-% content keeps its exact position: ~4.0-5.7pt of ink air under every rule
-% at ZERO page cost - tier-1's air rises to ~8.7pt whenever it fits.)
+% paired with the before= start glue above; the tier-3 floor pulls the
+% rule up only 3.0pt).
+% Rule pull-up @@RULE_PULLUP@@ (Nov 16 2026, two live passes): content sat
+% 0.0-1.7pt under every section rule (run e9f5c016 - the "text glued to
+% the header" report), so the rule was lifted into the heading's air with
+% every tier's after-rule value compensating (pull-up + after-rule = the
+% historic content offset, content position untouched). The first pass
+% pulled 4pt on EVERY tier and left only ~3.5-4.1pt of ink between the
+% heading and its rule (live run af7f9480, tier 2 - the user's "the space
+% between the section header and the ruler need to be separated a bit").
+% The pull-up is now tier-dependent - -2.0pt on the airy tiers (heading
+% air 5.5-6.1pt, rule-to-content 3.5-5.1pt on the live render, repro-
+% verified at zero page cost: last baseline 774.7 unchanged) and -3.0pt
+% on the overflow floor, whose rule-to-content air stays >= 2pt.)
 \titleformat{\section}{
   \vspace{-7pt}\scshape\raggedright\large
-}{}{0em}{}[\color{black}\vspace{-4pt}\titlerule @@AFTER_RULE@@]
+}{}{0em}{}[\color{black}@@RULE_PULLUP@@\titlerule @@AFTER_RULE@@]
 % Recover a little vertical room
 % (Sheet-edge cap, run 124f40cb, Nov 12 2026: with the template's text
 % block bottom capped at 776pt, this lever may re-open the page only UP
@@ -1620,8 +1640,8 @@ _COMPACT_OVERRIDES_TEMPLATE = r"""
 %  - tabular tails -2.8pt -> stack->first-bullet distance 10.0pt (gap 1.0pt,
 %    above the 0.3pt collision bug this tail class fixes; the 1.5pt target
 %    was scaled down per the spec's "scale items 1-2" fallback).
-%  - after-rule -3.5pt (historic -7.5pt + the 4pt rule pull-up; see
-%    _COMPACT_TIER_VALUES) - the only unclaimed lever left.
+%  - after-rule -5.5pt (historic -7.5pt paired with the -2pt rule
+%    pull-up; see _COMPACT_TIER_VALUES) - the only unclaimed lever left.
 % The 539f7c1d entry-boundary minimum stays the floor for every list end.
 \renewcommand{\resumeItem}[1]{\item\small\looseness=-1{{#1 \vspace{-2pt}}}}
 \renewcommand{\resumeSubheading}[4]{
