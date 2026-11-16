@@ -1810,7 +1810,8 @@ def test_compact_tier1_airy_restores_rule_air_inside_the_page_budget(tmp_path):
     visible ink under EVERY section rule, with first content lines' glyph
     boxes printed up INTO the rule band (top gaps of -0.4 to -0.95pt).
     Tier 1 'airy' restores ~3pt per section (list-start glue -1.0pt,
-    after-rule -6.0pt) and render_compact_tiers adopts it whenever the
+    after-rule -2.0pt since the Nov 16 2026 rule pull-up -4pt; formerly
+    -6.0pt) and render_compact_tiers adopts it whenever the
     render stays one page and the last baseline stops above the 763.2pt
     bottom-margin line. The spec-B fixture has that slack, so the airy
     tier must win and lift every rule-to-content distance."""
@@ -1824,7 +1825,7 @@ def test_compact_tier1_airy_restores_rule_air_inside_the_page_budget(tmp_path):
         f"airy tier adopted past the bottom-margin stop: {last:.1f}pt")
     air = _rule_content_air(tiered["pdf_path"])
     assert len(air) == 6, f"section rules found: {len(air)}"
-    assert min(d for d, _ in air) >= 10.0, f"rule air still tight: {air}"
+    assert min(d for d, _ in air) >= 14.0, f"rule air still tight: {air}"
     assert min(g for _, g in air) >= 1.0, (
         f"first content line still overlaps the rule band: {air}")
     # adoption contract: winner copied onto the shipped name, probes gone
@@ -1840,11 +1841,13 @@ def test_compact_tier_falls_back_to_balanced_when_airy_crosses_the_stop(tmp_path
     page), so the decision must fall back to the balanced tier-2 (run
     03a3ffc1, Nov 12 2026: the old tight floor shipped ~0.2pt of ink under
     every rule - the user's 'no minimal space' defect - while its
-    after-rule -8.5pt sat a full point past the base template's -7.5pt for
-    no page gain on most resumes). The balanced tier is adopted whenever it
-    yields one page; the floor tier-3 remains the last resort for resumes
-    even the balanced tier cannot hold. The balanced tier must also stay
-    bounded: its rule-to-content air must not inherit the airy values."""
+    after-rule lever sat a full point past the base template's for no page
+    gain on most resumes; since the Nov 16 2026 rule pull-up the levers
+    read -4.5pt floor / -3.5pt balanced / -2.0pt airy). The balanced tier
+    is adopted whenever it yields one page; the floor tier-3 remains the
+    last resort for resumes even the balanced tier cannot hold. The
+    balanced tier must also stay bounded: its rule-to-content air must not
+    inherit the airy values."""
     data = parse_markdown_resume(_overflow_resume_markdown())
     tiered = render_compact_tiers(data, tmp_path, "Optimized_Resume.pdf")
     assert tiered and tiered["tier"] == 2, (
@@ -1854,19 +1857,130 @@ def test_compact_tier_falls_back_to_balanced_when_airy_crosses_the_stop(tmp_path
     assert last is not None and last <= 774.0, (
         f"balanced tier regressed past the block bottom: {last:.1f}pt")
     air = _rule_content_air(tiered["pdf_path"])
-    assert min(d for d, _ in air) <= 9.5, f"tier-2 unexpectedly airy: {air}"
+    assert min(d for d, _ in air) <= 14.0, f"tier-2 unexpectedly airy: {air}"
     assert not list(tmp_path.glob("__compact_tier*"))
 
 
 def test_compact_floor_tier3_keeps_the_tight_values():
     """The floor tier-3 (the former tight values, run 28e2e56f's fallback)
-    must keep the -1.5pt glue and -8.5pt after-rule levers for resumes even
-    the balanced tier cannot hold on one page - checked at the tex level so
+    must keep the -1.5pt glue and the -4.5pt after-rule lever (historic
+    -8.5pt + the 4pt rule pull-up, Nov 16 2026) for resumes even the
+    balanced tier cannot hold on one page - checked at the tex level so
     the floor's contract is pinned without a compile."""
     tex = render_resume_tex(parse_markdown_resume("# T\n\n## Skills\n\n- x\n"),
                             compact=True, compact_tier=3)
     assert r"before=\vspace{-1.5pt}" in tex
-    assert r"\titlerule \vspace{-8.5pt}" in tex
+    assert r"\vspace{-4pt}\titlerule \vspace{-4.5pt}" in tex
+
+
+def _bullet_break_markdown() -> str:
+    """Fixture for the ragged-right bullet-break regression (live run
+    e9f5c016, Nov 16 2026): both bullets are far longer than one line, so
+    under the old global \\raggedright + \\looseness=-1 break pattern the
+    first lines printed at 15-40% of the measure ('Built and evaluated'
+    alone on line 1)."""
+    return (
+        "# Test Candidate\n"
+        "tc@example.com | +1 555 010 0100\n\n"
+        "## Experience\n"
+        "**Computer Vision & Deep Learning Trainee** | NTI | Aug - Sep 2025\n"
+        "- Built and evaluated 5 computer vision models across medical, "
+        "agricultural, and automotive domains in a 90-hour intensive "
+        "program: achieved 90% classification accuracy detecting pneumonia "
+        "from chest X-rays (CNN), 0.79 Dice score segmenting brain tumors "
+        "(U-Net), 94% accuracy classifying crop diseases (CNN + VGG16 "
+        "transfer learning), and 98.6% pixel accuracy on multi-class "
+        "road-lane segmentation.\n"
+        "- Fine-tuned a YOLOv11n model for real-time license-plate "
+        "detection, achieving 94.8% mAP@50 and 1.7ms inference latency per "
+        "frame across a 2,195-instance validation set with class-imbalance "
+        "constraints on the training splits.\n"
+    )
+
+
+@pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
+                    reason="pdflatex/pdfplumber not installed")
+def test_bullet_first_lines_print_full_width_after_raggedright_removal(tmp_path):
+    """Run e9f5c016 (Nov 16 2026): the template's inherited global
+    \\raggedright made every body line ragged, and combined with
+    \\resumeItem's \\looseness=-1 line-shave pass TeX reshaped the break
+    pattern into ultra-short first lines - the NTI bullet printed 'Built
+    and evaluated' alone on line 1 at 15% of the measure, on all seven
+    bullets of the live render. Removing the global ragged-right (body
+    justified again; the scoped \\raggedright inside the header/section
+    macros stays) makes \\looseness=-1 work as layout spec A intended:
+    every multi-line bullet's first line must print full-width."""
+    md = _bullet_break_markdown()
+    tex = render_resume_tex(parse_markdown_resume(md), compact=True,
+                            compact_tier=3)
+    # the fix lives in the base template: no standalone ragged-right line
+    # may remain (the scoped header/section occurrences must survive).
+    assert not re.search(r"^\\raggedright\s*$", tex, re.MULTILINE), (
+        "a standalone \\raggedright line is back in the rendered tex")
+    assert r"\scshape\raggedright\large" in tex
+
+    pdf = latex_to_pdf(tex, tmp_path, "bullets.pdf")
+    assert pdf is not None and pdf_page_count(pdf) == 1
+    pages = _pdf_lines(pdf)
+    margin = pages[0]["rule_x1"]
+    assert margin, "no section rule found - stale fixture"
+    BULLETS = ("Built and evaluated 5 computer vision",
+               "Fine-tuned a YOLOv11n model")
+    checked = 0
+    for ln in pages[0]["lines"]:
+        stripped = ln["text"].replace(" ", "")
+        for prefix in BULLETS:
+            if stripped.startswith(prefix.replace(" ", "")):
+                # justification must fill the line to the measure (space
+                # compression may merge words in extraction, hence the
+                # space-stripped match)
+                assert ln["x1"] >= margin - 2.5, (
+                    f"bullet first line ends at x1={ln['x1']:.1f} of a "
+                    f"{margin:.1f}pt margin - the ragged break is back: "
+                    f"[{ln['text'][:40]}]")
+                checked += 1
+    assert checked == len(BULLETS), (
+        f"expected {len(BULLETS)} wrapped bullet first lines, matched {checked}")
+
+
+@pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
+                    reason="pdflatex/pdfplumber not installed")
+def test_section_rule_pullup_opens_rule_to_content_air_at_zero_page_cost(tmp_path):
+    """Run e9f5c016 (Nov 16 2026): content sat 0.0-1.7pt under every
+    section rule (the user's 'text glued to the header' report) while
+    ~16pt of air sat between each heading and its rule. The fix lifts the
+    rule 4pt up inside the heading block (\\vspace -4pt before \\titlerule)
+    with every tier's after-rule value raised by the same 4pt so content
+    keeps its position: rule-to-content air gains ~4pt at ZERO page-height
+    cost, and the heading keeps ~3.6pt of underline air."""
+    import pdfplumber
+
+    data = parse_markdown_resume(_overflow_resume_markdown())
+    pdf = latex_to_pdf(render_resume_tex(data, compact=True, compact_tier=3),
+                       tmp_path, "floor.pdf")
+    assert pdf is not None and pdf_page_count(pdf) == 1
+    air = _rule_content_air(pdf)
+    assert len(air) >= 4, f"section rules found: {len(air)}"
+    assert min(g for _, g in air) >= 2.5, (
+        f"content still glued to a rule (top-gap < 2.5pt): {air}")
+    # the pull-up must be visible: heading top -> rule distance well under
+    # the pre-change ~16pt band
+    with pdfplumber.open(str(pdf)) as doc:
+        page = doc.pages[0]
+        rules = sorted(r["top"] for r in page.lines + page.rects
+                       if abs(r["top"] - r["bottom"]) < 1.5
+                       and (r["x1"] - r["x0"]) > 300)
+        words = page.extract_words(extra_attrs=["size"])
+        head_tops = [w["top"] for w in words if w["size"] >= 10.5]
+        dists = []
+        for rt in rules:
+            above = [t for t in head_tops if t < rt - 0.15]
+            if above:
+                dists.append(rt - max(above))
+        assert len(dists) >= 4, f"heading->rule pairs found: {len(dists)}"
+        assert max(dists) <= 14.0, (
+            f"rule not pulled up into the heading air (max dist "
+            f"{max(dists):.1f}pt, pre-change ~16pt): {dists}")
 
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),

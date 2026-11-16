@@ -1527,14 +1527,14 @@ _COMPACT_BLOCK_TOKEN = "<!--COMPACT_BLOCK-->"
 #       the rule-to-content air to ~2.2pt of visible ink under EVERY
 #       section rule (user-reported crowding). Tier 1 restores ~3pt per
 #       section (~+18pt/page) - list-start glue -1.0pt and after-rule
-#       -6.0pt put the air back at base mode's ~4.7pt - and is adopted
+#       -2.0pt put the air back at base mode's ~4.7pt - and is adopted
 #       only when the render stays one page AND the last baseline stops
 #       above _COMPACT_BOTTOM_STOP.
 #   tier 2 "balanced" (run 03a3ffc1, Nov 12 2026): with the Aegis context
 #       the resume grew long enough that tier-1 no longer fit one page
 #       and the old floor shipped with ~0.2pt of ink under every rule -
 #       the user's "no minimal space" defect. The floor's after-rule
-#       -8.5pt was 1.0pt past the base template's -7.5pt for zero page
+#       -4.5pt was 1.0pt past the base template's -3.5pt for zero page
 #       gain on most resumes: the balanced tier spends that point back
 #       (+6pt/page over the floor) and still fits one page on the
 #       page-full with-context resume (last baseline 775.8 of a 776pt
@@ -1542,10 +1542,15 @@ _COMPACT_BLOCK_TOKEN = "<!--COMPACT_BLOCK-->"
 #   tier 3 "floor": the former tight tier - the only unclaimed vertical
 #       levers after the entry-gap floors consumed the page slack.
 #       Adopted whenever it yields one page (today's acceptance rule).
+#       (Nov 16 2026: the tier values are the content-position levers
+#       paired with the -4pt rule pull-up inside \titleformat - the rule
+#       rises 4pt into the heading's air and each after-rule value is the
+#       historic value + 4pt, so content keeps its exact position and the
+#       rule-to-content air gains 4pt: floor ~2.2 -> ~6.2pt ink.)
 _COMPACT_TIER_VALUES = {
-    1: {"list_start_glue": r"\vspace{-1.0pt}", "after_rule": r"\vspace{-6.0pt}"},
-    2: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-7.5pt}"},
-    3: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-8.5pt}"},
+    1: {"list_start_glue": r"\vspace{-1.0pt}", "after_rule": r"\vspace{-2.0pt}"},
+    2: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-3.5pt}"},
+    3: {"list_start_glue": r"\vspace{-1.5pt}", "after_rule": r"\vspace{-4.5pt}"},
 }
 
 
@@ -1574,11 +1579,16 @@ _COMPACT_OVERRIDES_TEMPLATE = r"""
 % Tier-dependent value (see _COMPACT_TIER_VALUES in latex_render.py).
 \renewcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}, topsep=0pt, before=@@LIST_START_GLUE@@]}
 % Tighter section heading + rule spacing (tier-dependent after-rule value,
-% paired with the before= start glue above; -8.5 is the tier-3 floor lever
-% that leaves only ~2.2pt of ink air under the rule)
+% paired with the before= start glue above; -4.5 is the tier-3 floor lever).
+% Rule pull-up \vspace -4pt (Nov 16 2026, live run e9f5c016: content sat
+% 0.0-1.7pt under every section rule - the user's "text glued to the
+% header" report. The pull-up lifts the rule 4pt up inside the heading
+% block and every tier's after-rule value is its historic value + 4pt, so
+% content keeps its exact position: ~4.0-5.7pt of ink air under every rule
+% at ZERO page cost - tier-1's air rises to ~8.7pt whenever it fits.)
 \titleformat{\section}{
   \vspace{-7pt}\scshape\raggedright\large
-}{}{0em}{}[\color{black}\titlerule @@AFTER_RULE@@]
+}{}{0em}{}[\color{black}\vspace{-4pt}\titlerule @@AFTER_RULE@@]
 % Recover a little vertical room
 % (Sheet-edge cap, run 124f40cb, Nov 12 2026: with the template's text
 % block bottom capped at 776pt, this lever may re-open the page only UP
@@ -1610,7 +1620,8 @@ _COMPACT_OVERRIDES_TEMPLATE = r"""
 %  - tabular tails -2.8pt -> stack->first-bullet distance 10.0pt (gap 1.0pt,
 %    above the 0.3pt collision bug this tail class fixes; the 1.5pt target
 %    was scaled down per the spec's "scale items 1-2" fallback).
-%  - after-rule -7.5pt (see template) - the only unclaimed lever left.
+%  - after-rule -3.5pt (historic -7.5pt + the 4pt rule pull-up; see
+%    _COMPACT_TIER_VALUES) - the only unclaimed lever left.
 % The 539f7c1d entry-boundary minimum stays the floor for every list end.
 \renewcommand{\resumeItem}[1]{\item\small\looseness=-1{{#1 \vspace{-2pt}}}}
 \renewcommand{\resumeSubheading}[4]{

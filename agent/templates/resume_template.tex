@@ -76,7 +76,16 @@
 \urlstyle{same}
 
 \raggedbottom
-\raggedright
+% (Nov 16 2026, live run e9f5c016: the inherited global \raggedright made
+% every body line ragged, and combined with \resumeItem's \looseness=-1
+% line-shave pass it reshaped the break pattern into ultra-short first
+% lines - the NTI bullet printed "Built and evaluated" alone on line 1 at
+% 15% of the measure, on all seven bullets. Body text is justified again:
+% probe-verified on the run render that every bullet first line prints
+% full-width (583.2pt) while the document stays one page, because
+% \looseness=-1 now compresses interword glue under justification exactly
+% as layout spec A intended. The scoped \raggedright inside the header and
+% section macros below is untouched.)
 \setlength{\tabcolsep}{0in}
 
 % Sections formatting
@@ -91,9 +100,18 @@
 %    (entry >=5pt, stack >=1pt, Certs 9.3pt, name >=14pt) consumed the page
 %    slack; -7.5pt keeps ~4.5pt of visible air under each rule while
 %    letting run-B's content stop above the 763.2pt bottom-margin line.
+%  - rule pull-up \vspace -4pt (Nov 16 2026, live run e9f5c016: the user
+%    reported content glued to every section rule - pdfplumber-measured
+%    rule-to-ink gaps of 0.0-1.7pt under all six rules while ~16pt of air
+%    sat between each heading and its rule. The pull-up moves the rule 4pt
+%    up INSIDE the heading block and the after-rule value shrinks by the
+%    same 4pt (-7.5 -> -3.5) so content keeps its exact pre-change
+%    position: rule-to-content air becomes ~4.0-5.7pt under every rule at
+%    ZERO page-height cost, the heading keeps ~3.6pt of underline air, and
+%    the compact ladder's relative steps are untouched.)
 \titleformat{\section}{
   \vspace{-6.6pt}\scshape\raggedright\large
-}{}{0em}{}[\color{black}\titlerule \vspace{-7.5pt}]
+}{}{0em}{}[\color{black}\vspace{-4pt}\titlerule \vspace{-3.5pt}]
 
 % Ensure that generate pdf is machine readable/ATS parsable
 \pdfgentounicode=1
