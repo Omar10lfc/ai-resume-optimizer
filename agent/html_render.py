@@ -517,6 +517,10 @@ def render_resume_html(data: ResumeData, density: int = 0,
         name = "Candidate"
     out.append("<header>")
     out.append(f"<h1>{_esc(name)}</h1>")
+    # The professional title on its own line under the name (Nov 16 2026,
+    # user ask) - same part flow as the LaTeX header.
+    if getattr(data.contact, "title", ""):
+        out.append(f'<div class="contact">{_esc(data.contact.title)}</div>')
     if data.contact.details:
         parts = [p.strip() for p in
                  re.split(r"\s*(?:[\|•·;]|\s+-\s+)\s*", data.contact.details)
@@ -542,7 +546,7 @@ def render_resume_html(data: ResumeData, density: int = 0,
                                 f"{_esc(_display_url_text(p))}</a>")
                 continue
             if re.match(r"^(?:https?://|www\.)", p) or \
-                    re.search(r"\.(?:io|dev|ai|app|me|tech|com|org)(?:/|$)", p):
+                    re.search(r"\.(?:io|dev|ai|app|me|tech|com|org|co|net)(?:/|$)", p):
                 url = p if p.startswith(("http://", "https://")) else \
                     "https://" + p
                 rendered.append(f'<a href="{_esc(url)}">'

@@ -1662,7 +1662,7 @@ def test_preserve_contact_links_normalizes_label_links_to_bare_urls():
 
 
 def test_preserve_contact_links_flattens_span_label_header_links():
-    """Live run bf58e700 (Nov 15): BB1-B pins the identity header verbatim,
+    r"""Live run bf58e700 (Nov 15): BB1-B pins the identity header verbatim,
     and PDF ingestion had wrapped whole contact lines as single links with
     pipe-spanning labels - the renderers' per-segment contact classifier
     turned the fragments into \href garbage. The guard flattens the
@@ -1715,22 +1715,26 @@ _BROKEN_SOURCE_SHAPES = (
 
 def test_normalize_markdown_links_cleans_broken_shapes():
     """Run bf58e700 (Nov 15): the deterministic pre-pass flattens span-label
-    links, strips list markers from labels, dedupes same-target links per
-    line, and drops pure-link repeat lines. Run d946bb5f (Nov 16) adds the
-    shape repairs: the title line reshapes to the canonical bold/linked-
-    demo/date-column form. Clean markdown passes through byte-identical."""
+    links, strips list markers from labels, and dedupes same (target AND
+    label) repeats per line. Run d946bb5f (Nov 16) refines the dedupe: a
+    repeated URL with a NEW label survives (the user's own labels), the
+    title line reshapes to the canonical bold/linked-demo/date-column
+    form, and the standalone [GitHub] row absorbs into the reshaped
+    title. Clean markdown passes through byte-identical."""
     out = agent.normalize_markdown_links(_BROKEN_SOURCE_SHAPES)
     # header spans flattened to visible text
     assert ("Alexandria, Egypt | +20 100 170 1821 | omarmashaly86@gmail.com"
             in out)
     assert "](https://linkedin.com/in/omar)" not in out.split("##")[0]
-    # title line: one link survives, span text kept, dup and standalone
-    # repeat gone - and the survivor reshapes to the canonical title shape
-    assert out.count("https://lnkd.in/x") == 1
-    assert "[(Graduation Project)]" not in out
-    assert "[GitHub]" not in out
+    # title line: ALL THREE user labels survive on one canonical row -
+    # Live Demo (relabeled), (Graduation Project), GitHub (absorbed from
+    # the standalone row) - with the date as a plain tail field
+    assert out.count("https://lnkd.in/x") == 3
     assert ("**Alexandria Port** [Live Demo](https://lnkd.in/x) "
-            "| Sep 2025 - Jun 2026" in out)
+            "[(Graduation Project)](https://lnkd.in/x) "
+            "[GitHub](https://lnkd.in/x) | Sep 2025 - Jun 2026" in out)
+    # the date is a plain field, never a link label
+    assert "[Sep 2025 - Jun 2026" not in out
     # markers stripped from inside and in front of link labels
     assert "[AWS Nanodegree, Udacity - Nov 2025](https://ud.io/cert)" in out
     assert "[- AWS" not in out
@@ -1752,6 +1756,48 @@ def test_normalize_markdown_links_is_byte_stable_on_clean_input():
         "[AWS Nanodegree, Udacity (Nov 2025)](https://ud.io/cert)\n"
     )
     assert agent.normalize_markdown_links(clean) == clean
+
+
+def test_normalize_same_url_new_label_survives():
+    """Run d946bb5f: the A84 same-target dedupe deleted the user's own
+    labels. A repeated URL with a NEW label ('GitHub' linking the same
+    featured URL) survives on its own line when the title line above is
+    already canonical (the reshape did not fire)."""
+    src = ("## Projects\n"
+           "**Aegis** [Live Demo](https://a.io/demo) | Sep 2025 - Jun 2026\n"
+           "[GitHub](https://a.io/demo)\n"
+           "- Built it.\n")
+    out = agent.normalize_markdown_links(src)
+    assert out.count("https://a.io/demo") == 2
+    assert "[GitHub](https://a.io/demo)" in out
+
+
+def test_normalize_byte_stable_when_new_target_pure_link_line():
+    """A pure-link line whose target was never seen is content, not a
+    repeat - and an already-canonical title never absorbs it."""
+    clean = ("## Projects\n"
+             "**Aegis** [Live Demo](https://a.io/demo) "
+             "[GitHub](https://g.io/x) | OR-Tools | Sep 2025 - Jun 2026\n"
+             "[Other](https://b.io/other)\n")
+    assert agent.normalize_markdown_links(clean) == clean
+
+
+def test_normalize_absorbs_github_row_into_reshaped_title():
+    """The standalone '[GitHub](url)' row under a project title absorbs
+    into the RESHAPED title's link row, before the pipe tail - the user's
+    original layout (GitHub under the project, not a stray header row).
+    Only a line the reshape changed absorbs, so clean canonical input
+    stays byte-identical (see the byte-stable test above)."""
+    src = ("## Projects\n"
+           "[Aegis: Heat-Risk Operations Agent](https://a.io/demo)"
+           " Sep 2025 - Jun 2026\n"
+           "[GitHub](https://a.io/demo)\n"
+           "- Built it.\n")
+    out = agent.normalize_markdown_links(src)
+    assert ("**Aegis: Heat-Risk Operations Agent** "
+            "[Live Demo](https://a.io/demo) [GitHub](https://a.io/demo)"
+            " | Sep 2025 - Jun 2026" in out)
+    assert out.count("https://a.io/demo") == 2
 
 
 def test_full_rewrite_normalizes_broken_source_before_the_writer(monkeypatch):
@@ -1779,12 +1825,14 @@ def test_full_rewrite_normalizes_broken_source_before_the_writer(monkeypatch):
         state, node_label="improver", version_key="improver",
         version=agent.nodes.improver.IMPROVER_PROMPT_VERSION)
     opt = out["optimized_resume"]
-    assert "[(Graduation Project)]" not in opt and "[GitHub]" not in opt
+    # the cleaned canonical title row (all three user labels) ships
+    assert ("**Alexandria Port** [Live Demo](https://lnkd.in/x) "
+            "[(Graduation Project)](https://lnkd.in/x) "
+            "[GitHub](https://lnkd.in/x) | Sep 2025 - Jun 2026" in opt)
     assert "[- AWS" not in opt
     assert "[AWS Nanodegree, Udacity - Nov 2025](https://ud.io/cert)" in opt
-    assert ("**Alexandria Port** [Live Demo](https://lnkd.in/x) "
-            "| Sep 2025 - Jun 2026" in opt)
-    assert prompts and "[(Graduation Project)]" not in prompts[0]
+    assert prompts and ("**Alexandria Port** [Live Demo](https://lnkd.in/x)"
+                        in prompts[0])
 
 
 # --- run d946bb5f (Nov 16): shape repairs + ALL-CAPS heading parsing -------

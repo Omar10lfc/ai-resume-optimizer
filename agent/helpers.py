@@ -1516,6 +1516,14 @@ def _join_plus_fragments(lines: list) -> list:
 
 
 _MD_LINK_LEAD_RE = re.compile(r"^\s*\[([^\[\]]+)\]\(([^)]*)\)\s*(.*)$")
+# A line holding exactly ONE link construct and nothing else (the "GitHub"
+# row under a project title) - absorbed into the reshaped title above it.
+_PURE_LINK_LINE_RE = re.compile(r"^\s*\[([^\[\]]+)\]\(([^)]*)\)\s*$")
+# The reshaped title's head: bold title followed by zero or more link
+# constructs (labels never contain brackets or pipes, so the pipe tail
+# starts right after this match).
+_RESHAPED_HEAD_RE = re.compile(
+    r"^\*\*[^*]+\*\*(?: \[[^\[\]]+\]\([^)]*\))*")
 
 
 def _reshape_entry_title(line: str) -> str:
@@ -1523,10 +1531,13 @@ def _reshape_entry_title(line: str) -> str:
     (the model skipped these units three runs in a row, so the shipped
     shape must parse canonically on its own):
 
-    - A  '[Title](url) Sep 2025 - Jun 2026 | Live Demo |'
-         -> '**Title** [Live Demo](url) | Sep 2025 - Jun 2026'
-       (the plain 'Live Demo' field is dropped - the label carries it;
-         the target is the title's own link, nothing fabricated).
+    - A  '[Title](url) [(Badge)](url) [Sep 2025 - Jun 2026 | Live Demo |](url)'
+         -> '**Title** [Live Demo](url) [(Badge)](url) | Sep 2025 - Jun 2026'
+       (extra link constructs survive as distinct labels - "(Badge)" is
+         content, Nov 16 2026; but a span-label construct whose label
+         carries the DATE range contributes its date as a plain tail
+         field, and a remnant "Live Demo" chip is redundant with the
+         title's own label - no date is ever shipped as a link label).
     - C  'Computer Vision & Deep Learning Trainee, NTI Aug - Sep 2025'
          -> '**Computer Vision & Deep Learning Trainee** | NTI | Aug - Sep 2025'
        (the org rode inside the right-aligned date column).
@@ -1546,13 +1557,41 @@ def _reshape_entry_title(line: str) -> str:
     if m:
         title, url, rest = (m.group(1).strip(), m.group(2).strip(),
                             m.group(3).strip())
-        if (title and url and len(title) <= 90 and "[" not in rest
+        if (title and url and len(title) <= 90
                 and _first_date_match(rest) is not None):
-            fields = [p.strip() for p in rest.split("|")]
+            # Extra link constructs survive as distinct labels, EXCEPT a
+            # span-label construct whose label carries the date range
+            # ("[Sep 2025 - Jun 2026 | Live Demo |](url)" from a PDF row
+            # span): its date becomes a plain tail field and a remnant
+            # "Live Demo" chip is redundant with the title's own label.
+            extra_links: list[str] = []
+            date_fields: list[str] = []
+            for lbl, tgt in _MD_LINK_FULL_RE.findall(rest):
+                lbl = lbl.strip()
+                tgt = tgt.strip()
+                if not tgt:
+                    continue
+                link_pieces: list[str] = []
+                for p in (pp.strip() for pp in
+                          re.split(r"\s*[|·]\s*", lbl) if pp.strip()):
+                    if _PREPASS_DATE_ANY_RE.search(p):
+                        date_fields.append(p)
+                    elif p.lower().strip(" -–—:,.") in ("live demo", "demo"):
+                        continue
+                    else:
+                        link_pieces.append(p)
+                if link_pieces:
+                    extra_links.append(
+                        f" [{' | '.join(link_pieces)}]({tgt})")
+            # plain-text leftovers of rest are tail fields too
+            rest_clean = _MD_LINK_FULL_RE.sub("", rest)
+            fields = [p.strip() for p in rest_clean.split("|") if p.strip()]
+            fields += date_fields
             fields = [p for p in fields
                       if p and p.lower().strip(" -–—") != "live demo"]
             tail = f" | {' | '.join(fields)}" if fields else ""
-            return f"**{title}** [Live Demo]({url}){tail}"
+            return (f"**{title}** [Live Demo]({url})"
+                    f"{''.join(extra_links)}{tail}")
         return line
 
     if "[" in s or "**" in s:
@@ -1609,11 +1648,13 @@ def normalize_markdown_links(text: str) -> str:
       is flattened to its visible text;
     - a raw list marker riding inside a link label ("[- AWS ...](url)") or
       in front of a link ("- [GitHub](url)") is stripped;
-    - links to the SAME target repeated on one line keep the first
-      instance only (no target is lost, so the target-set gates agree);
-    - a line holding ONLY link constructs whose every target already
-      appeared on an earlier line (the standalone "[GitHub](same-url)"
-      repeat) is dropped - a pure link line carries nothing but a URL.
+    - links repeated on one line with the SAME target AND label keep the
+      first instance only (no target is lost, so the target-set gates
+      agree; a same-target link with a new label is content, not a dup);
+    - a line holding ONLY link constructs whose every target AND label
+      already appeared on an earlier line is dropped; a same-target line
+      with a NEW label survives ("GitHub" linking the same featured URL
+      is the user's visible label, Nov 16 2026).
 
     Shape repairs for wrapped PDF extraction (run d946bb5f, Nov 16 2026):
     the education two-line merge (degree line + university line with date
@@ -1634,8 +1675,12 @@ def normalize_markdown_links(text: str) -> str:
     lines = _join_plus_fragments(lines)
     out: list[str] = []
     seen: set = set()
+    seen_labels: set = set()
     section: Optional[str] = None
-    for line in lines:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
         sec = _prepass_section_of(line)
         if sec:
             section = sec
@@ -1648,14 +1693,20 @@ def normalize_markdown_links(text: str) -> str:
             line)
         #    ... and from in front of the line's first link
         line = re.sub(r"^(\s*)[-*•]\s+(?=\[)", r"\1", line)
-        # 3. duplicate links to the same target on one line: keep the first
-        #    (absorb one adjacent space at the cut so no double space remains)
+        # 3. duplicate (target AND label) links on one line: keep the first
+        #    (absorb one adjacent space at the cut so no double space
+        #    remains). A repeated URL with a NEW label is real content -
+        #    the source links the same featured-project URL from the
+        #    title, a "(Graduation Project)" badge, and a "GitHub" row,
+        #    and those labels are the user's own text (run d946bb5f).
         parts: list[str] = []
         last = 0
         line_targets: set = set()
+        line_labels: set = set()
         for m in _MD_LINK_FULL_RE.finditer(line):
             target = _norm_link(m.group(2))
-            if target in line_targets:
+            label = m.group(1).strip().lower()
+            if target in line_targets and label in line_labels:
                 end = m.end()
                 if end < len(line) and line[end] == " ":
                     end += 1
@@ -1663,18 +1714,41 @@ def normalize_markdown_links(text: str) -> str:
                 last = end
                 continue
             line_targets.add(target)
+            line_labels.add(label)
         parts.append(line[last:])
         line = "".join(parts)
-        # 4. a pure-link line whose every target was already seen on an
-        #    earlier line is dropped
+        # 4. a pure-link line whose every target AND label was already
+        #    seen on an earlier line is dropped - a NEW label survives
+        #    ("GitHub" linking the same URL is the user's visible label)
         if line_targets:
             if (not _MD_LINK_FULL_RE.sub("", line).strip()
-                    and line_targets <= seen):
+                    and line_targets <= seen
+                    and line_labels <= seen_labels):
                 continue
             seen |= line_targets
-        # 5. entry-title reshapes under Projects/Experience/Education
+            seen_labels |= line_labels
+        # 5. entry-title reshapes under Projects/Experience/Education,
+        #    absorbing a following pure-link line (the "GitHub" row under
+        #    a project title) into the title's link row so it parses
+        #    as one entry header instead of a stray header field. Only a
+        #    line the reshape CHANGED absorbs, so clean canonical input
+        #    stays byte-identical.
         if section in _PREPASS_RESHAPE_SECTIONS:
-            line = _reshape_entry_title(line)
+            reshaped = _reshape_entry_title(line)
+            if reshaped != line:
+                m_next = (_PURE_LINK_LINE_RE.match(lines[i])
+                          if i < len(lines) else None)
+                if m_next:
+                    link_str = (f" [{m_next.group(1).strip()}]"
+                                f"({m_next.group(2).strip()})")
+                    hm = _RESHAPED_HEAD_RE.match(reshaped)
+                    if hm:
+                        reshaped = (f"{reshaped[:hm.end()]}{link_str}"
+                                    f"{reshaped[hm.end():]}")
+                    else:
+                        reshaped = f"{reshaped}{link_str}"
+                    i += 1
+            line = reshaped
         out.append(line)
     return "\n".join(out)
 

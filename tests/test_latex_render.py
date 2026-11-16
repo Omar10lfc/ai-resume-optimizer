@@ -220,6 +220,84 @@ def test_contact_splits_on_bullet_separator():
     assert "\\href" in tex_body
 
 
+def test_parse_extracts_title_under_name():
+    """The conventional header shape (name / title / contact row) puts the
+    professional title on its own line under the name (Nov 16 2026, user
+    ask) - it must not glue into the contact details row."""
+    data = parse_markdown_resume(
+        "Omar Mashaly\n"
+        "AI/ML Engineer\n"
+        "Alexandria, Egypt | omar@example.com\n"
+        "## Technical Skills\n"
+        "Python, PyTorch\n")
+    assert data.contact.name == "Omar Mashaly"
+    assert data.contact.title == "AI/ML Engineer"
+    assert "AI/ML Engineer" not in data.contact.details
+    assert "omar@example.com" in data.contact.details
+
+
+def test_parse_no_title_when_first_header_line_is_contact():
+    """A header whose FIRST line is already contact info keeps the old
+    single-row layout - separator-free recognition only."""
+    data = parse_markdown_resume(
+        "# Jane Doe\n"
+        "jane@x.com | github.com/jane\n"
+        "## Technical Skills\n"
+        "Python\n")
+    assert data.contact.name == "Jane Doe"
+    assert data.contact.title == ""
+    assert "jane@x.com" in data.contact.details
+
+
+def test_parse_no_title_under_contact_heading():
+    """Under a '## Contact' heading every line is contact info - the first
+    short line never becomes a professional title."""
+    data = parse_markdown_resume(
+        "## Contact\n"
+        "Jane Doe\n"
+        "+20 100 170 1821\n"
+        "## Technical Skills\n"
+        "Python\n")
+    assert data.contact.name == "Jane Doe"
+    assert data.contact.title == ""
+    assert "170 1821" in data.contact.details
+
+
+def test_render_contact_title_on_own_line_under_name():
+    from agent.latex_render import Contact, _render_contact
+    c = Contact(name="Omar Mashaly", title="AI/ML Engineer",
+                details="Alexandria, Egypt | omar@example.com")
+    tex = _render_contact(c)
+    # name line, then the title line, then the contact row
+    assert r"\textbf{" in tex
+    assert r"\small AI/ML Engineer \\ \vspace{1pt}" in tex
+    assert tex.count(r"\\ \vspace{1pt}") == 2
+    name_pos = tex.find(r"\textbf{")
+    title_pos = tex.find(r"\small AI/ML Engineer")
+    details_pos = tex.find(r"omar@example.com")
+    assert name_pos < title_pos < details_pos
+
+
+def test_render_contact_no_title_leaves_single_row():
+    from agent.latex_render import Contact, _render_contact
+    c = Contact(name="Jane Doe", details="jane@example.com")
+    tex = _render_contact(c)
+    assert tex.count(r"\\ \vspace{1pt}") == 1
+
+
+def test_render_contact_huggingface_co_linked():
+    """Run d946bb5f: huggingface.co shipped as PLAIN text in the header
+    while linkedin/github linked - the TLD set must include .co."""
+    from agent.latex_render import Contact, _render_contact
+    c = Contact(name="Jane Doe",
+                details="huggingface.co/janedoe | github.com/janedoe")
+    tex = _render_contact(c)
+    assert (r"\href{https://huggingface.co/janedoe}"
+            r"{\underline{huggingface.co/janedoe}}" in tex)
+    assert (r"\href{https://github.com/janedoe}"
+            r"{\underline{github.com/janedoe}}" in tex)
+
+
 def __render_contact_fixture(contact):
     from agent.latex_render import _render_contact
     return _render_contact(contact)
@@ -617,7 +695,8 @@ def test_parse_multi_header_line_keeps_trailing_date_column():
 
 def test_long_project_heading_uses_two_line_subheading_no_collision():
     """Long project titles (> 70 chars with stack + date) must use \resumeSubheading
-    to place tech stack on Row 2, preventing column overflow and date collision."""
+    to place tech stack on Row 2, preventing column overflow and date collision.
+    Row 1's title is bold like the single-row branch (unified Nov 16 2026)."""
     md = (
         "## Projects\n"
         "**Alexandria Port Digital Twin - Live AIS-Fed Optimization System** | "
@@ -626,7 +705,9 @@ def test_long_project_heading_uses_two_line_subheading_no_collision():
     )
     data = parse_markdown_resume(md)
     tex = render_resume_tex(data)
-    assert "\\resumeSubheading{Alexandria Port Digital Twin - Live AIS-Fed Optimization System}{Sep 2025 - Jun 2026}{Python, OR-Tools, AWS, FastAPI}{}" in tex
+    assert ("\\resumeSubheading{\\textbf{Alexandria Port Digital Twin - Live "
+            "AIS-Fed Optimization System}}{Sep 2025 - Jun 2026}"
+            "{Python, OR-Tools, AWS, FastAPI}{}" in tex)
 
 
 def test_url_with_hash_percent_ampersand_compiles():
@@ -671,6 +752,71 @@ def test_project_links_preserved_in_rendered_tex():
     tex = render_resume_tex(data)
     assert r"\href{https://github.com/user/port}{\underline{GitHub}}" in tex
     assert r"\href{https://fastapi.tiangolo.com}{\underline{FastAPI Docs}}" in tex
+
+
+def test_project_same_url_distinct_labels_all_render():
+    """Run d946bb5f: the source links the SAME featured URL from the title
+    ('Live Demo'), a '(Graduation Project)' badge and a 'GitHub' row - the
+    old URL-only dedupe dropped the later labels entirely. All three must
+    render on the single row when the width allows it."""
+    md = (
+        "## Projects\n"
+        "**Port Optimizer** [Live Demo](https://a.io/demo) "
+        "[(Graduation Project)](https://a.io/demo) [GitHub](https://a.io/demo)"
+        " | Sep 2025 - Jun 2026\n"
+        "- Engineered a CP-SAT solver.\n"
+    )
+    tex = render_resume_tex(parse_markdown_resume(md))
+    line = next(ln for ln in tex.splitlines()
+                if "Port Optimizer" in ln and "Live Demo" in ln)
+    assert r"\underline{Live Demo}" in line
+    assert r"\underline{(Graduation Project)}" in line
+    assert r"\underline{GitHub}" in line
+
+
+def test_project_link_heavy_title_moves_surplus_links_to_row2():
+    """Run d946bb5f follow-up: with no tech text but a too-wide title+link
+    list (~124 chars), the old gate shipped one row that pushed the
+    right-aligned date off the sheet. Surplus links move to row 2 (the
+    user's original layout: GitHub under the project)."""
+    md = (
+        "## Projects\n"
+        "**Alexandria Port Digital Twin: Live AIS-Fed Optimization System** "
+        "[Live Demo](https://a.io/demo) [(Graduation Project)](https://a.io/demo)"
+        " [GitHub](https://a.io/demo) | Sep 2025 - Jun 2026\n"
+        "- Engineered a CP-SAT solver.\n"
+    )
+    tex = render_resume_tex(parse_markdown_resume(md))
+    line = next(ln for ln in tex.splitlines()
+                if "Alexandria Port Digital Twin" in ln and "Live Demo" in ln)
+    assert r"\resumeSubheading{" in line
+    i_title = line.index(r"\textbf{Alexandria Port Digital Twin")
+    i_demo = line.index(r"\underline{Live Demo}")
+    i_date = line.index("Sep 2025 - Jun 2026")
+    i_grad = line.index(r"\underline{(Graduation Project)}")
+    i_gh = line.index(r"\underline{GitHub}")
+    # row 1 = title + first link, date column, row 2 = the surplus links
+    assert i_title < i_demo < i_date < i_grad < i_gh
+
+
+def test_project_link_row2_surplus_still_keeps_tech_rows_intact():
+    """With tech text present, the multi-row shape is title+links row 1 and
+    the tech stack row 2 exactly as before (no surplus split fires)."""
+    md = (
+        "## Projects\n"
+        "**Alexandria Port Digital Twin: Live AIS-Fed Optimization System** "
+        "[Live Demo](https://a.io/demo) [GitHub](https://a.io/demo)"
+        " | OR-Tools CP-SAT | Sep 2025 - Jun 2026\n"
+        "- Engineered a CP-SAT solver.\n"
+    )
+    tex = render_resume_tex(parse_markdown_resume(md))
+    line = next(ln for ln in tex.splitlines()
+                if "Alexandria Port Digital Twin" in ln and "Live Demo" in ln)
+    assert r"\resumeSubheading{" in line
+    i_demo = line.index(r"\underline{Live Demo}")
+    i_date = line.index("Sep 2025 - Jun 2026")
+    i_tech = line.index("OR-Tools CP-SAT")
+    assert i_demo < i_date < i_tech
 
 
 def test_experience_rendering_company_beside_position():
@@ -936,6 +1082,24 @@ Python, Docker, Kubernetes
     assert "Jane Doe" in compact and "Docker" in compact
     assert r"\renewcommand{\resumeSubheading}" in compact
     assert r"\renewcommand{\resumeSubheading}" not in plain
+
+
+def test_compact_bullet_lists_get_itemsep_breathing_room():
+    """Nov 16 2026 user ask: with the compact global \\setlist itemsep=0pt,
+    consecutive \\resumeItem bullets sat at the bare interline gap. The
+    compact block now renews \\resumeItemListStart with itemsep=1.5pt -
+    scoped to the BULLET lists only; entry-title lists keep their own
+    calibrated rows."""
+    data = parse_markdown_resume(
+        "# Jane Doe\njane@example.com\n\n## Skills\nPython, Docker\n")
+    plain = render_resume_tex(data)
+    compact = render_resume_tex(data, compact=True)
+    itemsep_line = (r"\renewcommand{\resumeItemListStart}"
+                    r"{\begin{itemize}[itemsep=1.5pt]}")
+    assert itemsep_line in compact
+    assert itemsep_line not in plain
+    # the compact global pass stays (it is what the bullet override scopes)
+    assert r"\setlist[itemize]{itemsep=0pt" in compact
 
 
 def _overflow_resume_markdown() -> str:
@@ -1614,11 +1778,11 @@ def test_project_stack_after_date_never_glues_into_the_date_column():
     assert port.sub_right == "Sep 2025 - Jun 2026"
 
     tex = render_resume_tex(data)
-    assert (r"\resumeSubheading{Smart Lecture Assistant: Arabic Audio "
-            r"Understanding and Retrieval}{Mar 2026 - May 2026}"
+    assert (r"\resumeSubheading{\textbf{Smart Lecture Assistant: Arabic Audio "
+            r"Understanding and Retrieval}}{Mar 2026 - May 2026}"
             r"{Whisper, AraBART, CAMeL-BERT, FAISS, Gradio, FastAPI}{}") in tex
-    assert (r"\resumeSubheading{Fil-RAG-Goal: Arabic Football Q\&A (Hybrid "
-            r"RAG)}{Feb 2026 - Jun 2026}{BM25, Dense Retrieval, Groq, CI "
+    assert (r"\resumeSubheading{\textbf{Fil-RAG-Goal: Arabic Football Q\&A "
+            r"(Hybrid RAG)}}{Feb 2026 - Jun 2026}{BM25, Dense Retrieval, Groq, CI "
             r"Pipeline}{}") in tex
     glued = re.findall(r"\}\{[^{}]*\d{4}[^{}]*\|[^{}]*\}", tex)
     assert not glued, f"date argument still carries glued fields: {glued[:2]}"

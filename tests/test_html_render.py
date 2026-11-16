@@ -171,6 +171,34 @@ def test_contact_link_classification():
     assert "+1 555 010 0100" in page  # plain text (phone)
 
 
+def test_contact_huggingface_co_linked():
+    """Run d946bb5f: huggingface.co shipped as plain text while
+    linkedin/github linked - the TLD set must include .co (parity with
+    the LaTeX contact renderer)."""
+    md = ("Jane Doe\n"
+          "huggingface.co/janedoe | github.com/janedoe\n"
+          "## Technical Skills\n"
+          "Python\n")
+    page = render_resume_html(parse_markdown_resume(md))
+    assert '<a href="https://huggingface.co/janedoe">huggingface.co/janedoe</a>' in page
+
+
+def test_contact_title_line_under_name():
+    """Nov 16 2026 user ask: the professional title renders on its own
+    line under the name (a .contact div between the h1 and the details
+    row) instead of gluing into the contact row."""
+    md = ("Omar Mashaly\n"
+          "AI/ML Engineer\n"
+          "omar@example.com | github.com/omar\n"
+          "## Technical Skills\n"
+          "Python\n")
+    page = render_resume_html(parse_markdown_resume(md))
+    i_h1 = page.index("<h1>Omar Mashaly</h1>")
+    i_title = page.index('<div class="contact">AI/ML Engineer</div>')
+    i_details = page.index("omar@example.com")
+    assert i_h1 < i_title < i_details
+
+
 def test_project_row_semantics():
     """The LaTeX port: date/tech-stack disambiguation, links extracted from
     title/fields/bullets (anti-fabrication: only REAL links render), and

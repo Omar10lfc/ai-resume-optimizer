@@ -64,6 +64,7 @@ if not HAVE_PANDOC:
 class Contact:
     """Parsed heading block (name + line of contact details)."""
     name: str = ""
+    title: str = ""
     details: str = ""
 
 
@@ -355,6 +356,7 @@ def _extract_contact(lines: list[str]) -> tuple[Contact, list[str]]:
     name = ""
     idx = 0
     header_block = []
+    under_contact_heading = False
 
     # Skip leading blank lines
     while idx < len(lines) and not lines[idx].strip():
@@ -372,6 +374,7 @@ def _extract_contact(lines: list[str]) -> tuple[Contact, list[str]]:
                         "personal info", "personal information", "personal details"):
             # A '## Contact' heading: consume the heading, then collect contact lines
             idx += 1
+            under_contact_heading = True
         elif not _is_known_section_title(sec_title) and len(sec_title.split()) <= 4:
             # Candidate name in H2 or bold (e.g. '## Omar Mashaly')
             name = _strip_inline(sec_title)
@@ -388,6 +391,7 @@ def _extract_contact(lines: list[str]) -> tuple[Contact, list[str]]:
                 idx += 1
 
     # Now collect remaining header lines until the first real section heading
+    title = ""
     while idx < len(lines):
         line = lines[idx].strip()
         if not line:
@@ -412,11 +416,25 @@ def _extract_contact(lines: list[str]) -> tuple[Contact, list[str]]:
             name = _strip_inline(line)
             idx += 1
             continue
+        # The professional title rides the FIRST header line of the
+        # conventional resume shape ("Omar Mashaly" / "AI/ML Engineer" /
+        # "Alexandria, Egypt | ..."). It renders on its own line under the
+        # name (Nov 16 2026, user ask) instead of glued into the contact
+        # row - recognized when the line is separator-free, so a first
+        # line that is already contact info keeps the old single-row
+        # layout.
+        if (not title and not header_block and not under_contact_heading
+                and len(line) <= 60
+                and not any(c in line for c in ('@', '|', '•', '://', ';'))
+                and len(line.split()) <= 6):
+            title = _strip_inline(line)
+            idx += 1
+            continue
         header_block.append(line)
         idx += 1
 
     details = ' | '.join(_strip_inline(d) for d in header_block if d)
-    return Contact(name=name, details=details), lines[idx:]
+    return Contact(name=name, title=title, details=details), lines[idx:]
 
 
 def _clean_field(s: str) -> str:
@@ -997,6 +1015,11 @@ def _render_contact(contact: Contact) -> str:
     # Reduced from \Huge to \LARGE (or \Large if long) so name heading is proportional
     heading_font = r"\LARGE" if len(name_part) <= 30 else r"\Large"
     lines.append(r"\textbf{" + heading_font + r" \scshape " + _latex_escape(name_part) + r"} \\ \vspace{1pt}")
+    # The professional title on its OWN line under the name (Nov 16 2026,
+    # user ask: run d946bb5f's header glued "AI/ML Engineer" into the
+    # contact row; the conventional layout puts it under the name).
+    if contact.title:
+        lines.append(r"\small " + _latex_escape(contact.title) + r" \\ \vspace{1pt}")
     if contact.details:
         # Split on common contact separators (|, •, ·, ;) plus " - "
         details = contact.details
@@ -1032,8 +1055,11 @@ def _render_contact(contact: Contact) -> str:
                 rendered.append(r'\href{' + _clean_latex_url(url) + r'}{\underline{' + _latex_escape(_display_url_text(p)) + r'}}')
                 continue
 
-            # Check for web URLs or portfolio domains
-            if re.match(r'^(?:https?://|www\.)', p) or re.search(r'\.(?:io|dev|ai|app|me|tech|com|org)(?:/|$)', p):
+            # Check for web URLs or portfolio domains (.co covers
+            # huggingface.co - run d946bb5f's header shipped the HF handle
+            # as plain text while linkedin/github linked; net joins the
+            # common portfolio set)
+            if re.match(r'^(?:https?://|www\.)', p) or re.search(r'\.(?:io|dev|ai|app|me|tech|com|org|co|net)(?:/|$)', p):
                 url = p if p.startswith(('http://', 'https://')) else 'https://' + p
                 rendered.append(r'\href{' + _clean_latex_url(url) + r'}{\underline{' + _latex_escape(_display_url_text(p)) + r'}}')
                 continue
@@ -1069,6 +1095,7 @@ def _extract_project_links_and_title(
     """
     links: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
+    seen_labeled: set[tuple[str, str]] = set()
 
     def add_link(lbl: str, url: str) -> None:
         if not url:
@@ -1076,9 +1103,16 @@ def _extract_project_links_and_title(
         lbl = lbl.strip() or "Link"
         url = url.strip().rstrip(").,;")
         norm = url.lower().rstrip("/")
-        if norm in seen_urls:
+        # A repeated URL with a NEW label is real content, not a duplicate:
+        # the source PDF links the SAME featured-project URL from the title,
+        # a "(Graduation Project)" badge, and a "GitHub" row - dropping the
+        # later labels deleted the user's own labels (run d946bb5f audit,
+        # Nov 16). Only a repeated (label, url) PAIR is a true duplicate.
+        key = (lbl.lower(), norm)
+        if norm in seen_urls and key in seen_labeled:
             return
         seen_urls.add(norm)
+        seen_labeled.add(key)
         links.append((lbl, url))
 
     # 1. Extract markdown links from raw_title
@@ -1226,8 +1260,15 @@ def _render_section(section: Section, compact: bool = False) -> str:
                     tech_plain_len = len(clean_tech)
                     date_plain_len = len(date_field)
                     total_len = title_plain_len + links_plain_len + tech_plain_len + date_plain_len
+                    # Left-side-only width (Nov 16 2026, run d946bb5f): the
+                    # restored same-URL labels ("Live Demo", "(Graduation
+                    # Project)", "GitHub" - all one featured URL) give a
+                    # link-heavy title with NO tech text, so the old
+                    # `or not tech_text` clause shipped a ~124-char single
+                    # line that pushed the right-aligned date off the sheet.
+                    left_len = title_plain_len + links_plain_len
 
-                    if total_len <= 85 or not tech_text:
+                    if total_len <= 85 or (not tech_text and left_len <= 85):
                         # Fits on a single line via \resumeProjectHeading
                         # (a link-only title has an empty clean_title - the
                         # label rides the link - so no empty \textbf{}
@@ -1244,14 +1285,39 @@ def _render_section(section: Section, compact: bool = False) -> str:
                         parts.append(r"\resumeProjectHeading{" + left_line + r"}{" + date_text + r"}")
                         last_header_kind = "ph"
                     else:
-                        # Multi-line: Title + links on Row 1, tech stack on Row 2
+                        # Multi-line: Title + links on Row 1, tech stack on Row 2.
+                        # With no tech text but a too-long link list, the
+                        # surplus links move to Row 2 (Nov 16 2026: the
+                        # user's original resume shows "GitHub" under the
+                        # project, not on a 124-char row 1).
+                        row1_links = formatted_links
+                        row2_links: list = []
+                        if not tech_text and len(formatted_links) > 1:
+                            budget = 85 - title_plain_len
+                            used = 0
+                            cut = 0
+                            for idx2, (lbl, _u) in enumerate(extracted_links):
+                                w = len(lbl) + 3
+                                if used + w <= budget:
+                                    used += w
+                                    cut = idx2 + 1
+                                else:
+                                    break
+                            cut = max(cut, 1)
+                            row1_links = formatted_links[:cut]
+                            row2_links = formatted_links[cut:]
                         row1_items = []
                         if clean_title:
-                            row1_items.append(_latex_escape(clean_title))
-                        if formatted_links:
-                            row1_items.append(r"\textnormal{" + " $|$ ".join(formatted_links) + r"}")
+                            row1_items.append(title_bold)
+                        if row1_links:
+                            row1_items.append(r"\textnormal{" + " $|$ ".join(row1_links) + r"}")
                         row1_left = " $|$ ".join(row1_items)
-                        parts.append(r"\resumeSubheading{" + row1_left + r"}{" + date_text + r"}{" + tech_text + r"}{}")
+                        tech_row = tech_text
+                        if row2_links:
+                            links_line = " $|$ ".join(row2_links)
+                            tech_row = (f"{tech_row} $|$ {links_line}"
+                                        if tech_row else links_line)
+                        parts.append(r"\resumeSubheading{" + row1_left + r"}{" + date_text + r"}{" + tech_row + r"}{}")
                         last_header_kind = "sub"
                 elif is_exp_sec:
                     # Experience: Role and Company side-by-side on the left, dates on the right
@@ -1496,6 +1562,12 @@ _COMPACT_OVERRIDES_TEMPLATE = r"""
 % ---- AUTO-COMPACT PASS (activated after a >1-page first render) ----
 % Tighter bullet spacing (enumitem is loaded in this preamble)
 \setlist[itemize]{itemsep=0pt, parsep=0pt, topsep=2pt, leftmargin=*}
+% Bullet breathing room (Nov 16 2026, user ask: with the global
+% itemsep=0pt above, consecutive \resumeItem bullets sat at the bare
+% interline gap). Scoped to the BULLET lists only - the entry-title
+% lists keep their own calibrated rows (the 5pt floor / 6pt target),
+% and 1.5pt x ~14 bullets is absorbed by the compact tier ladder.
+\renewcommand{\resumeItemListStart}{\begin{itemize}[itemsep=1.5pt]}
 % Entry-list start glue (layout spec B, Nov 11 2026): the compact pass
 % pulls each section rule closer to its first entry - probe-calibrated
 % (topsep is swallowed at list start; enumitem's before=\vspace lands 1:1).
