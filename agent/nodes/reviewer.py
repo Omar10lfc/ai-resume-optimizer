@@ -5,6 +5,7 @@ from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted, ReviewOutput
 from .. import llms as _llms
 from ..provider import invoke_structured_with_repair, extract_failed_generation
 from ..helpers import _safe_print, _safe_truncate, _strip_markdown_for_review
+from ..tool_claims import (build_denied_tools, sanitize_feedback)
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Bump when the review prompt or its output schema changes materially.
@@ -178,16 +179,40 @@ def reviewer_node(state: AgentState):
         result, method = invoke_structured_with_repair(
             _llms.llm_strict, ReviewOutput, messages,
             salvage=_salvage_review_output, label="reviewer")
+        # Live run 4afa44cb: the reviewer ignored its own FEEDBACK SCOPE rule
+        # and told the polisher to add "n8n-like platforms". The model's
+        # advice is untrusted data here too - drop any sentence naming a tool
+        # the evidence does not show BEFORE the polisher can act on it.
+        denied = build_denied_tools(
+            "\n".join(str(state.get(k) or "") for k in
+                      ("resume_text", "human_notes", "profile",
+                       "profile_text", "candidate_profile")),
+            declined_requests=state.get("declined_requests") or [],
+            job_text=state.get("job_text") or "",
+        )
+        feedback, removals = sanitize_feedback(result.feedback, denied,
+                                               stage="reviewer feedback")
+        if removals:
+            _safe_print(f"   [Integrity] Removed {len(removals)} feedback "
+                        "sentence(s) naming unevidenced tool(s)")
         _safe_print(f"-> LLM quality score: {result.score}/100")
-        _safe_print(f"-> Feedback: {result.feedback}")
+        _safe_print(f"-> Feedback: {feedback}")
         if method != "direct" and result.sections:
             _safe_print(f"-> Feedback targets: {', '.join(result.sections)}")
         elif method == "salvage":
             _safe_print("-> (salvaged prose carries no section targets - the"
                         " polisher will consider the whole document)")
-        return {"llm_quality_score": result.score, "feedback": result.feedback,
+        warnings = list(state.get("guardrail_warnings") or [])
+        warnings.extend(r.warning for r in removals)
+        removals_acc = list(state.get("scrub_removals") or [])
+        for r in removals:
+            if r.warning not in removals_acc:
+                removals_acc.append(r.warning)
+        return {"llm_quality_score": result.score, "feedback": feedback,
                 "feedback_sections": [str(s) for s in result.sections],
                 "review_failed": False,
+                "guardrail_warnings": warnings,
+                "scrub_removals": removals_acc,
                 "prompt_versions": {"reviewer": REVIEWER_PROMPT_VERSION}}
     except Exception:
         _safe_print("   [Warning] Review failed after 2 attempts. Flagging review as failed.")

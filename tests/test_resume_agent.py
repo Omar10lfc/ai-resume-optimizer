@@ -2923,7 +2923,14 @@ def test_salvage_parses_score_from_failed_generation(fake_llms, monkeypatch):
     result = agent.full_app.invoke(_base_inputs())
     assert result["review_failed"] is False
     assert result["llm_quality_score"] == 80
-    assert "Copilot" in result["feedback"]
+    # Nov 20 2026: this salvaged prose recommends AI coding assistants the
+    # evidence does not show, so the reviewer sanitizer now drops it before
+    # the polisher sees it. Salvage parsing itself is asserted directly by
+    # test_salvage_review_* above - the score survives, the fabrication bait
+    # does not.
+    assert "Copilot" not in result["feedback"]
+    assert any(("Cursor" in w or "Claude Code" in w)
+               for w in result["guardrail_warnings"])
     expected = round(agent.ATS_SCORE_WEIGHT * result["ats_percentage"]
                      + agent.LLM_SCORE_WEIGHT * 80)
     assert result["score"] == expected

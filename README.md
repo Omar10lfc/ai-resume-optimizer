@@ -1241,6 +1241,15 @@ The latest live run was mechanically clean - **92.7s**, **127,503 tokens**, **$0
 
 - **Tests:** `npm run test:extension` **8/8**, extension typecheck/lint/build green; full suite **592 passed** (2 warnings). The eval dataset lives in LangSmith, not in the repo.
 
+## Session - Nov 20 2026 (reviewer feedback sanitization: run `4afa44cb`)
+
+The production-readiness review of run `4afa44cb` found the reviewer telling the polisher to *“link existing automation work to workflow orchestration and n8n-like platforms”* — a direct violation of its own FEEDBACK SCOPE rule. The polisher followed it, and although the resume scrubber removed the two resulting n8n claims, the cover letter still shipped “n8n-style automation” and requirement-framed name-drops of Claude Code/Cursor/Codex/MCP.
+
+- **Shared guard (`agent/tool_claims.py`):** a maintained tool vocabulary plus tools named in the declined requests and the posting, minus anything in the candidate's evidence (resume, notes, and any profile text the caller supplies) — a denied term is never one the evidence shows. Matching is case-insensitive with word boundaries and variants (`n8n-style`, `n8n like`, `n8n's`), treats `Claude Code` as one unit, and requires a non-sentence-initial capital (or an explicit form like `Make.com`) for ambiguous words such as Make/Cursor, so “make a plan” and “database cursor” pass untouched.
+- **Reviewer half (`agent/nodes/reviewer.py`):** any feedback sentence naming a denied tool is dropped before the polisher reads `feedback`; no denied term is repeated in the replacement text. A fully removed review falls back to neutral advice that names no tool, and an already-empty review stays empty (so clean passes still skip polish). Every removal is logged to `guardrail_warnings` with the term and the `reviewer feedback` stage, and accumulated into `scrub_removals` for the Integrity tab. The reviewer prompt was not changed, so `reviewer@2` stands.
+
+- **Tests:** 9 new cases in `tests/test_tool_claims.py` (variants, multiword units, ambiguous words, evidence-present terms, sentence/paragraph integrity, reviewer-node sanitization, determinism, no mutation), plus the salvaged-review regression updated to expect fabrication bait to be dropped. Full suite **601 passed**, coverage **90.37%** (gate 84%).
+
 ---
 
 ## Production Architecture & Reliability
