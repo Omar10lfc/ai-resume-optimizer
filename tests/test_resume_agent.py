@@ -76,6 +76,14 @@ def test_stem_match_deployment_deploying():
     assert found and method == "stem"
 
 
+def test_stem_match_ignores_trailing_sentence_period():
+    # Live run 086ecb12 (Nov 19): "…automate complex workflows." lost the
+    # `workflow` keyword because the stem branch kept the period attached.
+    found, method = agent._keyword_found_in_text(
+        "workflow", "build agentic systems that automate complex workflows.")
+    assert found and method == "stem"
+
+
 def test_multiword_phrase_exact_match():
     found, method = agent._keyword_found_in_text(
         "machine learning", "strong background in machine learning systems")

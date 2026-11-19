@@ -1221,6 +1221,18 @@ Two live runs used LinkedIn URLs while `.env` had no `ALLOWED_JOB_URL_DOMAINS`. 
 
 - **Tests:** 3 URL-preflight unit tests (`test_resume_agent.py`) and 3 server tests (`test_server.py`: enabled/disabled health allowlist, step-1 and step-2 preflight); full suite **587 passed**, coverage **90.25%** (gate 84%). Backend restart required; rebuild/reload the extension panel to pick up the URL hint.
 
+## Session - Nov 19 2026 (run `086ecb12`: a sentence period cost two ATS keywords)
+
+The latest live run was mechanically clean - **92.7s**, **127,503 tokens**, **$0.0250**, zero errors, one page, **11/11 PDF checks**, `job_posting_findings=[]`, `trim_suggestions=[]`, `page_overflow_warning=""`. The score still fell **73 -> 64** (ATS **62.5 -> 56.2**, LLM quality **88 -> 76**). The inputs were byte-identical to the previous run (same 5,114-char resume, same 748-char job text, same seven prompt versions), and the posting, PDF, and trim gates were all no-ops, so this was not a gate regression.
+
+**The ATS loss was a real matcher bug.** The new draft ended its summary with "automate complex workflows." The stem branch's token class keeps the period (`workflows.`), and `_simple_stem("workflows.")` does not strip it, so `workflow` was scored missing. That raised the deterministic missing count to nine; `_semantic_verify_missing` reviews only the first eight, so `json` - which the previous run had rescued semantically - never received a verdict. Two keywords fell out at once: 10/16 -> 9/16 weighted points.
+
+`_keyword_found_in_text` now strips the same leading/trailing punctuation `_extract_keywords` already strips before stemming. A regression test covers the sentence-final case; replaying the new draft through the deterministic matcher restores `workflow` (7/15, 50%), which puts the semantic list back to eight and lets `json` be reviewed again.
+
+**The LLM-quality loss was variance, not a regression.** The first draft scored **62** vs **88** in the previous run; the polisher lifted it to **76**, and the best-of guard kept the improved second draft (59 -> 64). The new summary is wordier and first-person ("eager to join ... positioning me"), while the previous summary was concise and third-person. The iteration-2 reviewer also asked to "mirror the AI Automation Intern title" after the polisher had already done so - a noisy judge, not stale input (the reviewer reads `optimized_resume`).
+
+- **Tests:** one regression test in `tests/test_resume_agent.py`; full suite **588 passed**. The stored result for run `086ecb12` is historical - the next run gets the corrected matcher.
+
 ---
 
 ## Production Architecture & Reliability

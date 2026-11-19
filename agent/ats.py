@@ -397,7 +397,12 @@ def _keyword_found_in_text(keyword: str, text_lower: str) -> tuple[bool, str]:
         if len(kw_stem) >= 3:
             words_in_text = re.findall(r'[a-zA-Z#+/.:_-]{2,}', text_lower)
             for word in words_in_text:
-                if _simple_stem(word) == kw_stem and word != keyword:
+                # Sentence punctuation rides along in the token class above
+                # ("workflows."), so normalize the same way _extract_keywords
+                # does before stemming. Without this, a period at the end of
+                # a sentence hides a real keyword match.
+                normalized = word.strip('.-/:')
+                if _simple_stem(normalized) == kw_stem and normalized != keyword:
                     return True, "stem"
     return False, ""
 
