@@ -449,6 +449,14 @@ Evidence base: 871 runs / 73 traces (2026-08-02 → 2026-10-21), 159 LLM runs, 1
 **Alerting in the LangSmith dashboard:** filter feedback `key = composite_score` / `key = review_failed` on project *resume-optimizer*. `review_failed = 1` - or the absence of a `composite_score` record (pipeline crashed before completion) - marks a run for review.
 
 
+## Reference adoptions — Nov 19 2026 (MIT ai-job-search study, Core 3) 🔨 LANDED PER COMMIT
+
+Read-only comparison against the MIT-licensed `ai-job-search` reference (a Claude skill pack + small CLI tools, not a running app). Only mechanics were ported; the project's language, structure, and naming are unchanged. Attribution: `NOTICE`. Scope approved by the user: (1) posting integrity gate, (2) PDF text-layer/date verification, (3) relevance-weighted trim suggestions. Explicitly skipped: fit preflight/eligibility gates, batch ranking/scraping/portal CLIs, the reference's 2-page layout verifier, structured reviewer edits, and the Claude settings/framework guards.
+
+| # | Item | Outcome | Detail |
+|---|------|---------|--------|
+| A47 | Posting integrity gate (`agent/posting_guard.py` NEW; `agent/nodes/loader.py`, `agent/state.py`, `agent/url_fetch.py`, `server/runners.py`, `frontend/src/types.ts` + `ResultsDashboard.tsx`, `tests/test_posting_guard.py` 17 tests) | URL imports are cleaned before prompts: hidden HTML, comments/scripts, invisible Unicode (incl. the tag alphabet), instruction-shaped lines, hidden URLs, mixed-script words. Findings are advisory (state + payload + SSE warning + Integrity tab); the gate never blocks and never raises | `loader` cleans BEFORE truncation and tags URL mode as HTML; `url_fetch` returns the decoded body bounded by `MAX_FETCH_BYTES` so the loader owns `MAX_JOB_CHARS` (raw-HTML truncation lost half the visible posting); `ResultsDashboard` only grows the existing Integrity tab. Reference probes aimed at Claude Code (`.env`, `settings.json`, `ssh/curl`) were dropped as noise for job postings |
+
 ## Verification playbook
 
 ```bash

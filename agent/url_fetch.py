@@ -7,8 +7,7 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .config import (ALLOWED_JOB_URL_DOMAINS, MAX_FETCH_BYTES, MAX_PDF_BYTES,
-                     MAX_PDF_PAGES, MAX_RESUME_CHARS, MAX_JOB_CHARS,
-                     FETCH_TIMEOUT_SECONDS)
+                     MAX_PDF_PAGES, MAX_RESUME_CHARS, FETCH_TIMEOUT_SECONDS)
 from .helpers import _safe_print, _safe_truncate
 
 from pypdf import PdfReader
@@ -51,7 +50,13 @@ def _validate_job_url(raw_url: str) -> str:
 
 
 def _fetch_job_description(raw_url: str) -> str:
-    """Fetch an allowlisted job page with bounded redirects and response size."""
+    """Fetch an allowlisted job page with bounded redirects and response size.
+
+    The body is returned decoded and bounded by MAX_FETCH_BYTES - NOT by the
+    much smaller MAX_JOB_CHARS. The loader cleans raw HTML first (hidden
+    elements, markup) and truncates the visible text afterwards, so a markup-
+    heavy page does not lose half its posting to the character cap.
+    """
     current_url = _validate_job_url(raw_url)
     opener = build_opener(_NoRedirect())
     for _ in range(4):
@@ -69,7 +74,8 @@ def _fetch_job_description(raw_url: str) -> str:
         body = response.read(MAX_FETCH_BYTES + 1)
         if len(body) > MAX_FETCH_BYTES:
             raise ValueError("Job page is too large to import.")
-        return _safe_truncate(body.decode(response.headers.get_content_charset() or "utf-8", errors="replace"), MAX_JOB_CHARS, "Job description")
+        return body.decode(response.headers.get_content_charset() or "utf-8",
+                           errors="replace")
     raise ValueError("Too many job URL redirects.")
 
 

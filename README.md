@@ -1178,6 +1178,24 @@ inside words like "google"/"programming", systematically inflating ATS scores.
 
 ---
 
+## Session - Nov 19 2026 (reference adoptions: posting integrity gate)
+
+Read-only study of the MIT-licensed [`ai-job-search`](https://github.com/ai-job-search-dev/ai-job-search) reference (prose skill pack + small CLI tools, not a running application). This round ports mechanics, not files; attribution lives in `NOTICE`. Scope chosen by the user: posting integrity, PDF text-layer verification, relevance-weighted trim suggestions - the first shipped here.
+
+**The gap:** URL mode stored the fetched **raw HTML** in `job_text` and the pasted path kept whatever Unicode arrived, so the scanner, ATS engine, and every prompt read hidden `display:none` blocks, zero-width/bidi characters, or Unicode-tag payloads that a human never sees. `_untrusted` delimits posting text in prompts but does not sanitize it.
+
+**Posting integrity gate (`agent/posting_guard.py`, new):**
+- **Hidden HTML:** `hidden`, `aria-hidden="true"`, CSS hidden/clipped styles (entities and CSS comments normalised the way a browser reads them), and comments / `script` / `style` / `noscript` / `svg` / `template` blocks are removed. Hidden blocks are quoted back as findings; navigation chrome is not reported.
+- **Invisible Unicode:** zero-width, bidi controls, soft hyphens, BOM, the Unicode tag block, and variation-selector runs are stripped. Tag/variation runs are decoded, so an instruction spelled invisibly is quoted rather than merely counted. The three RGI flag emoji are preserved.
+- **Detection (advisory):** instruction-shaped lines aimed at an agent, URLs that existed only in hidden content, and words mixing Latin with Cyrillic/Greek. The gate never blocks a run, and never raises - a parser failure returns the input unchanged.
+- **Wiring:** `loader` cleans **before** truncation (`is_html=True` for URL imports, `False` for paste); `agent/url_fetch.py` now returns the decoded body bounded by `MAX_FETCH_BYTES` and lets the loader own the character cap (truncating raw HTML lost half the visible posting). Findings ride the state (`job_posting_findings`), the result payload, an SSE warning, and the existing Integrity tab.
+- **Scope control:** the reference's Claude-Code-specific probes (`.env`, `settings.json`, `allowed-tools`, `ssh/curl`) were deliberately dropped - engineering postings mention them legitimately, and a noisy advisory gate is worse than none.
+- **Tests:** `tests/test_posting_guard.py` (17) - hidden div/attribute/collapsed-box, comments/scripts, hidden URL, tag-character smuggling (decoded + instruction line), zero-width and bidi tampering signals, homoglyph, benign posting, instruction line advisory-only, never-raise contract, both loader paths, payload + warning summary.
+
+> Status: `venv\Scripts\python.exe -m pytest tests\test_posting_guard.py -q` - **17 passed**. Restart the FastAPI backend to load the new gate; the extension shares `ResultsDashboard.tsx`, so rebuild/reload it when the frontend bundle is refreshed.
+
+---
+
 ## Production Architecture & Reliability
 
 To ensure robust 24/7 cloud deployments (Hugging Face Spaces, Docker containers, multi-worker clusters), the pipeline includes key production hardening measures:

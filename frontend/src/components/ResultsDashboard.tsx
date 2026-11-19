@@ -20,7 +20,7 @@ import {
   X,
   Lightning,
 } from "@phosphor-icons/react";
-import type { OptimizationResult, RequirementMatch, BulletImpactRow, BulletSourceRow } from "../types";
+import type { OptimizationResult, RequirementMatch, BulletImpactRow, BulletSourceRow, PostingFinding } from "../types";
 import { resolveArtifactUrl } from "../api";
 import { ScoreGauge } from "./ScoreGauge";
 import { DiffView } from "./DiffView";
@@ -42,8 +42,15 @@ const TABS: Array<{ id: TabId; label: string; icon: React.ElementType }> = [
   { id: "interview", label: "Interview prep", icon: Question },
 ];
 
-const ARTIFACT_META: Record<string, { label: string; icon: React.ElementType; className: string }> = {
-  "resume-pdf": { label: "Resume PDF", icon: FilePdf, className: "text-danger" },
+const POSTING_KIND_LABELS: Record<PostingFinding["kind"], string> = {
+  hidden_html: "Hidden HTML",
+  invisible_unicode: "Invisible text",
+  instruction_line: "Instruction-shaped line",
+  hidden_url: "Hidden URL",
+  homoglyph: "Mixed-script word",
+};
+
+const ARTIFACT_META: Record<string, { label: string; icon: React.ElementType; className: string }> = {  "resume-pdf": { label: "Resume PDF", icon: FilePdf, className: "text-danger" },
   "cover-pdf": { label: "Cover letter PDF", icon: FilePdf, className: "text-danger" },
   "resume-docx": { label: "Resume DOCX", icon: FileDoc, className: "text-info" },
   "resume-tex": { label: "LaTeX source", icon: FileCode, className: "text-ok" },
@@ -91,6 +98,8 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
     ...(result.declined_requests ?? []),
     ...(result.unevidenced_metrics ?? []),
     ...(result.cover_letter_metrics ?? []),
+    ...((result.job_posting_findings ?? []) as PostingFinding[]).map(
+      (f) => `${f.kind}: ${f.detail}`),
   ];
   // Tabs beyond the core four exist only when this run has their content:
   // Fit (MR2 requirement table), Bullet impact (round 13 XYZ audit),
@@ -654,6 +663,27 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                 What was checked against your evidence (original resume + your notes) before this result shipped.
               </p>
             </div>
+
+            {(result.job_posting_findings?.length ?? 0) > 0 && (
+              <div className="mb-4">
+                <h4 className="text-2xs font-semibold text-ink mb-1.5">Job posting findings</h4>
+                <p className="text-2xs text-ink-3 mb-1.5">
+                  The posting contained content a reader cannot see. It was removed before any stage read the text; review these excerpts before trusting the posting's requirements:
+                </p>
+                <ul className="space-y-1">
+                  {result.job_posting_findings!.map((finding, i) => (
+                    <li key={`pf-${i}`} className="flex items-start gap-2 text-2xs text-warn leading-relaxed">
+                      <span className="mt-[5px] w-1 h-1 rounded-full bg-warn shrink-0" aria-hidden="true" />
+                      <span>
+                        <span className="font-semibold">{POSTING_KIND_LABELS[finding.kind] ?? finding.kind}</span>
+                        {": "}{finding.detail}
+                        {finding.excerpt ? ` - "${finding.excerpt}"` : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {(result.removals?.length ?? 0) > 0 && (
               <div className="mb-4">

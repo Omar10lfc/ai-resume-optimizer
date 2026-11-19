@@ -43,6 +43,7 @@ from agent import config as agent_config
 from agent.helpers import _safe_truncate
 from agent.html_render import DEFAULT_THEME, THEMES
 from agent.llms import groq_key_override
+from agent.posting_guard import summarize_findings
 from agent.provider import TokenUsageTracker
 from agent.tracing import (
     candidate_name_hint,
@@ -261,6 +262,14 @@ def _status(message: str, node: str | None = None) -> dict:
     return info
 
 
+def _posting_warning(findings: list) -> str:
+    """One banner line for the posting-integrity gate's findings."""
+    return ("Job posting integrity: " + summarize_findings(findings)
+            + " flagged in the posting. Hidden content and invisible "
+              "characters were stripped before analysis; review the posting "
+              "before trusting its requirements.")
+
+
 def _stream_step1(job_description: str, resume_source: str,
                   session: str | None, groq_api_key: str | None = None) -> Iterator[dict]:
     """Step 1: loader -> scanner, interrupt before the improver.
@@ -297,6 +306,11 @@ def _stream_step1(job_description: str, resume_source: str,
                             f"{NODE_STATUS.get(node, node + '...')} (step 1 of 2)", node)
             snapshot = agent_app.get_state(config)
             missing = (snapshot.values or {}).get("missing_skills", "")
+            posting_findings = (snapshot.values or {}).get(
+                "job_posting_findings") or []
+            if posting_findings:
+                yield {"type": "warning",
+                       "message": _posting_warning(posting_findings)}
         except Exception as e:
             traceback.print_exc()
             yield {"type": "error", "message": f"Scan failed: {e}"}
@@ -358,6 +372,10 @@ def _extract_results(final_state: dict) -> dict:
         # latex@1 / xhtml2pdf@1) - the renderer stamp beside the prompt
         # stamps, one lookup for "which engine produced this run".
         "render_engine": final_state.get("render_engine") or "",
+        # Posting integrity gate (loader): hidden HTML / invisible Unicode /
+        # instruction-shaped lines removed from the job posting before the
+        # pipeline read it. Advisory rows rendered by the Integrity tab.
+        "job_posting_findings": final_state.get("job_posting_findings") or [],
         # MR2: deterministic requirement-level fit table (covered/partial/gap
         # rows with evidence terms and human reasons).
         "requirement_matches": final_state.get("requirement_matches") or [],
@@ -713,6 +731,17 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
         merged_versions = (snapshot.values or {}).get("prompt_versions")
         if merged_versions:
             final_state["prompt_versions"] = merged_versions
+
+        # Posting findings are a LOADER output (step 1), never a delta of this
+        # segment, so on the step1 -> step2 resume path they exist only in the
+        # authoritative snapshot. Seed the payload from there and warn once
+        # more for runs that skipped step 1 entirely.
+        posting_findings = (snapshot.values or {}).get(
+            "job_posting_findings") or []
+        if posting_findings:
+            final_state["job_posting_findings"] = posting_findings
+            yield {"type": "warning",
+                   "message": _posting_warning(posting_findings)}
 
         if not final_state:
             final_state = snapshot.values or {}

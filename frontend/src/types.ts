@@ -37,6 +37,20 @@ export interface BulletSourceRow {
   reason: string;
 }
 
+/** Posting integrity gate: one deterministic finding from the fetched or
+ *  pasted job posting. The posting text was cleaned before any node read it;
+ *  these rows are advisory evidence of what was removed or flagged. */
+export interface PostingFinding {
+  kind:
+    | "hidden_html"
+    | "invisible_unicode"
+    | "instruction_line"
+    | "hidden_url"
+    | "homoglyph";
+  detail: string;
+  excerpt: string;
+}
+
 export interface OptimizationResult {
   session: string;
   optimized_resume: string;
@@ -62,6 +76,9 @@ export interface OptimizationResult {
   cover_letter_metrics?: string[];
   /** QW2: requests the writer declined because the evidence doesn't back them. */
   declined_requests?: string[];
+  /** Posting integrity gate: hidden/invisible/instruction-shaped content found
+   *  in the job posting and removed before analysis. */
+  job_posting_findings?: PostingFinding[];
   /** QW1: per-node prompt fingerprints (e.g. { improver: "improver@2" }). */
   prompt_versions?: Record<string, string>;
   /** MR2: deterministic requirement fit rows (covered/partial/gap + reasons). */
