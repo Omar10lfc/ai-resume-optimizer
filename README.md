@@ -1233,6 +1233,14 @@ The latest live run was mechanically clean - **92.7s**, **127,503 tokens**, **$0
 
 - **Tests:** one regression test in `tests/test_resume_agent.py`; full suite **588 passed**. The stored result for run `086ecb12` is historical - the next run gets the corrected matcher.
 
+## Session - Nov 19 2026 (extension readiness + live LangSmith eval set)
+
+**Extension readiness.** The MV3 manifest no longer grants `https://*/*` at install: required `host_permissions` are `http://localhost/*` and `http://127.0.0.1/*` (any port), while cloud backend origins live in `optional_host_permissions` and are requested at runtime. `frontend/src/api.ts` gained `ensureBackendHostAccess`, called from `saveSettings` on the Settings save gesture; a denial leaves the panel reporting the backend offline rather than silently working. The six-board scraper now has fixture tests (`frontend/tests/extension_scraper.test.mjs`, 8 cases: URL matching, selector priority, field extraction, upsell stripping, generic fallback), run with `npm run test:extension` on Node's built-in runner with type stripping and zero new dependencies. `tests/test_extension_readiness.py` guards the permission shape and store assets. `extension/store/` now carries the Chrome Web Store listing copy, privacy policy, a 440×280 promo tile and two 1280×800 screenshots captured from the built UI with demo data. `LINKEDIN_SMOKE.md` records the manual logged-in Chrome pass - an unauthenticated fetch is rejected by LinkedIn (429), so the live pass cannot be automated headlessly.
+
+**LangSmith eval set, verified live.** The Phase-4 code shipped Nov 15 (`agent/evals.py`, `scripts/build_eval_set.py`) was exercised against the real project: 50 root runs yielded 17 deduped `{job_description, resume_text} → result` examples, pushed into the `resume-optimizer-evals` dataset. All three code-only evaluators passed on all 17 examples (score sanity, deterministic integrity re-scan, keyword precision); a second run pushed 0 and skipped 17, confirming idempotency. The fetch path uses `client.runs.query` - the SmithDB-backed replacement for `list_runs`, which deprecates after Jan 31 2027 - with an explicit time window and a `selects` fallback ladder. No LLM calls; examples are re-redacted locally and local path keys are dropped.
+
+- **Tests:** `npm run test:extension` **8/8**, extension typecheck/lint/build green; full suite **592 passed** (2 warnings). The eval dataset lives in LangSmith, not in the repo.
+
 ---
 
 ## Production Architecture & Reliability

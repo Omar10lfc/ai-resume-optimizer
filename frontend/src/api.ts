@@ -82,6 +82,37 @@ export async function saveSettings(settings: Partial<ExtensionSettings>): Promis
       // ignore
     }
   }
+
+  // MV3 least privilege: a cloud backend origin is an OPTIONAL host
+  // permission. Ask for it when the user saves the URL (a user gesture), so
+  // the side panel never needs blanket https://*/* access. Localhost is a
+  // required host permission in the manifest and needs no prompt.
+  await ensureBackendHostAccess(updated.backendUrl);
+}
+
+/**
+ * Requests access to a configured cloud backend origin. Returns false when
+ * the user denies, or when the URL is not http(s) / is malformed. Safe to
+ * call in a plain web page (no chrome.permissions -> no-op).
+ */
+export async function ensureBackendHostAccess(backendUrl: string): Promise<boolean> {
+  if (typeof chrome === "undefined" || !chrome.permissions?.request) return true;
+  let url: URL;
+  try {
+    url = new URL(backendUrl);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1") return true;
+  // Chrome match patterns carry no port; the origin pattern covers any port
+  // on that host, which is what a configurable backend needs.
+  const origin = `${url.protocol}//${url.hostname}/*`;
+  try {
+    return await chrome.permissions.request({ origins: [origin] });
+  } catch {
+    return false;
+  }
 }
 
 export async function getBaseUrl(): Promise<string> {

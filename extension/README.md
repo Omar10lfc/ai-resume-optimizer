@@ -14,7 +14,8 @@ extension/
 │   └── sites.ts           # Per-site CSS selector registry + generic fallback
 ├── index.html / sidepanel.html / background.js / content.js / assets/
 │                          # Build artifacts mirrored from extension/dist (gitignored)
-└── icons/                 # Toolbar + store icons
+├── icons/                 # Toolbar + store icons
+└── store/                 # Chrome Web Store assets, listing, privacy policy, smoke checklist
 ```
 
 ## Build & Load
@@ -40,6 +41,41 @@ npm run typecheck:extension  # type-only check of extension/src (Vite transpiles
   and the health check validates *your* key when present.
 - **Basic auth** is forwarded when the server has `APP_AUTH_USERNAME` /
   `APP_AUTH_PASSWORD` set.
+
+## Permission model (least privilege)
+
+The extension installs with **no blanket web access**. `host_permissions` only
+covers `http://localhost/*` and `http://127.0.0.1/*` (any port) so the default
+local backend works immediately. Cloud backends live in
+`optional_host_permissions`: saving a non-local backend URL in Settings calls
+`chrome.permissions.request` for that origin only, from the user gesture.
+If permission is denied, the panel reports the backend as offline instead of
+silently working. After upgrading from the old blanket-permission build, open
+Settings and re-save your cloud URL once to grant the new optional origin.
+
+The job-board content scripts are declared by explicit `matches` in the
+manifest (LinkedIn, Greenhouse, Lever, Indeed, Workday, Ashby), not by a broad
+host grant.
+
+## Tests and store assets
+
+```bash
+cd frontend
+npm run test:extension   # Node fixture tests for sites.ts (no external deps)
+```
+
+The Node test runner loads `extension/src/sites.ts` with type stripping and a
+small selector-keyed DOM stub: per-board URL matching, selector priority,
+field extraction, upsell-footer stripping, and the generic fallback.
+`tests/test_extension_readiness.py` guards the manifest permission shape.
+
+`extension/store/` contains the Chrome Web Store submission assets:
+`listing.md` (copy + permission justifications), `privacy_policy.md`,
+`promo-tile.png` (440×280) and two 1280×800 screenshots. The screenshots were
+captured from the built UI with demo data (no real PII). `LINKEDIN_SMOKE.md` is
+the manual checklist for a logged-in Chrome pass — a live LinkedIn fetch cannot
+be automated from a headless environment (LinkedIn returns 429 to anonymous
+requests).
 
 ## Verification checklist
 

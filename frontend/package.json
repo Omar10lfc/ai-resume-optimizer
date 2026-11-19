@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "build:extension": "node build_extension.mjs",
     "typecheck:extension": "tsc -p tsconfig.extension.json",
+    "test:extension": "node --experimental-strip-types --test tests/extension_scraper.test.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },
