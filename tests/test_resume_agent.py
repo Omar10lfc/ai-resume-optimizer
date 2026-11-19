@@ -347,6 +347,34 @@ def test_job_url_accepts_public_ip(monkeypatch):
     assert url.endswith("/job/123")
 
 
+def test_job_url_preflight_reports_disabled_import(monkeypatch):
+    import agent.url_fetch as uf
+    monkeypatch.setattr(uf, "ALLOWED_JOB_URL_DOMAINS", set())
+    message = uf.job_url_preflight_error("https://boards.greenhouse.io/job")
+    assert message == uf.URL_IMPORT_DISABLED_MESSAGE
+    assert "Paste the job description" in message
+
+
+def test_job_url_preflight_reports_http_and_off_allowlist(monkeypatch):
+    import agent.url_fetch as uf
+    assert "HTTPS" in uf.job_url_preflight_error("http://boards.greenhouse.io/job")
+
+    monkeypatch.setattr(uf, "ALLOWED_JOB_URL_DOMAINS", {"boards.greenhouse.io"})
+    assert "allowlist" in uf.job_url_preflight_error(
+        "https://evil.example.com/job")
+
+
+def test_job_url_preflight_passes_pasted_text_and_allowlisted_url(monkeypatch):
+    import agent.url_fetch as uf
+    monkeypatch.setattr(uf, "ALLOWED_JOB_URL_DOMAINS", {"boards.greenhouse.io"})
+    assert uf.job_url_preflight_error("Build Python services.") is None
+    assert uf.job_url_preflight_error(
+        "https://boards.greenhouse.io/company/jobs/123") is None
+    # Scheme matching is case-insensitive; the loader must not paste a
+    # capitalized URL as if it were job text.
+    assert uf.looks_like_job_url("HTTPS://boards.greenhouse.io/job")
+
+
 # ==========================================
 # PII redaction & retention cleanup
 # ==========================================

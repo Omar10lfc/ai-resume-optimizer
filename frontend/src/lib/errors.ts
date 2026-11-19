@@ -22,6 +22,7 @@ export type ErrorKind =
   | "too_large" // "Resume file exceeds the N MB limit." (413)
   | "unsupported_file" // "Unsupported resume file type (PDF or DOCX only)."
   | "no_jd" // "Please provide a Job Description (text or URL)." / capture found nothing
+  | "url_import" // URL disabled / off the server's allowlist / non-HTTPS
   | "no_resume" // "Please upload a resume PDF or paste your resume text."
   | "session" // "Unknown session." / "Invalid session id." — server restarted or SID stale
   | "timeout" // Groq APITimeoutError / compilation timed out
@@ -79,6 +80,12 @@ const PATTERNS: Array<{
     test: /provide a job description|job description is empty|no job posting|couldn(?:'t| not) (?:find|extract).*job/i,
     title: "No job description",
     detail: "The job posting text arrived empty or too short. Paste the job description text or open the posting as a URL.",
+  },
+  {
+    kind: "url_import",
+    test: /url import is disabled|job url domain is not on the deployment allowlist|job urls must use https|job url must resolve to a public ip/i,
+    title: "Job URL can't be imported",
+    detail: "This server only imports HTTPS job URLs from an allowlist. Paste the job description text instead, or configure ALLOWED_JOB_URL_DOMAINS on the backend.",
   },
   {
     kind: "no_resume",

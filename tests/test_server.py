@@ -143,18 +143,76 @@ def _statuses(events) -> list[str]:
 # Health
 # ==========================================
 
-def test_health_reports_skipped_without_startup_check(client):
+def test_health_reports_skipped_without_startup_check(client, monkeypatch):
+    monkeypatch.setattr(server_app.agent_config, "ALLOWED_JOB_URL_DOMAINS",
+                        set())
     body = client.get("/api/v1/health").json()
     assert body["ok"] is None
     assert "skipped" in body["message"]
+    assert body["url_import"] == {"enabled": False, "allowed_domains": []}
+
+
+def test_health_reports_url_import_allowlist(client, monkeypatch):
+    monkeypatch.setattr(server_app.agent_config, "ALLOWED_JOB_URL_DOMAINS",
+                        {"jobs.lever.co", "boards.greenhouse.io"})
+    body = client.get("/api/v1/health").json()
+    assert body["url_import"] == {
+        "enabled": True,
+        "allowed_domains": ["boards.greenhouse.io", "jobs.lever.co"],
+    }
 
 
 def test_health_reflects_startup_check_when_lifespan_ran(monkeypatch):
     monkeypatch.setattr(agent.llms, "check_provider_health",
                         lambda: (False, "groq is down"))
+    monkeypatch.setattr(server_app.agent_config, "ALLOWED_JOB_URL_DOMAINS",
+                        set())
     with TestClient(server_app.app) as c:
         body = c.get("/api/v1/health").json()
-    assert body == {"ok": False, "message": "groq is down"}
+    assert body == {
+        "ok": False,
+        "message": "groq is down",
+        "url_import": {"enabled": False, "allowed_domains": []},
+    }
+
+
+def test_step1_rejects_disabled_url_import_before_recording(client, monkeypatch):
+    import agent.url_fetch as url_fetch
+
+    monkeypatch.setattr(url_fetch, "ALLOWED_JOB_URL_DOMAINS", set())
+    monkeypatch.setattr(agent.nodes.loader, "_fetch_job_description",
+                        lambda url: (_ for _ in ()).throw(
+                            AssertionError("URL fetch must not run")))
+    started = []
+    monkeypatch.setattr(runners.run_store, "start",
+                        lambda *args, **kwargs: started.append(args))
+
+    session = "77777777-7777-7777-7777-777777777777"
+    r = client.post("/api/v1/step1",
+                    data={"job_description": "https://www.linkedin.com/jobs/view/123",
+                          "resume_text": RESUME_TEXT, "session": session})
+    events = parse_sse(r.text)
+    assert [kind for kind, _ in events] == ["error"]
+    assert "disabled" in events[0][1]["message"]
+    assert started == []  # rejected before the runs ledger starts a row
+    assert client.get(f"/api/v1/runs/{session}").status_code == 404
+
+
+def test_step2_rejects_disabled_url_import_before_recording(client, monkeypatch):
+    import agent.url_fetch as url_fetch
+
+    monkeypatch.setattr(url_fetch, "ALLOWED_JOB_URL_DOMAINS", set())
+    started = []
+    monkeypatch.setattr(runners.run_store, "start",
+                        lambda *args, **kwargs: started.append(args))
+
+    r = client.post("/api/v1/step2",
+                    data={"job_description": "https://www.linkedin.com/jobs/view/123",
+                          "resume_text": RESUME_TEXT, "notes": ""})
+    events = parse_sse(r.text)
+    assert [kind for kind, _ in events] == ["error"]
+    assert "disabled" in events[0][1]["message"]
+    assert started == []
 
 
 # ==========================================
@@ -984,10 +1042,16 @@ def test_health_with_user_key_validates_that_key(client, monkeypatch):
         return True, "API reachable (99 models)."
 
     monkeypatch.setattr(server_app, "_groq_models_status", fake_status)
+    monkeypatch.setattr(server_app.agent_config, "ALLOWED_JOB_URL_DOMAINS",
+                        set())
     body = client.get("/api/v1/health",
                       headers={server_app._CLIENT_GROQ_KEY_HEADER: BYO_KEY}).json()
     assert seen["key"] == BYO_KEY
-    assert body == {"ok": True, "message": "API reachable (99 models)."}
+    assert body == {
+        "ok": True,
+        "message": "API reachable (99 models).",
+        "url_import": {"enabled": False, "allowed_domains": []},
+    }
 
     # no header -> unchanged behavior (pre-parse comes from startup state)
     assert client.get("/api/v1/health").status_code == 200
@@ -1050,16 +1114,21 @@ def test_runs_endpoint_roundtrips_step1_and_step2(client, fake_llms):
 
 def test_runs_ledger_records_failures_with_reason(client, fake_llms,
                                                   monkeypatch):
+    import agent.url_fetch as url_fetch
+
     def _boom(url):
         raise ValueError("provider exploded")
 
     # the loader is the graph entry point -> fails the run (BB1 Phase B
     # made the writer failure degrade to a fallback, so the ledger-failure
-    # vehicle moved to the loader's URL fetch, which stays a hard error)
+    # vehicle moved to the loader's URL fetch, which stays a hard error).
+    # The URL must pass the static preflight (allowlisted HTTPS) so the
+    # fetch-time failure reaches the ledger.
+    monkeypatch.setattr(url_fetch, "ALLOWED_JOB_URL_DOMAINS", {"example.com"})
     monkeypatch.setattr(agent.nodes.loader, "_fetch_job_description", _boom)
     known = "66666666-6666-6666-6666-666666666666"
     r = client.post("/api/v1/step2",
-                    data={"job_description": "http://example.com/job",
+                    data={"job_description": "https://example.com/job",
                           "resume_text": RESUME_TEXT,
                           "notes": "", "session": known})
     events = parse_sse(r.text)

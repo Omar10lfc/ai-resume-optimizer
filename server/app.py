@@ -82,6 +82,22 @@ def _client_groq_key(request: Request) -> str | None:
     return key[:512] if key else None
 
 
+def _health_with_url_import(payload: dict) -> dict:
+    """Add the URL-import configuration the UI needs to tell the truth.
+
+    Health is also the config surface for the job-URL panel: whether import
+    is enabled and which domains are allowed. No secrets - just the opt-in
+    allowlist read at process start.
+    """
+    return {
+        **payload,
+        "url_import": {
+            "enabled": bool(agent_config.ALLOWED_JOB_URL_DOMAINS),
+            "allowed_domains": sorted(agent_config.ALLOWED_JOB_URL_DOMAINS),
+        },
+    }
+
+
 _security = HTTPBasic(auto_error=False)
 
 
@@ -292,12 +308,14 @@ def create_app() -> FastAPI:
         user_key = _client_groq_key(request)
         if user_key:
             ok, message = _groq_models_status(user_key)
-            return {"ok": ok, "message": message}
+            return _health_with_url_import({"ok": ok, "message": message})
         health = getattr(request.app.state, "health", None)
         if health is None:
-            return {"ok": None,
-                    "message": "Startup health check skipped (SKIP_STARTUP_HEALTHCHECK=1)."}
-        return health
+            return _health_with_url_import({
+                "ok": None,
+                "message": "Startup health check skipped (SKIP_STARTUP_HEALTHCHECK=1).",
+            })
+        return _health_with_url_import(health)
 
     @app.post("/api/v1/step1")
     def step1(request: Request,

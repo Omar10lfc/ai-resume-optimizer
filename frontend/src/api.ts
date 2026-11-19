@@ -19,6 +19,15 @@ export interface ExtensionSettings {
   customGroqKey: string;
 }
 
+export interface ProviderHealth {
+  ok: boolean | null;
+  message: string;
+  url_import?: {
+    enabled: boolean;
+    allowed_domains: string[];
+  };
+}
+
 const DEFAULT_SETTINGS: ExtensionSettings = {
   backendUrl: typeof chrome !== "undefined" && chrome.runtime?.id ? "http://localhost:8000" : "",
   appAuthUser: "",
@@ -269,7 +278,7 @@ export async function runStep2(
   }
 }
 
-export async function checkProviderHealth(): Promise<{ ok: boolean; message: string }> {
+export async function checkProviderHealth(): Promise<ProviderHealth> {
   try {
     const baseUrl = await getBaseUrl();
     const authHeaders = await getAuthHeaders();

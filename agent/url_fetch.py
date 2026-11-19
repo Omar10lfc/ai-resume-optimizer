@@ -32,19 +32,53 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def _validate_job_url(raw_url: str) -> str:
-    parsed = urlparse(raw_url.strip())
+URL_IMPORT_DISABLED_MESSAGE = (
+    "URL import is disabled until ALLOWED_JOB_URL_DOMAINS is configured. "
+    "Paste the job description instead."
+)
+
+
+def looks_like_job_url(value: str) -> bool:
+    """True when the input is an http(s) URL rather than pasted text."""
+    return (value or "").strip().lower().startswith(("http://", "https://"))
+
+
+def _static_job_url_error(raw_url: str) -> str | None:
+    """Configuration-only URL checks shared by the loader and the SSE
+    preflight. DNS/SSRF and fetch checks stay in ``_validate_job_url`` /
+    ``_fetch_job_description`` so this helper never touches the network."""
+    parsed = urlparse((raw_url or "").strip())
     if parsed.scheme != "https" or not parsed.hostname:
-        raise ValueError("Job URLs must use HTTPS.")
-    hostname = parsed.hostname.lower()
+        return "Job URLs must use HTTPS."
     if not ALLOWED_JOB_URL_DOMAINS:
-        raise ValueError(
-            "URL import is disabled until ALLOWED_JOB_URL_DOMAINS is configured. "
-            "Paste the job description instead."
-        )
-    if not any(hostname == domain or hostname.endswith(f".{domain}") for domain in ALLOWED_JOB_URL_DOMAINS):
-        raise ValueError("This job URL domain is not on the deployment allowlist.")
-    if not _is_public_host(hostname):
+        return URL_IMPORT_DISABLED_MESSAGE
+    hostname = parsed.hostname.lower()
+    if not any(hostname == domain or hostname.endswith(f".{domain}")
+               for domain in ALLOWED_JOB_URL_DOMAINS):
+        return "This job URL domain is not on the deployment allowlist."
+    return None
+
+
+def job_url_preflight_error(raw_url: str) -> str | None:
+    """Return the user-facing reason a URL input cannot be imported, or None.
+
+    Static only (scheme, allowlist configuration, host allowlist): the
+    runners call this before tracing/recording a run so an unconfigured URL
+    import fails as a clean SSE error instead of a loader traceback. A
+    non-URL input always passes.
+    """
+    if not looks_like_job_url(raw_url):
+        return None
+    return _static_job_url_error(raw_url)
+
+
+def _validate_job_url(raw_url: str) -> str:
+    raw_url = raw_url.strip()
+    error = _static_job_url_error(raw_url)
+    if error:
+        raise ValueError(error)
+    parsed = urlparse(raw_url)
+    if not _is_public_host(parsed.hostname):
         raise ValueError("Job URL must resolve to a public IP address.")
     return parsed.geturl()
 

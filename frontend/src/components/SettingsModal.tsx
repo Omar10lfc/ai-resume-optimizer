@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { X, Check, PlugsConnected, ArrowClockwise, Key, Globe, Shield, WarningCircle } from "@phosphor-icons/react";
-import { getSettings, saveSettings, checkProviderHealth, type ExtensionSettings } from "../api";
+import { getSettings, saveSettings, checkProviderHealth, type ExtensionSettings, type ProviderHealth } from "../api";
 import { isExtension } from "../lib/theme";
 
 /**
@@ -29,7 +29,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
     customGroqKey: "",
   });
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<ProviderHealth | null>(null);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [eraseArmed, setEraseArmed] = useState(false);
   const [eraseDone, setEraseDone] = useState(false);

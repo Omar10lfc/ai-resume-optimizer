@@ -37,6 +37,9 @@ interface InputSectionProps {
   setResumeFile: (file: File | null) => void;
   resumeMode: "upload" | "paste";
   setResumeMode: (mode: "upload" | "paste") => void;
+  /** null until health answers; false = the server has no URL allowlist */
+  urlImportEnabled: boolean | null;
+  allowedJobUrlDomains: string[];
   onAnalyze: () => void;
   isProcessing: boolean;
   disabled: boolean;
@@ -60,6 +63,8 @@ export const InputSection: React.FC<InputSectionProps> = ({
   setResumeFile,
   resumeMode,
   setResumeMode,
+  urlImportEnabled,
+  allowedJobUrlDomains,
   onAnalyze,
   isProcessing,
   disabled,
@@ -106,10 +111,12 @@ export const InputSection: React.FC<InputSectionProps> = ({
 
   const wordCount = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
 
+  const urlImportBlocked = jobMode === "url" && urlImportEnabled === false;
+  const urlLooksValid = /^https?:\/\//i.test(jobUrl.trim());
   const isJobReady =
     jobMode === "text"
       ? jobText.trim().length > 20
-      : jobUrl.trim().startsWith("http");
+      : urlLooksValid && !urlImportBlocked;
   const isResumeReady =
     resumeMode === "upload" ? resumeFile !== null : resumeText.trim().length > 50;
   const canSubmit = isJobReady && isResumeReady && !disabled && !isProcessing;
@@ -240,9 +247,32 @@ export const InputSection: React.FC<InputSectionProps> = ({
               disabled={disabled || isProcessing}
               className="input font-mono"
             />
-            <p className="text-2xs text-ink-3 mt-2 leading-relaxed">
-              Works with LinkedIn, Greenhouse, Lever, Workday, and Ashby postings.
-            </p>
+            {urlImportEnabled === false ? (
+              <p
+                role="status"
+                className="flex items-start gap-1.5 mt-2 text-2xs text-warn leading-relaxed"
+              >
+                <WarningCircle weight="bold" className="w-3.5 h-3.5 shrink-0 mt-px" />
+                <span>
+                  URL import is disabled on this server. Paste the job description
+                  instead, or set <span className="font-mono">ALLOWED_JOB_URL_DOMAINS</span>{" "}
+                  on the backend and restart it.
+                </span>
+              </p>
+            ) : urlImportEnabled === true ? (
+              <p className="text-2xs text-ink-3 mt-2 leading-relaxed">
+                HTTPS job URLs only. Allowlisted domains:{" "}
+                <span className="font-mono break-words">
+                  {allowedJobUrlDomains.length > 0
+                    ? allowedJobUrlDomains.join(", ")
+                    : "none"}
+                </span>
+              </p>
+            ) : (
+              <p className="text-2xs text-ink-3 mt-2 leading-relaxed">
+                HTTPS job URLs from the server's allowlist only.
+              </p>
+            )}
           </div>
         )}
       </section>

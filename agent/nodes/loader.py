@@ -7,7 +7,12 @@ from ..state import AgentState
 from ..helpers import _safe_print, _safe_truncate
 from ..posting_guard import scan_posting
 from ..tracing import register_known_name, candidate_name_hint
-from ..url_fetch import _fetch_job_description, _load_resume_docx, _load_resume_pdf
+from ..url_fetch import (
+    _fetch_job_description,
+    _load_resume_docx,
+    _load_resume_pdf,
+    looks_like_job_url,
+)
 
 
 def _normalize_raw_text(text: str) -> str:
@@ -24,7 +29,7 @@ def loader_node(state: AgentState):
 
     job_content = state['job_description']
     job_is_html = False
-    if state['job_description'].strip().startswith("http"):
+    if looks_like_job_url(state['job_description']):
         try:
             job_content = _fetch_job_description(state['job_description'])
             job_is_html = True

@@ -50,6 +50,7 @@ from agent.tracing import (
     log_pipeline_feedback,
     register_known_name,
 )
+from agent.url_fetch import job_url_preflight_error
 from server import profile_store, run_store
 
 # Redacted-tracing callbacks go with every invoke (empty list = tracing off)
@@ -838,8 +839,27 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
             print(f"[Profile] recording skipped (non-fatal): {exc}")
 
 
-# MR3: the module-level public names are the RECORDING wrappers (the SSE
-# layer, tests, and monkeypatchers target these); the raw generators keep
-# underscore names.
-stream_step1 = _recorded(_stream_step1)
-stream_step2 = _recorded(_stream_step2)
+# MR3 + URL preflight: the module-level public names are the RECORDING
+# wrappers fronted by the static URL check (the SSE layer, tests, and
+# monkeypatchers target these); the raw generators keep underscore names.
+def _preflight_url_import(runner):
+    """Reject static URL-import errors before ``_recorded`` starts a run.
+
+    A URL that is disabled or off the allowlist is a configuration answer,
+    not a pipeline failure: the client gets one clean SSE error, no
+    traceback, and no failed row in the runs ledger. Fetch-time failures
+    (DNS, size, content type) still flow through the loader and are
+    recorded normally.
+    """
+    @functools.wraps(runner)
+    def wrapper(job_description, *args, **kwargs):
+        error = job_url_preflight_error(job_description)
+        if error:
+            yield {"type": "error", "message": error}
+            return
+        yield from runner(job_description, *args, **kwargs)
+    return wrapper
+
+
+stream_step1 = _preflight_url_import(_recorded(_stream_step1))
+stream_step2 = _preflight_url_import(_recorded(_stream_step2))

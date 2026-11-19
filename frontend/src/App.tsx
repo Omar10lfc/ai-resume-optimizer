@@ -70,6 +70,10 @@ const RESUME_SAVE_DEBOUNCE_MS = 500;
 export function App() {
   const [healthOk, setHealthOk] = useState<boolean | null>(null);
   const [healthMessage, setHealthMessage] = useState<string | null>(null);
+  const [urlImport, setUrlImport] = useState<{
+    enabled: boolean;
+    allowedDomains: string[];
+  } | null>(null);
   const [stage, setStage] = useState<PipelineStage>("idle");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [errorInfo, setErrorInfo] = useState<ErrorInfo | null>(null);
@@ -190,6 +194,14 @@ export function App() {
     checkProviderHealth().then((res) => {
       setHealthOk(res.ok);
       setHealthMessage(res.message);
+      setUrlImport(
+        res.url_import
+          ? {
+              enabled: res.url_import.enabled,
+              allowedDomains: res.url_import.allowed_domains ?? [],
+            }
+          : null,
+      );
     });
   };
 
@@ -549,6 +561,8 @@ export function App() {
               setResumeFile={setResumeFile}
               resumeMode={resumeMode}
               setResumeMode={setResumeMode}
+              urlImportEnabled={urlImport ? urlImport.enabled : null}
+              allowedJobUrlDomains={urlImport?.allowedDomains ?? []}
               onAnalyze={handleAnalyzeStep1}
               isProcessing={stage === "step1_running"}
               disabled={stage === "step2_running"}
