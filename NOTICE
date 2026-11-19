@@ -15,6 +15,10 @@ Adapted in this repository:
   CID/replacement damage, ASCII date separators, required literals).
   Adapted from `tools/verify_pdf.py` and the ASCII-date rule in
   `.claude/skills/job-application-assistant/05-cv-templates.md`.
+- `agent/trim.py` - relevance-weighted trim suggestions (posting relevance,
+  uniqueness, cover-letter narrative load). Adapted from the
+  "Relevance-weighted cutting" guidance in
+  `.claude/skills/job-application-assistant/05-cv-templates.md`.
 
 ## Upstream license
 

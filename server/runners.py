@@ -124,7 +124,7 @@ def _recovery_reset() -> dict:
         "resume_html_path": "",
         "resume_pages": 0, "resume_compacted": False,
         "page_overflow_warning": "", "guardrail_warnings": [],
-        "pdf_checks": [],
+        "pdf_checks": [], "trim_suggestions": [],
         "render_engine": "",
         "scrub_removals": [], "unevidenced_metrics": [],
         "declined_requests": [], "requirement_matches": [],
@@ -382,6 +382,9 @@ def _extract_results(final_state: dict) -> dict:
         "page_overflow_warning": final_state.get("page_overflow_warning") or "",
         # PDF text-layer gate (pdf_exporter): what an ATS parser reads back.
         "pdf_checks": final_state.get("pdf_checks") or [],
+        # Relevance-weighted trim suggestions (pdf_exporter): the cheapest
+        # lines to cut when the one-page contract still fails. Empty otherwise.
+        "trim_suggestions": final_state.get("trim_suggestions") or [],
         # MR2: deterministic requirement-level fit table (covered/partial/gap
         # rows with evidence terms and human reasons).
         "requirement_matches": final_state.get("requirement_matches") or [],

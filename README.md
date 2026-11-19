@@ -1178,9 +1178,9 @@ inside words like "google"/"programming", systematically inflating ATS scores.
 
 ---
 
-## Session - Nov 19 2026 (reference adoptions: posting integrity + PDF text-layer gates)
+## Session - Nov 19 2026 (reference adoptions: posting, PDF, and trim gates)
 
-Read-only study of the MIT-licensed [`ai-job-search`](https://github.com/ai-job-search-dev/ai-job-search) reference (prose skill pack + small CLI tools, not a running application). This round ports mechanics, not files; attribution lives in `NOTICE`. Scope chosen by the user: posting integrity, PDF text-layer verification, relevance-weighted trim suggestions - the first two shipped here.
+Read-only study of the MIT-licensed [`ai-job-search`](https://github.com/ai-job-search-dev/ai-job-search) reference (prose skill pack + small CLI tools, not a running application). This round ports mechanics, not files; attribution lives in `NOTICE`. Scope chosen by the user: posting integrity, PDF text-layer verification, relevance-weighted trim suggestions - all three shipped here.
 
 **The gap:** URL mode stored the fetched **raw HTML** in `job_text` and the pasted path kept whatever Unicode arrived, so the scanner, ATS engine, and every prompt read hidden `display:none` blocks, zero-width/bidi characters, or Unicode-tag payloads that a human never sees. `_untrusted` delimits posting text in prompts but does not sanitize it.
 
@@ -1198,7 +1198,18 @@ Read-only study of the MIT-licensed [`ai-job-search`](https://github.com/ai-job-
 
 - **Tests:** `tests/test_pdf_verify.py` (26) - unreadable file, blank text layer, page-count contract, CID/U+FFFD damage, every non-ASCII date dash, ASCII dates, typographic folding for required literals, em/en-dash and minus date normalization, standalone month ranges, rendered TeX, compiled PDFs (en-dash detection + fixed resume), exporter wiring, literal selection, missing-file skip; plus the exporter signature fix in `test_html_render.py`.
 
-> Status: posting gate **17 passed**, PDF gate **26 passed**; full suite pending. Restart the FastAPI backend to load the new gate; the extension shares `ResultsDashboard.tsx`, so rebuild/reload it when the frontend bundle is refreshed.
+**Relevance-weighted trim suggestions (`agent/trim.py`, new):** when every density tier still leaves the resume over one page, the only advice used to be "trim content". The exporter now ranks the cheapest cuts with the signals the Fit and Bullet-impact tabs already compute - no model call, no resume edit:
+
+- **Relevance** wins over section order: a line that hits this posting's keywords or a covered requirement is expensive; an office-management bullet on the newest role is cheap.
+- **Uniqueness** makes a skills row that repeats a role bullet the cleanest cut (the concrete bullet stays); the suggestion says to trim the duplicates rather than delete the keyword.
+- **Narrative load** keeps the line the cover letter leans on; cutting it would force a paragraph rewrite.
+- **Impact** reuses the Round-13 XYZ grade: a duty-shaped, unmeasured bullet outranks a quantified one as a cut.
+
+The top five `{section, excerpt, reason}` rows render inside the overflow card above the result tabs; the list is empty on every normal one-page run, ties keep resume order, and identical inputs always produce identical suggestions.
+
+- **Tests:** `tests/test_trim.py` (16) - no-overflow empty list, five-row cap, shape, education exclusion, low-relevance ordering, duplicated-skills priority, unique-skills exclusion, specific-summary exclusion, cover-letter protection, requirement-evidence protection, precomputed impact authority, determinism, input immutability, exporter overflow/no-overflow wiring, result payload.
+
+> Status: posting gate **17 passed**, PDF gate **26 passed**, trim suggestions **16 passed**; full suite **581 passed**, coverage **90.19%** (gate 84%). Restart the FastAPI backend to load the new gates; the extension shares `ResultsDashboard.tsx`, so rebuild/reload it when the frontend bundle is refreshed.
 
 ---
 

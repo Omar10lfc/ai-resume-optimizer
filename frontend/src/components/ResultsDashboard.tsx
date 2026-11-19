@@ -20,7 +20,7 @@ import {
   X,
   Lightning,
 } from "@phosphor-icons/react";
-import type { OptimizationResult, RequirementMatch, BulletImpactRow, BulletSourceRow, PostingFinding, PdfCheck } from "../types";
+import type { OptimizationResult, RequirementMatch, BulletImpactRow, BulletSourceRow, PostingFinding, PdfCheck, TrimSuggestion } from "../types";
 import { resolveArtifactUrl } from "../api";
 import { ScoreGauge } from "./ScoreGauge";
 import { DiffView } from "./DiffView";
@@ -123,6 +123,7 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   // optimized bullet came from + dropped metrics).
   const sourceRows = (result.bullet_sources ?? []) as BulletSourceRow[];
   const pdfChecks = (result.pdf_checks ?? []) as PdfCheck[];
+  const trimSuggestions = (result.trim_suggestions ?? []) as TrimSuggestion[];
   const taskUsage = result.task_usage ?? {};
   const usageRows = Object.entries(taskUsage);
   const usageTotals = usageRows.length
@@ -329,6 +330,19 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
             <Warning weight="bold" className="w-3.5 h-3.5 shrink-0 mt-[1px]" />
             <span>{result.page_overflow_warning}</span>
           </div>
+          {trimSuggestions.length > 0 && (
+            <>
+              <p className="mt-2 pl-5 font-semibold">Safest cuts, cheapest first:</p>
+              <ol className="mt-1 pl-8 space-y-1 list-decimal">
+                {trimSuggestions.map((s, i) => (
+                  <li key={`trim-${i}`} className="leading-relaxed">
+                    <span className="font-semibold">{s.section}</span>
+                    {": \u201c"}{s.excerpt}{"\u201d - "}{s.reason}
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
         </div>
       )}
 

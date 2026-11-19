@@ -29,6 +29,7 @@ from ..config import OUTPUT_ROOT
 from ..state import AgentState
 from ..helpers import _safe_print, _html_to_pdf
 from ..pdf_verify import normalize_text, verify_pdf
+from ..trim import suggest_trims
 from .. import latex_render as _latex
 from .. import html_render as _html
 
@@ -351,6 +352,18 @@ def pdf_exporter_node(state: AgentState):
         state['optimized_resume'], state['cover_letter'], request_dir,
         theme=state.get("resume_theme") or "",
         job_text=state.get("job_text") or "")
+
+    # One-page containment already tried every density tier: when it still
+    # overflows, rank the cheapest content cuts from the same deterministic
+    # signals the Fit/Bullet-impact tabs show. Empty on a normal one-page run.
+    exported["trim_suggestions"] = suggest_trims(
+        state.get("optimized_resume") or "",
+        job_text=state.get("job_text") or "",
+        cover_text=state.get("cover_letter") or "",
+        requirement_matches=state.get("requirement_matches") or [],
+        bullet_impact=state.get("bullet_impact") or [],
+        overflowed=bool(exported.get("page_overflow_warning")),
+    )
 
     _safe_print(f"-> Saved resume PDF:  {exported['resume_pdf_path']}")
     _safe_print(f"-> Saved resume DOCX: {exported['resume_docx_path']}")

@@ -59,6 +59,13 @@ export interface PdfCheck {
   detail: string;
 }
 
+/** Relevance-weighted trim suggestion: one line safe to cut on overflow. */
+export interface TrimSuggestion {
+  section: string;
+  excerpt: string;
+  reason: string;
+}
+
 export interface OptimizationResult {
   session: string;
   optimized_resume: string;
@@ -93,6 +100,9 @@ export interface OptimizationResult {
   /** PDF text-layer gate: what an ATS parser reads back from the shipped
    *  resume + cover letter (empty pages, CID damage, ASCII dates, literals). */
   pdf_checks?: PdfCheck[];
+  /** Relevance-weighted trim suggestions: the five cheapest lines to cut when
+   *  the resume still overflows one page, each with a deterministic reason. */
+  trim_suggestions?: TrimSuggestion[];
   /** QW1: per-node prompt fingerprints (e.g. { improver: "improver@2" }). */
   prompt_versions?: Record<string, string>;
   /** MR2: deterministic requirement fit rows (covered/partial/gap + reasons). */

@@ -69,6 +69,10 @@ class AgentState(TypedDict):
     # non-ASCII date separators, and required literals (name/email/keywords).
     # Advisory rows for the Integrity tab; a failed check never blocks a run.
     pdf_checks: NotRequired[list]
+    # Relevance-weighted trim suggestions (pdf_exporter): the five cheapest
+    # lines to cut when one-page containment still fails, with a reason each.
+    # Empty on every run that fits; advisory only, never edits the resume.
+    trim_suggestions: NotRequired[list]
     # BB2 (Nov 14 2026): which engine produced the resume PDF -
     # "html-chromium@1" (the CSS-density HTML theme), "latex@1" (the classic
     # theme), or "xhtml2pdf@1" (the last-resort fallback). One-lookup answer
