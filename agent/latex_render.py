@@ -122,9 +122,14 @@ _HR_RE = re.compile(r'^\s*([-*_])\s*(?:\1\s*){2,}\s*$')
 # pypdf-7 extraction keeps it, run d946bb5f's Education row shipped
 # dateless): guarded by a lookahead so prose like "grew users from 10K in
 # 2021 to 50K" (no 4-digit year / Present after the word) never matches.
+# Every typographic dash an author or renderer can put between dates. The
+# ASCII-date gate flags all of them, so parsing must recognize all of them.
+_NON_ASCII_DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+_DATE_DASH = "[-" + _NON_ASCII_DASHES + "]"
+
 _DATE_RANGE_RE = re.compile(
     r'((?:[A-Za-z]{3,9}\.?\s+)?\d{4}|\d{4})'
-    r'(?:\s*[-–—]{1,3}\s*|\s+(?:to|through|till|until)\s+'
+    r'(?:\s*' + _DATE_DASH + r'{1,3}\s*|\s+(?:to|through|till|until)\s+'
     r'(?=(?:[A-Za-z]{3,9}\.?\s*,?\s*)?\d{4}|\bPresent\b))'
     r'(.+?)\s*$',
     re.IGNORECASE,
@@ -136,22 +141,42 @@ _DATE_RANGE_RE = re.compile(
 # "… | Aug – Sep 2026" lost its date entirely). End-anchored to avoid
 # matching month words mid-stack ("May" inside a tool list).
 _MONTH_RANGE_RE = re.compile(
-    r'(?:[A-Za-z]{3,9}\.?\s*)?[-–—]?\s*[A-Za-z]{3,9}\.?\s*'
-    r'(?:[-–—]{1,3}|\s+(?:to|through)\s+)'
+    r'(?:[A-Za-z]{3,9}\.?\s*)?' + _DATE_DASH + r'?\s*[A-Za-z]{3,9}\.?\s*'
+    r'(?:' + _DATE_DASH + r'{1,3}|\s+(?:to|through)\s+)'
     r'\s*[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$', re.IGNORECASE)
 # A field whose ENTIRE content is a standalone date-ish token
 # ("Aug 2026 - Present", "2020-2022", "Aug – Sep 2026"). Only whole-segment
 # matches pop a column off, never inline mentions inside longer text.
 _STANDALONE_DATE_RE = re.compile(
     r'^\s*(?:'
-    r'(?:[A-Za-z]{3,9}\.?\s+)?\d{4}\s*[-–—]{1,3}\s*(?:.+?)?\s*\d{0,4}\s*'
+    r'(?:[A-Za-z]{3,9}\.?\s+)?\d{4}\s*' + _DATE_DASH + r'{1,3}\s*(?:.+?)?\s*\d{0,4}\s*'
     r'|[A-Za-z]{3,9}\.?\s+\d{4}\s*$'
-    r'|[A-Za-z]{3,9}\.?\s*[-–—]{1,3}\s*[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$'
+    r'|[A-Za-z]{3,9}\.?\s*' + _DATE_DASH + r'{1,3}\s*[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$'
     r'|(?:[A-Za-z]{3,9}\.?\s+)?\d{4}\s+(?:to|through|till|until)\s+'
     r'(?:[A-Za-z]{3,9}\.?\s*,?\s*)?(?:\d{4}|Present)\s*$'
-    r'|[A-Za-z]{3,9}\.?\s*(?:[-–—]{1,3}|\s+(?:to|through)\s+)\s*'
+    r'|[A-Za-z]{3,9}\.?\s*(?:' + _DATE_DASH + r'{1,3}|\s+(?:to|through)\s+)\s*'
     r'[A-Za-z]{3,9}\.?\s*,?\s*\d{4}\s*$'
     r')\s*$', re.IGNORECASE)
+
+# Date ranges ship ASCII-only. LaTeX turns `--` into an en dash, and ATS
+# imports (Workday) drop a date whose separator is non-ASCII along with the
+# column; `_force_ascii` maps an em dash to `--`, so normalizing the parsed
+# date field is the root-cause repair for BOTH renderers and every engine.
+_ANY_DASH_RE = re.compile(f"[{_NON_ASCII_DASHES}]")
+
+
+def _normalize_date_ascii(value: str) -> str:
+    """Render a date/date-range with ASCII hyphens only.
+
+    Keeps the author's spacing ("Sep 2025 - Jun 2026" stays spaced) and
+    collapses repeated separators ("2016--2024" -> "2016-2024") so LaTeX
+    cannot turn them into an en dash. Applied only to fields already known
+    to be dates, never to titles or locations.
+    """
+    if not value:
+        return value
+    value = _ANY_DASH_RE.sub("-", value)
+    return re.sub(r"-{2,}", "-", value)
 
 # A bold label line like "**Languages**: Python" or "**Tools**: Git, Docker"
 # — typically a leaf line under a Technical Skills (or similar) section.
@@ -517,8 +542,8 @@ def _date_match_to_field(m: "re.Match") -> tuple[str, str]:
     matched = m.group(0)
     if "|" in matched:
         date, _, tail = matched.partition("|")
-        return _clean_field(date), tail.strip()
-    return _clean_field(matched), ""
+        return _normalize_date_ascii(_clean_field(date)), tail.strip()
+    return _normalize_date_ascii(_clean_field(matched)), ""
 
 
 def _split_header_and_dates(heading_line: str) -> tuple[str, str, str, str]:
@@ -571,7 +596,7 @@ def _split_header_and_dates(heading_line: str) -> tuple[str, str, str, str]:
                     if seg and _STANDALONE_DATE_RE.match(seg):
                         tail = segments.copy()
                         del tail[idx]
-                        return tail, seg
+                        return tail, _normalize_date_ascii(seg)
             return segments, dates
 
         parts, dates = _pop_standalone_date(parts)
@@ -717,7 +742,7 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
                 # p[0]/p[1] extraction used to drop it (any >=2-header-line
                 # entry lost its date - run bf0f7941's Smart Lecture row
                 # shipped dateless).
-                entry.sub_right = _clean_field(p[-1])
+                entry.sub_right = _normalize_date_ascii(_clean_field(p[-1]))
         elif _should_split_on_comma(first):
             p = [x.strip() for x in first.split(',')]
             entry.header = _clean_field(p[0])
@@ -782,6 +807,19 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
             idx += 1
         else:
             break
+
+    # Date-shaped columns are normalized regardless of which branch filled
+    # them: two-line headers can put the range in `right`, and the compact/
+    # HTML/project paths all read these fields later.
+    if entry.sub_right and (
+            _DATE_RANGE_RE.search(entry.sub_right)
+            or _MONTH_RANGE_RE.search(entry.sub_right)
+            or _STANDALONE_DATE_RE.match(entry.sub_right)):
+        entry.sub_right = _normalize_date_ascii(entry.sub_right)
+    if entry.right and (
+            _DATE_RANGE_RE.search(entry.right)
+            or _STANDALONE_DATE_RE.match(entry.right)):
+        entry.right = _normalize_date_ascii(entry.right)
 
     return entry, idx
 

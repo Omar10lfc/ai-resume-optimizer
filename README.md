@@ -1178,9 +1178,9 @@ inside words like "google"/"programming", systematically inflating ATS scores.
 
 ---
 
-## Session - Nov 19 2026 (reference adoptions: posting integrity gate)
+## Session - Nov 19 2026 (reference adoptions: posting integrity + PDF text-layer gates)
 
-Read-only study of the MIT-licensed [`ai-job-search`](https://github.com/ai-job-search-dev/ai-job-search) reference (prose skill pack + small CLI tools, not a running application). This round ports mechanics, not files; attribution lives in `NOTICE`. Scope chosen by the user: posting integrity, PDF text-layer verification, relevance-weighted trim suggestions - the first shipped here.
+Read-only study of the MIT-licensed [`ai-job-search`](https://github.com/ai-job-search-dev/ai-job-search) reference (prose skill pack + small CLI tools, not a running application). This round ports mechanics, not files; attribution lives in `NOTICE`. Scope chosen by the user: posting integrity, PDF text-layer verification, relevance-weighted trim suggestions - the first two shipped here.
 
 **The gap:** URL mode stored the fetched **raw HTML** in `job_text` and the pasted path kept whatever Unicode arrived, so the scanner, ATS engine, and every prompt read hidden `display:none` blocks, zero-width/bidi characters, or Unicode-tag payloads that a human never sees. `_untrusted` delimits posting text in prompts but does not sanitize it.
 
@@ -1192,7 +1192,13 @@ Read-only study of the MIT-licensed [`ai-job-search`](https://github.com/ai-job-
 - **Scope control:** the reference's Claude-Code-specific probes (`.env`, `settings.json`, `allowed-tools`, `ssh/curl`) were deliberately dropped - engineering postings mention them legitimately, and a noisy advisory gate is worse than none.
 - **Tests:** `tests/test_posting_guard.py` (17) - hidden div/attribute/collapsed-box, comments/scripts, hidden URL, tag-character smuggling (decoded + instruction line), zero-width and bidi tampering signals, homoglyph, benign posting, instruction line advisory-only, never-raise contract, both loader paths, payload + warning summary.
 
-> Status: `venv\Scripts\python.exe -m pytest tests\test_posting_guard.py -q` - **17 passed**. Restart the FastAPI backend to load the new gate; the extension shares `ResultsDashboard.tsx`, so rebuild/reload it when the frontend bundle is refreshed.
+**PDF text-layer gate (`agent/pdf_verify.py`, new):** the exporter used to trust the renderer - the PDF an ATS actually parses was never read back. `verify_pdf` now reads both shipped files with `pypdf` and checks: the file opens, every page carries extractable text, the page count matches the one-page contract, no `(cid:` or U+FFFD damage, every date separator is ASCII, and the resume still contains the candidate name, email, and up to three ATS-credited keywords that were literally in the draft (synonym-only matches are excluded - they would be false alarms). Findings ride `pdf_checks` into the result payload, the Integrity tab, and an SSE warning; a failure never blocks a run or deletes an artifact.
+
+**Root-cause date repair (`agent/latex_render.py`):** `_force_ascii` maps an em dash to `--`, which LaTeX prints as an en dash; Workday then drops the date and its column. Parsed date fields now fold every typographic dash (`U+2010`-`U+2015`, `U+2212`) to an ASCII hyphen and collapse repeats before either renderer sees them. The date regexes accept the same dash set, so a date written with `−`, `‒`, or `―` is still recognized instead of leaking through as prose. `page_overflow_warning` (computed since BB2 but only logged) now renders as a card above the result tabs.
+
+- **Tests:** `tests/test_pdf_verify.py` (26) - unreadable file, blank text layer, page-count contract, CID/U+FFFD damage, every non-ASCII date dash, ASCII dates, typographic folding for required literals, em/en-dash and minus date normalization, standalone month ranges, rendered TeX, compiled PDFs (en-dash detection + fixed resume), exporter wiring, literal selection, missing-file skip; plus the exporter signature fix in `test_html_render.py`.
+
+> Status: posting gate **17 passed**, PDF gate **26 passed**; full suite pending. Restart the FastAPI backend to load the new gate; the extension shares `ResultsDashboard.tsx`, so rebuild/reload it when the frontend bundle is refreshed.
 
 ---
 

@@ -51,6 +51,14 @@ export interface PostingFinding {
   excerpt: string;
 }
 
+/** PDF text-layer gate: one deterministic check on a shipped PDF. */
+export interface PdfCheck {
+  target: "resume" | "cover";
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
 export interface OptimizationResult {
   session: string;
   optimized_resume: string;
@@ -79,6 +87,12 @@ export interface OptimizationResult {
   /** Posting integrity gate: hidden/invisible/instruction-shaped content found
    *  in the job posting and removed before analysis. */
   job_posting_findings?: PostingFinding[];
+  /** 1-page containment: set when the resume still exceeds one page after
+   *  every compaction tier. */
+  page_overflow_warning?: string;
+  /** PDF text-layer gate: what an ATS parser reads back from the shipped
+   *  resume + cover letter (empty pages, CID damage, ASCII dates, literals). */
+  pdf_checks?: PdfCheck[];
   /** QW1: per-node prompt fingerprints (e.g. { improver: "improver@2" }). */
   prompt_versions?: Record<string, string>;
   /** MR2: deterministic requirement fit rows (covered/partial/gap + reasons). */

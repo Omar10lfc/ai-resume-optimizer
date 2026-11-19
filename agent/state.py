@@ -64,6 +64,11 @@ class AgentState(TypedDict):
     # text itself is cleaned before any node reads it; these findings are
     # advisory and drive the Integrity tab + SSE warning.
     job_posting_findings: NotRequired[list]
+    # PDF text-layer gate (pdf_exporter): what pypdf reads back from the
+    # shipped resume + cover letter - empty pages, CID/replacement damage,
+    # non-ASCII date separators, and required literals (name/email/keywords).
+    # Advisory rows for the Integrity tab; a failed check never blocks a run.
+    pdf_checks: NotRequired[list]
     # BB2 (Nov 14 2026): which engine produced the resume PDF -
     # "html-chromium@1" (the CSS-density HTML theme), "latex@1" (the classic
     # theme), or "xhtml2pdf@1" (the last-resort fallback). One-lookup answer

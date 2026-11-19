@@ -20,7 +20,7 @@ import {
   X,
   Lightning,
 } from "@phosphor-icons/react";
-import type { OptimizationResult, RequirementMatch, BulletImpactRow, BulletSourceRow, PostingFinding } from "../types";
+import type { OptimizationResult, RequirementMatch, BulletImpactRow, BulletSourceRow, PostingFinding, PdfCheck } from "../types";
 import { resolveArtifactUrl } from "../api";
 import { ScoreGauge } from "./ScoreGauge";
 import { DiffView } from "./DiffView";
@@ -48,6 +48,15 @@ const POSTING_KIND_LABELS: Record<PostingFinding["kind"], string> = {
   instruction_line: "Instruction-shaped line",
   hidden_url: "Hidden URL",
   homoglyph: "Mixed-script word",
+};
+
+const PDF_CHECK_LABELS: Record<string, string> = {
+  readable: "File opens",
+  text_layer: "Text layer",
+  page_count: "Page count",
+  text_integrity: "Text integrity",
+  ascii_dates: "ASCII dates",
+  required_text: "Required text",
 };
 
 const ARTIFACT_META: Record<string, { label: string; icon: React.ElementType; className: string }> = {  "resume-pdf": { label: "Resume PDF", icon: FilePdf, className: "text-danger" },
@@ -100,6 +109,10 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
     ...(result.cover_letter_metrics ?? []),
     ...((result.job_posting_findings ?? []) as PostingFinding[]).map(
       (f) => `${f.kind}: ${f.detail}`),
+    // PDF text-layer gate: only failures force the tab open - a clean read-back
+    // is normal and lives behind the tab once it exists for another reason.
+    ...((result.pdf_checks ?? []) as PdfCheck[]).filter((c) => !c.ok).map(
+      (c) => `${c.target} ${c.name}: ${c.detail}`),
   ];
   // Tabs beyond the core four exist only when this run has their content:
   // Fit (MR2 requirement table), Bullet impact (round 13 XYZ audit),
@@ -109,6 +122,7 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   // Round 16: per-bullet provenance rows (which original bullet each
   // optimized bullet came from + dropped metrics).
   const sourceRows = (result.bullet_sources ?? []) as BulletSourceRow[];
+  const pdfChecks = (result.pdf_checks ?? []) as PdfCheck[];
   const taskUsage = result.task_usage ?? {};
   const usageRows = Object.entries(taskUsage);
   const usageTotals = usageRows.length
@@ -306,6 +320,17 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
           })}
         </div>
       </div>
+
+      {/* One-page containment: computed since BB2, now surfaced instead of
+          living only in the server log. Advisory - the files still download. */}
+      {result.page_overflow_warning && (
+        <div className="mb-4 px-3 py-2.5 rounded-md2 bg-warn-tint border border-warn/25 text-2xs text-warn" role="status">
+          <div className="flex items-start gap-2">
+            <Warning weight="bold" className="w-3.5 h-3.5 shrink-0 mt-[1px]" />
+            <span>{result.page_overflow_warning}</span>
+          </div>
+        </div>
+      )}
 
       {/* 3. Tabs */}
       <div
@@ -678,6 +703,30 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                         <span className="font-semibold">{POSTING_KIND_LABELS[finding.kind] ?? finding.kind}</span>
                         {": "}{finding.detail}
                         {finding.excerpt ? ` - "${finding.excerpt}"` : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {pdfChecks.length > 0 && (
+              <div className="mb-4">
+                <h4 className="text-2xs font-semibold text-ink mb-1.5">Downloaded PDF, read back</h4>
+                <p className="text-2xs text-ink-3 mb-1.5">
+                  What an ATS parser finds in the shipped files: text on every page, ASCII date separators, and your name, email and top keywords.
+                </p>
+                <ul className="space-y-1">
+                  {pdfChecks.map((check, i) => (
+                    <li key={`pdf-${i}`} className={`flex items-start gap-2 text-2xs leading-relaxed ${check.ok ? "text-ink-3" : "text-warn"}`}>
+                      {check.ok
+                        ? <Check weight="bold" className="w-3 h-3 shrink-0 mt-[2px]" aria-hidden="true" />
+                        : <Warning weight="bold" className="w-3 h-3 shrink-0 mt-[2px]" aria-hidden="true" />}
+                      <span>
+                        <span className="font-semibold">
+                          {check.target === "cover" ? "Cover letter" : "Resume"} · {PDF_CHECK_LABELS[check.name] ?? check.name}
+                        </span>
+                        {": "}{check.detail}
                       </span>
                     </li>
                   ))}

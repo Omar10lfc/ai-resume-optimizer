@@ -662,7 +662,7 @@ def test_pdf_exporter_node_threads_resume_theme(monkeypatch, tmp_path):
     absent channel passes empty (the runner owns env/default resolution)."""
     captured: dict = {}
 
-    def fake_export(resume_text, cover_text, request_dir, theme=""):
+    def fake_export(resume_text, cover_text, request_dir, theme="", job_text=""):
         captured["theme"] = theme
         return {"resume_pdf_path": "", "cover_letter_pdf_path": "",
                 "resume_docx_path": "", "resume_tex_path": "",

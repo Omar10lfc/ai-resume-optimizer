@@ -22,10 +22,13 @@ the history panel can REGENERATE artifacts from a past run's stored text
 """
 from pathlib import Path
 from uuid import uuid4
+import re
 
+from ..ats import compute_ats_match
 from ..config import OUTPUT_ROOT
 from ..state import AgentState
 from ..helpers import _safe_print, _html_to_pdf
+from ..pdf_verify import normalize_text, verify_pdf
 from .. import latex_render as _latex
 from .. import html_render as _html
 
@@ -228,8 +231,72 @@ def _export_resume(resume_text: str, request_dir: Path,
     return _export_resume_latex(resume_text, request_dir)
 
 
+def _resume_required_literals(resume_text: str, job_text: str = "") -> list[str]:
+    """Name, email, and up to three literal ATS-credited keywords.
+
+    The keyword sample is filtered to terms the DRAFT carries literally:
+    a synonym/stem the ATS credited ("kubernetes" for "k8s") is the right
+    semantic match but the wrong text-layer assertion - requiring it would
+    raise a false alarm on a perfectly extracted PDF.
+    """
+    literals: list[str] = []
+    try:
+        data = _latex.parse_markdown_resume(resume_text)
+        name = (data.contact.name or "").strip()
+        if name:
+            literals.append(name)
+        email = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+",
+                          data.contact.details or resume_text or "")
+        if email:
+            literals.append(email.group(0))
+    except Exception:
+        pass
+    if job_text:
+        try:
+            match = compute_ats_match(job_text, resume_text)
+            haystack = normalize_text(resume_text)
+            for row in match.get("keywords", []):
+                keyword = str(row.get("keyword") or "")
+                if (row.get("found")
+                        and row.get("method") in {"exact", "stem", "synonym"}
+                        and len(keyword) >= 3
+                        and normalize_text(keyword) in haystack):
+                    literals.append(keyword)
+                if len(literals) >= 5:
+                    break
+        except Exception:
+            pass
+    return literals
+
+
+def _verify_exported_pdfs(resume_pdf: str, cover_pdf: str,
+                          literals: list[str]) -> list[dict]:
+    """Read both shipped PDFs back; one flat check list for the UI.
+
+    Missing files are skipped: a failed render already has its own fallback
+    path and warning, and a verification row for a file that was never
+    written would only duplicate it. Every real failure is printed for the
+    server log and returned for the payload.
+    """
+    checks: list[dict] = []
+    for target, path, expected, required in (
+            ("resume", resume_pdf, 1, literals),
+            ("cover", cover_pdf, 1, ())):
+        if not path or not Path(path).exists():
+            continue
+        result = verify_pdf(path, expected_pages=expected,
+                            required_literals=required)
+        failed = [c for c in result["checks"] if not c["ok"]]
+        if failed:
+            _safe_print(f"   [PDF verify] {target}: " + "; ".join(
+                f"{c['name']}: {c['detail']}" for c in failed))
+        checks.extend({"target": target, **check}
+                      for check in result["checks"])
+    return checks
+
+
 def export_documents(resume_text: str, cover_text: str, request_dir: Path,
-                     theme: str = "") -> dict:
+                     theme: str = "", job_text: str = "") -> dict:
     """Renders the optimized resume + cover letter into ``request_dir``.
 
     ``theme`` selects the resume look (classic | serif | modern) on the
@@ -254,6 +321,14 @@ def export_documents(resume_text: str, cover_text: str, request_dir: Path,
     # --- Cover letter: HTML→PDF (unchanged) ---
     cover_path = _html_to_pdf(cover_text, "Cover_Letter.pdf", "Cover Letter", request_dir)
 
+    # Text-layer gate (Nov 19 2026): the PDF an ATS parses, read back. Name
+    # and email are the required literals every engine must preserve; the
+    # ATS keyword sample proves the keyword leg of the score is not measuring
+    # text that never made it into the download.
+    pdf_checks = _verify_exported_pdfs(
+        resume_out.get("resume_pdf_path") or "", cover_path,
+        _resume_required_literals(resume_text, job_text))
+
     return {
         "resume_pdf_path": resume_out.get("resume_pdf_path") or "",
         "cover_letter_pdf_path": cover_path,
@@ -264,6 +339,7 @@ def export_documents(resume_text: str, cover_text: str, request_dir: Path,
         "resume_compacted": resume_out.get("resume_compacted") or False,
         "page_overflow_warning": resume_out.get("page_overflow_warning") or "",
         "render_engine": resume_out.get("render_engine") or "",
+        "pdf_checks": pdf_checks,
     }
 
 
@@ -273,7 +349,8 @@ def pdf_exporter_node(state: AgentState):
     request_dir = Path(state.get("output_dir") or str(OUTPUT_ROOT / uuid4()))
     exported = export_documents(
         state['optimized_resume'], state['cover_letter'], request_dir,
-        theme=state.get("resume_theme") or "")
+        theme=state.get("resume_theme") or "",
+        job_text=state.get("job_text") or "")
 
     _safe_print(f"-> Saved resume PDF:  {exported['resume_pdf_path']}")
     _safe_print(f"-> Saved resume DOCX: {exported['resume_docx_path']}")

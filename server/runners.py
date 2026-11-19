@@ -124,6 +124,7 @@ def _recovery_reset() -> dict:
         "resume_html_path": "",
         "resume_pages": 0, "resume_compacted": False,
         "page_overflow_warning": "", "guardrail_warnings": [],
+        "pdf_checks": [],
         "render_engine": "",
         "scrub_removals": [], "unevidenced_metrics": [],
         "declined_requests": [], "requirement_matches": [],
@@ -376,6 +377,11 @@ def _extract_results(final_state: dict) -> dict:
         # instruction-shaped lines removed from the job posting before the
         # pipeline read it. Advisory rows rendered by the Integrity tab.
         "job_posting_findings": final_state.get("job_posting_findings") or [],
+        # 1-page containment: computed since BB2 but never displayed; the
+        # result card now surfaces the same warning the server log prints.
+        "page_overflow_warning": final_state.get("page_overflow_warning") or "",
+        # PDF text-layer gate (pdf_exporter): what an ATS parser reads back.
+        "pdf_checks": final_state.get("pdf_checks") or [],
         # MR2: deterministic requirement-level fit table (covered/partial/gap
         # rows with evidence terms and human reasons).
         "requirement_matches": final_state.get("requirement_matches") or [],
@@ -778,6 +784,17 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                    "message": "Integrity check (cover letter): unevidenced "
                               "number(s) " + ", ".join(letter_metrics)
                               + ". Verify the cover letter before sending."}
+
+        # PDF text-layer gate: a shipped file that extracts empty/CID text or
+        # prints dates with non-ASCII separators fails at ATS import time.
+        failed_pdf = [c for c in (final_state.get("pdf_checks") or [])
+                      if not c.get("ok")]
+        if failed_pdf:
+            yield {"type": "warning",
+                   "message": "PDF verification: " + "; ".join(
+                       f"{c.get('target', 'file')} {c.get('name', 'check')}"
+                       f" - {c.get('detail', '')}" for c in failed_pdf[:4])
+                              + ". Re-check the download before submitting."}
 
         # Round 14: resume_theme is a run INPUT written via update_state
         # (never a node delta), so final_state does not accumulate it on the
