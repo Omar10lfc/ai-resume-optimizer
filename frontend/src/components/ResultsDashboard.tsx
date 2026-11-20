@@ -107,6 +107,7 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
     ...(result.declined_requests ?? []),
     ...(result.unevidenced_metrics ?? []),
     ...(result.cover_letter_metrics ?? []),
+    ...(result.cover_letter_unevidenced_tools ?? []),
     ...((result.job_posting_findings ?? []) as PostingFinding[]).map(
       (f) => `${f.kind}: ${f.detail}`),
     // PDF text-layer gate: only failures force the tab open - a clean read-back
@@ -799,6 +800,18 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                 <div className="flex flex-wrap gap-1.5">
                   {result.cover_letter_metrics!.map((item, i) => (
                     <span key={`clm-${i}`} className="px-2 py-0.5 rounded-sm2 bg-warn-tint border border-warn/25 text-2xs text-warn font-mono">{item}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(result.cover_letter_unevidenced_tools?.length ?? 0) > 0 && (
+              <div className="mb-4">
+                <h4 className="text-2xs font-semibold text-ink mb-1.5">Cover-letter tools removed</h4>
+                <p className="text-2xs text-ink-3 mb-1.5">Tool names your resume and notes do not support were removed from the cover letter sentences (run 4afa44cb shipped &quot;n8n-style automation&quot;). Verify the letter before sending:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {result.cover_letter_unevidenced_tools!.map((item, i) => (
+                    <span key={`clt-${i}`} className="px-2 py-0.5 rounded-sm2 bg-warn-tint border border-warn/25 text-2xs text-warn font-mono">{item}</span>
                   ))}
                 </div>
               </div>

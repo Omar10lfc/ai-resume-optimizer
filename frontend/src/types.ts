@@ -89,6 +89,8 @@ export interface OptimizationResult {
   /** Live run 22e943c6: the same scan for the COVER letter - fabricated
    *  numbers the letter coined that no input contains. */
   cover_letter_metrics?: string[];
+  /** Unevidenced tool names removed from the cover letter (run 4afa44cb). */
+  cover_letter_unevidenced_tools?: string[];
   /** QW2: requests the writer declined because the evidence doesn't back them. */
   declined_requests?: string[];
   /** Posting integrity gate: hidden/invisible/instruction-shaped content found

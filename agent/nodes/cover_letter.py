@@ -4,6 +4,7 @@ from .. import llms as _llms
 from ..ats import _job_brief
 from ..helpers import (_safe_print, _strip_code_fences,
                        find_unevidenced_metric_claims)
+from ..tool_claims import build_denied_tools, remove_sentences_naming_tools
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Bump when the cover-letter prompt changes materially.
@@ -69,21 +70,41 @@ def cover_letter_node(state: AgentState):
     ])
     letter = _strip_code_fences(response.content)
 
-    # Integrity tripwire (same rule as the resume path, improver.py
-    # _postprocess_draft): metric-shaped tokens the source resume and user
-    # notes do not contain are flagged for the user (own SSE warning event
-    # + result payload key) instead of shipping silently. Prompt guards
+    # Integrity tripwires (same rules as the resume path): metric-shaped
+    # tokens and, since run 4afa44cb, unevidenced TOOL names. Prompt guards
     # alone demonstrably fold - the resume path learned the same lesson
-    # (request 14751ff9) - so the scan runs on the generated letter.
-    # The shipped resume draft is deliberately NOT evidence here: a number
-    # the user is already asked to verify on the resume must not silently
-    # become legitimate because the letter repeated it.
-    evidence = f"{state.get('resume_text') or ''}\n{state.get('human_notes') or ''}"
+    # (request 14751ff9) - so both scans run on the generated letter.
+    # The shipped resume draft is deliberately NOT evidence here: a claim
+    # the user is asked to verify on the resume must not silently become
+    # legitimate because the letter repeated it.
+    evidence = "\n".join(str(state.get(k) or "") for k in
+                         ("resume_text", "human_notes", "profile",
+                          "profile_text", "candidate_profile"))
+    denied = build_denied_tools(
+        evidence,
+        declined_requests=state.get("declined_requests") or [],
+        job_text=state.get("job_text") or "",
+    )
+    # Every mention of a denied tool is a violation - including
+    # requirement-framed name-drops ("core requirements for Cursor demos")
+    # and analogies ("n8n-style automation"): only the sentence goes, never
+    # a rewrite that could reintroduce the term. Same sentence split and
+    # residue tidy as scrub_unsupported_content uses for the resume.
+    letter, removals = remove_sentences_naming_tools(
+        letter, denied, stage="cover letter")
+    removed_tools = sorted({t for r in removals for t in r.terms})
+    if removals:
+        _safe_print(f"   [Integrity] Removed {len(removals)} sentence(s) "
+                    "naming unevidenced tool(s) from the cover letter")
     letter_metrics = find_unevidenced_metric_claims(letter, evidence)
     if letter_metrics:
         _safe_print(f"   [Integrity] Unevidenced metric claims in cover "
                     f"letter: {', '.join(letter_metrics)}")
 
+    warnings = list(state.get("guardrail_warnings") or [])
+    warnings.extend(r.warning for r in removals)
     return {"cover_letter": letter,
             "cover_letter_metrics": letter_metrics,
+            "cover_letter_unevidenced_tools": removed_tools,
+            "guardrail_warnings": warnings,
             "prompt_versions": {"cover-letter": COVER_LETTER_PROMPT_VERSION}}

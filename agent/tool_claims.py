@@ -141,14 +141,20 @@ def remove_sentences_naming_tools(text: str, denied: set[str], *,
             paragraphs.append("")
             continue
         kept: list[str] = []
+        removed_here = False
         for sentence in _SENTENCE_SPLIT.split(para):
             hits = tuple(sorted(matching_tools(sentence) & denied))
             if hits:
                 removals.append(Removal(sentence.strip(), hits, stage))
+                removed_here = True
                 continue
             kept.append(sentence)
-        rebuilt = _tidy_removal_residue(" ".join(kept)) if kept else ""
-        paragraphs.append(rebuilt)
+        if not removed_here:
+            # Untouched prose - including salutations and signatures - stays
+            # byte-identical (the residue tidy strips trailing commas).
+            paragraphs.append(para)
+            continue
+        paragraphs.append(_tidy_removal_residue(" ".join(kept)) if kept else "")
     cleaned = re.sub(r"\n\s*\n(?:\s*\n)+", "\n\n", "\n".join(paragraphs))
     return cleaned, removals
 

@@ -132,6 +132,7 @@ def _recovery_reset() -> dict:
         "bullet_impact": [], "bullet_sources": [],
         "feedback_sections": [], "polish_sections_targeted": [],
         "cover_letter_metrics": [],
+        "cover_letter_unevidenced_tools": [],
         "human_notes": "", "missing_skills": "",
     }
 
@@ -369,6 +370,11 @@ def _extract_results(final_state: dict) -> dict:
         # Cover-letter integrity scan (live run 22e943c6): the letter's own
         # unevidenced numbers, rendered by the results Integrity tab.
         "cover_letter_metrics": final_state.get("cover_letter_metrics") or [],
+        # Nov 20 2026 (run 4afa44cb): tool names deterministically removed
+        # from the letter, rendered beside the metric findings in the
+        # results Integrity tab.
+        "cover_letter_unevidenced_tools":
+            final_state.get("cover_letter_unevidenced_tools") or [],
         "prompt_versions": final_state.get("prompt_versions") or {},
         # BB2: which engine produced the resume PDF (html-chromium@1 /
         # latex@1 / xhtml2pdf@1) - the renderer stamp beside the prompt
@@ -788,6 +794,18 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                    "message": "Integrity check (cover letter): unevidenced "
                               "number(s) " + ", ".join(letter_metrics)
                               + ". Verify the cover letter before sending."}
+
+        # Same class of claim, tools instead of numbers (run 4afa44cb): the
+        # resume scrubber catches n8n/Claude Code/MCP echoes but the letter
+        # used to ship them. The node removes the sentences; this surfaces
+        # the consequence next to the metric warning.
+        letter_tools = final_state.get("cover_letter_unevidenced_tools") or []
+        if letter_tools:
+            yield {"type": "warning",
+                   "message": "Integrity check (cover letter): removed "
+                               "unevidenced tool name(s) "
+                               + ", ".join(letter_tools)
+                               + ". Verify the cover letter before sending."}
 
         # PDF text-layer gate: a shipped file that extracts empty/CID text or
         # prints dates with non-ASCII separators fails at ATS import time.

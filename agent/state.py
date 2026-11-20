@@ -146,6 +146,12 @@ class AgentState(TypedDict):
     # resume's warnings, and unevidenced_metrics is the resume path's
     # node-managed accumulator.
     cover_letter_metrics: NotRequired[list]
+    # Nov 20 2026 (run 4afa44cb): unevidenced TOOL names deterministically
+    # removed from the cover letter (the resume scrubber caught the same n8n
+    # claims, but the letter shipped "n8n-style automation"). Own channel like
+    # cover_letter_metrics: cover_letter writes from the concurrent fan-out,
+    # so guardrail_warnings (last-writer-wins) cannot carry it reliably.
+    cover_letter_unevidenced_tools: NotRequired[list]
     # QW1 forensics: one stamp per node, e.g. {"improver": "improver@2"}.
     # Reducer merge so the concurrent cover_letter / interview_prep
     # fan-out (both writing this key in one superstep) keeps BOTH entries

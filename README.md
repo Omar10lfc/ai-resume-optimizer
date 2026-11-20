@@ -1250,6 +1250,16 @@ The production-readiness review of run `4afa44cb` found the reviewer telling the
 
 - **Tests:** 9 new cases in `tests/test_tool_claims.py` (variants, multiword units, ambiguous words, evidence-present terms, sentence/paragraph integrity, reviewer-node sanitization, determinism, no mutation), plus the salvaged-review regression updated to expect fabrication bait to be dropped. Full suite **601 passed**, coverage **90.37%** (gate 84%).
 
+## Session - Nov 20 2026 (cover-letter tool tripwire: run `4afa44cb`)
+
+The second half of the production-readiness fix closes the gap the reviewer sanitization exposed: the letter still shipped “n8n-style automation” and requirement-framed Claude Code/Cursor/Codex/MCP name-drops even though the resume scrubber caught the same claims.
+
+- **Same deny set (`agent/tool_claims.py`, `agent/nodes/cover_letter.py`):** the generated letter is scanned against the evidence-derived deny set before it ships. Every mention of a denied tool is a violation - analogies and requirement-framed name-drops included - and only the whole sentence is removed, never a rewrite that could reintroduce the term. The removal uses the resume scrubber's sentence split and residue tidy; paragraphs with no removal stay byte-identical, so salutations and signatures are untouched. A fresh metric scan runs on the cleaned letter.
+- **Payload + UI (`agent/state.py`, `server/runners.py`, `frontend/src/types.ts`, `ResultsDashboard.tsx`):** `cover_letter_unevidenced_tools` travels in the result payload beside `cover_letter_metrics`, gets its own SSE warning, and renders in the Integrity tab as *Cover-letter tools removed*. Removals also land in `guardrail_warnings` with the `cover letter` stage.
+- **Prompt unchanged:** `cover-letter@2` stands; the guard is deterministic, like the metric tripwire.
+
+- **Tests:** 3 new node tests in `tests/test_tool_claims.py` (fixture replay of the run's letter, evidenced-term positive control, one-page PDF render of the cleaned letter) and 1 payload/warning test in `tests/test_server.py`; full suite **605 passed**, coverage **90.39%** (gate 84%). Frontend lint (same two pre-existing warnings), extension typecheck, web build and extension build green.
+
 ---
 
 ## Production Architecture & Reliability

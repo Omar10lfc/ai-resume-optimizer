@@ -140,3 +140,103 @@ def test_reviewer_keeps_feedback_when_tool_is_evidenced(monkeypatch):
     out = reviewer_node(state)
     assert out["feedback"] == BAD_FEEDBACK
     assert out["guardrail_warnings"] == []
+
+
+# ---------------------------------------------------------------------------
+# Cover-letter half (commit 2): the same deny set removes whole sentences
+# from the generated letter before it ships.
+# ---------------------------------------------------------------------------
+
+LETTER = (
+    "Dear Hiring Manager,\n\n"
+    "Your team builds temperature data agents. I cut support time by 32% and "
+    "deployed multi-agent workflows on AWS. This work showcases exactly the "
+    "kind of n8n-style automation that will streamline internal processes at "
+    "FortyGuard. In my Fil-RAG-Goal project I improved retrieval from 0.64 to "
+    "0.86. These are core requirements for creating Claude-Code, Cursor, and "
+    "Codex-based demos that interact with your temperature APIs.\n\n"
+    "I also built a CP-SAT solver. This aligns directly with the "
+    "temperature-MCP automation you are developing. I look forward to "
+    "discussing how my background can accelerate the development of your "
+    "MCP demos.\n\n"
+    "Sincerely,\nAlex"
+)
+
+
+def _fake_letter(monkeypatch, text):
+    from langchain_core.messages import AIMessage
+
+    class FakeFast:
+        def invoke(self, messages):
+            return AIMessage(content=text)
+
+    monkeypatch.setattr(agent.llms, "llm_fast", FakeFast())
+
+
+def test_cover_letter_removes_tool_sentences_and_keeps_paragraphs(monkeypatch):
+    from agent.nodes.cover_letter import cover_letter_node
+
+    _fake_letter(monkeypatch, LETTER)
+    state = {
+        "optimized_resume": "# Alex Candidate\n## Experience\n- Built agents\n",
+        "resume_text": RESUME + "\n- Cut support time by 32%\n",
+        "human_notes": "",
+        "job_text": JD,
+        "declined_requests": list(DECLINED),
+        "guardrail_warnings": [],
+    }
+    snapshot = __import__("copy").deepcopy(state)
+    out = cover_letter_node(state)
+    assert state == snapshot
+    letter = out["cover_letter"]
+    assert "n8n" not in letter.lower()
+    assert "Claude" not in letter and "Cursor" not in letter
+    assert "Codex" not in letter and "MCP" not in letter
+    assert "cut support time by 32%" in letter  # evidenced content stays
+    assert "Dear Hiring Manager," in letter and "Sincerely," in letter
+    # 4 non-empty paragraphs: greeting, two body paragraphs, closing
+    # ("Sincerely," and the name are two lines of the same closing block).
+    assert len([p for p in letter.split("\n\n") if p.strip()]) == 4
+    assert "  " not in letter
+    removed = out["cover_letter_unevidenced_tools"]
+    assert {"n8n", "Claude Code", "Cursor", "Codex", "MCP"} <= set(removed)
+    assert all(any(t in w for t in removed)
+               for w in out["guardrail_warnings"])
+    assert all("cover letter" in w for w in out["guardrail_warnings"])
+    assert out["prompt_versions"]["cover-letter"].startswith("cover-letter@")
+    assert cover_letter_node(state)["cover_letter"] == letter  # deterministic
+
+
+def test_cover_letter_keeps_evidenced_tool_claim(monkeypatch):
+    from agent.nodes.cover_letter import cover_letter_node
+
+    _fake_letter(monkeypatch, LETTER)
+    state = {
+        "optimized_resume": "# Alex Candidate\n## Experience\n- Built agents\n",
+        "resume_text": RESUME + "\n- Used n8n for internal automations\n",
+        "human_notes": "",
+        "job_text": JD,
+        "declined_requests": DECLINED,
+        "guardrail_warnings": [],
+    }
+    out = cover_letter_node(state)
+    assert "n8n-style automation" in out["cover_letter"]
+    assert "n8n" not in out["cover_letter_unevidenced_tools"]
+    assert "Cursor" in out["cover_letter_unevidenced_tools"]
+
+
+def test_cleaned_cover_letter_stays_one_page(monkeypatch, tmp_path):
+    from agent.nodes.cover_letter import cover_letter_node
+    from agent.nodes import pdf_exporter as exporter
+    from pypdf import PdfReader
+
+    _fake_letter(monkeypatch, LETTER)
+    letter = cover_letter_node({
+        "optimized_resume": "# Alex Candidate\n## Experience\n- Built agents\n",
+        "resume_text": RESUME, "human_notes": "", "job_text": JD,
+        "declined_requests": DECLINED, "guardrail_warnings": [],
+    })["cover_letter"]
+    path = exporter._html_to_pdf(letter, "Cover_Letter.pdf", "Cover Letter",
+                                 tmp_path)
+    assert path
+    assert len(PdfReader(path).pages) == 1

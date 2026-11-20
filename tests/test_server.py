@@ -743,6 +743,35 @@ def test_cover_letter_fabricated_metrics_are_flagged(client, fake_llms,
     assert kinds.index("warning") == len(kinds) - 2
 
 
+def test_cover_letter_unevidenced_tools_shipped_and_warned(client, fake_llms,
+                                                           monkeypatch):
+    """Run 4afa44cb: the letter shipped 'n8n-style automation' and tool
+    name-drops the resume scrubber caught. The node now removes those
+    sentences, ships the tool names in their own payload channel, and emits
+    a dedicated SSE warning beside the metric one."""
+    class ToolClaimingLetterLLM:
+        def invoke(self, messages):
+            return AIMessage(content=(
+                "Dear Hiring Manager,\n\n"
+                "I have led n8n-style automation programs and built Cursor-based "
+                "demos for internal teams. I would bring that rigor to your role.\n\n"
+                "Sincerely, Jane Roe"))
+
+    monkeypatch.setattr(agent.llms, "llm_fast", ToolClaimingLetterLLM())
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": ""})
+    events = parse_sse(r.text)
+    payload = events[-1][1]
+    assert {"n8n", "Cursor"} <= set(payload["cover_letter_unevidenced_tools"])
+    assert "n8n" not in payload["cover_letter"].lower()
+    assert "Cursor" not in payload["cover_letter"]
+    assert payload["cover_letter_metrics"] == []
+    warnings = [e for kind, e in events if kind == "warning"]
+    assert any("tool name" in w["message"] and "n8n" in w["message"]
+               for w in warnings)
+
+
 def test_cover_letter_evidenced_metrics_pass_clean(client, fake_llms,
                                                   monkeypatch):
     """The scan's positive control: numbers the USER NOTES evidence are
