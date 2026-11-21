@@ -18,7 +18,8 @@ from agent.latex_render import (  # noqa: E402
     render_resume_tex,
 )
 from agent.nodes import pdf_exporter as _exporter  # noqa: E402
-from agent.pdf_verify import normalize_text, verify_pdf  # noqa: E402
+from agent.pdf_verify import (find_non_ascii_date_ranges, normalize_text,
+                              verify_pdf)  # noqa: E402
 
 
 # ==========================================
@@ -142,6 +143,125 @@ def test_adjacent_year_and_number_with_hyphen_not_mistaken_for_range(monkeypatch
     _fake_reader(monkeypatch, ["reduced 2024-25 costs by 12-15%"])
 
     assert _by_name(verify_pdf("ignored.pdf"))["ascii_dates"]["ok"] is True
+
+
+# ==========================================
+# find_non_ascii_date_ranges (quantity carve-outs)
+# ==========================================
+# Ported from tests/test_verify_pdf.py in the MIT ai-job-search repo
+# (FindNonAsciiDateRangesTests): the date-range rule reads the raw layer;
+# `normalize_text` folds and cannot detect.
+
+
+def test_en_dash_between_years_is_reported_with_its_code_point():
+    hits = find_non_ascii_date_ranges("Six Sigma Green Belt, 2016–2024.\n")
+    assert hits == [("Six Sigma Green Belt, 2016–2024.", "\u2013")]
+
+
+def test_ascii_hyphen_range_is_clean():
+    assert find_non_ascii_date_ranges("2016-2024\nMar 2016 - Jul 2016\n") == []
+
+
+@pytest.mark.parametrize("text", ["Mar 2016 – Jul 2016", "2016 – Present", "\u2013 2024"])
+def test_a_year_on_either_side_of_the_dash_is_enough(text):
+    # Month-qualified and open-ended ranges: the year is only on one side.
+    assert len(find_non_ascii_date_ranges(text)) == 1
+
+
+@pytest.mark.parametrize("dash", ["\u2010", "\u2011", "\u2012", "\u2014", "\u2015", "\u2212"])
+def test_other_unicode_dashes_and_the_minus_sign_are_caught(dash):
+    assert find_non_ascii_date_ranges(f"2016{dash}2024")[0][1] == dash
+
+
+def test_numeric_range_without_a_year_is_not_a_date():
+    # 05-cv-templates.md keeps `--` in prose ranges like EUR 600k--1M.
+    assert find_non_ascii_date_ranges("EUR 600k\u20131M, 12\u201315 people") == []
+
+
+@pytest.mark.parametrize("text", ["Grew budget DKK 120000\u2013200000",
+                                  "Scaled ingestion from 12000\u201315000 events/s"])
+def test_year_like_digits_inside_a_longer_number_are_not_a_year(text):
+    # `2000` inside `120000`/`12000` is not a year-shaped boundary.
+    assert find_non_ascii_date_ranges(text) == []
+
+
+@pytest.mark.parametrize("text", [
+    "Salary EUR 1500\u20132000 per month",
+    "Scaled the API to serve 2000\u20135000 requests per second",
+    "Grew users from 2000\u20135000",
+    "Budget 1.5\u20132.0M, headcount 20\u201325",
+])
+def test_numeric_range_with_year_shaped_ends_is_a_quantity_not_a_date(text):
+    assert find_non_ascii_date_ranges(text) == []
+
+
+@pytest.mark.parametrize("symbol", ["\u20ac", "\u00a3", "$", "\u00a5"])
+@pytest.mark.parametrize("text", [
+    "Budget {s}2000\u2013{s}5000 per month",
+    "Budget 1500{s}\u20132000{s} per month",
+    "Budget {s}2000\u2013{s}2024 per month",
+])
+def test_attached_currency_symbols_make_numeric_ranges_quantities(text, symbol):
+    assert find_non_ascii_date_ranges(text.format(s=symbol)) == []
+
+
+@pytest.mark.parametrize("text", [
+    "03/2016\u201307/2024",
+    "01.2016 \u2013 12.2024",
+    "2016-03\u20132024-07",
+    "2016/17\u20132018/19",
+    "2016/03\u20132024/07",
+    "01.03.2016\u201331.07.2024",
+    "2016\u201307/2024",
+])
+def test_numerically_formatted_date_ranges_are_still_caught(text):
+    # A composite token is not a bare number, so the quantity rule does not
+    # apply and the year rule fires - these are the Workday-drops-the-date
+    # shape the check exists for.
+    assert len(find_non_ascii_date_ranges(text)) == 1
+
+
+@pytest.mark.parametrize("text", ["MSc Physics, 2016\u201317", "Sep 2016\u201317",
+                                  "2019\u201320 season", "2016 \u2013 17"])
+def test_year_and_two_digit_year_is_a_date_range(text):
+    # The academic-year/season form: `17` is a bare non-year number, so the
+    # quantity rule would otherwise suppress the flag.
+    assert len(find_non_ascii_date_ranges(text)) == 1
+
+
+def test_two_digit_number_before_a_year_is_still_a_quantity():
+    # Only year-first is the date form; `17-2016` is not a date anyone writes.
+    assert find_non_ascii_date_ranges("items 17\u20132016") == []
+
+
+@pytest.mark.parametrize("text", ["2016\u20132024", "1990\u20132010 programme",
+                                  "Roles 2000\u20132024"])
+def test_two_years_joined_by_a_dash_are_still_a_date_range(text):
+    assert len(find_non_ascii_date_ranges(text)) == 1
+
+
+def test_a_standalone_year_next_to_a_longer_number_is_still_caught():
+    assert find_non_ascii_date_ranges("2016\u20132024 (120000 users)")[0][1] == "\u2013"
+
+
+def test_year_ending_a_line_is_not_joined_to_the_next_lines_dash():
+    text = "Heading 1988-1994\n\u2013 note\n"
+    assert find_non_ascii_date_ranges(text) == []
+
+
+def test_dash_ending_a_line_is_not_joined_to_the_next_lines_year():
+    text = "Six Sigma \u2013\n2016 onwards\n"
+    assert find_non_ascii_date_ranges(text) == []
+
+
+def test_same_line_spaces_around_the_dash_are_still_caught():
+    assert len(find_non_ascii_date_ranges("1988 \u2013 1994")) == 1
+
+
+def test_hits_are_reported_in_document_order_one_per_range():
+    text = "2016\u20132024 role\nmore text\nJan 2010 \u2013 Dec 2012 degree\n"
+    assert [line for line, _ in find_non_ascii_date_ranges(text)] == [
+        "2016\u20132024 role", "Jan 2010 \u2013 Dec 2012 degree"]
 
 
 # ==========================================

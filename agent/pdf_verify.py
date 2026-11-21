@@ -28,17 +28,119 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-# The typographic dashes LaTeX produces from `--`, `---`, and `$-$`.
-_NON_ASCII_DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+# --- ASCII-date rule: ported from tools/verify_pdf.py in the MIT
+# ai-job-search repository (see NOTICE), including its quantity carve-outs.
 # A year joined to a non-ASCII dash, or a dash joined to a year/Present.
 # Scanned on the RAW layer: folding would hide exactly what this check exists
 # to catch.
-_DATE_DASH_RE = re.compile(
-    r"\b(?:19|20)\d{2}\s*[" + _NON_ASCII_DASHES + r"]"
-    r"|[" + _NON_ASCII_DASHES + r"]\s*"
-    r"(?:(?:[A-Za-z]{3,9}\.?\s+)?(?:19|20)\d{2}\b|Present\b)",
-    re.IGNORECASE,
+_NON_ASCII_DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+# Dash-like code points a year must never be joined to in a date range. U+2013 is
+# what LaTeX makes from `--` and what the documented Workday import dropped; the
+# rest are the other Unicode dashes and the minus sign, which a parser that splits
+# a range only on U+002D treats the same way.
+_YEAR = r"(?<!\d)(?:19|20)\d{2}(?!\d)"
+# Horizontal whitespace only between the year and the dash: `\s*` also matched
+# a newline, so a heading ending in an ASCII date joined a dash that merely
+# opened the next line.
+NON_ASCII_DATE_RANGE = re.compile(
+    rf"{_YEAR}[^\S\n]*[{_NON_ASCII_DASHES}]|[{_NON_ASCII_DASHES}][^\S\n]*{_YEAR}"
 )
+# The whitespace-delimited tokens touching the dash on either side. A range whose
+# two ends are both BARE numbers is a date only when both are years: `EUR 1500-2000`
+# and `2000-5000 requests/s` are quantities that happen to contain a year-shaped
+# number, and the guide tells users to keep `--` in exactly those. A composite
+# token (`03/2016`, `01.2016`, `2016-03`, `2016/17`) is not a bare number, so a
+# numerically formatted date range still falls through to the year rule.
+_TOKEN_BEFORE = re.compile(r"(\S+)[^\S\n]*$")
+_TOKEN_AFTER = re.compile(r"^[^\S\n]*(\S+)")
+_BARE_NUMBER = re.compile(r"\d+(?:[.,]\d+)*[kKmM%]?")
+_BARE_YEAR = re.compile(r"(?:19|20)\d{2}")
+_OUTER_PUNCTUATION = ".,;:!?()[]{}\"'"
+_TWO_DIGIT_YEAR = re.compile(r"\d{2}")
+
+
+def _bare_number(token: str):
+    """The token with outer punctuation stripped, if it is a bare number, else None.
+
+    A dotted or comma-separated token whose groups include a year (`01.2016`,
+    `31.07.2024`) is a date written numerically, not a quantity, and is left to
+    the year rule; `1,234.56` and `2.0M` have no year group and stay numbers.
+    """
+    core = token.strip(_OUTER_PUNCTUATION)
+    if not _BARE_NUMBER.fullmatch(core):
+        return None
+    groups = re.split(r"[.,]", core.rstrip("kKmM%"))
+    if len(groups) > 1 and any(_BARE_YEAR.fullmatch(g) for g in groups):
+        return None
+    return core
+
+
+def _currency_amount(token: str):
+    """A numeric amount with an attached Unicode currency symbol, or None."""
+    core = token.strip(_OUTER_PUNCTUATION)
+    if core and unicodedata.category(core[0]) == "Sc":
+        core = core[1:]
+    elif core and unicodedata.category(core[-1]) == "Sc":
+        core = core[:-1]
+    else:
+        return None
+    return core if _BARE_NUMBER.fullmatch(core) else None
+
+
+def _quantity_range(line: str, dash_index: int) -> bool:
+    """True when both sides of the dash are bare numbers and not a date pair.
+
+    A date pair is two years (`2016-2024`) or a year and a two-digit year
+    (`2016-17`, `2019-20`): the short form is how academic years and seasons
+    are written, and it was caught before the quantity rule existed. Anything
+    else with bare numbers on both sides is a quantity (`1500-2000`,
+    `2000-5000`) and is left alone. An attached currency symbol makes a
+    numeric pair an amount range, even when both amounts resemble years.
+    """
+    before = _TOKEN_BEFORE.search(line[:dash_index])
+    after = _TOKEN_AFTER.search(line[dash_index + 1:])
+    if not before or not after:
+        return False
+    left_money, right_money = (_currency_amount(before.group(1)),
+                               _currency_amount(after.group(1)))
+    left = left_money or _bare_number(before.group(1))
+    right = right_money or _bare_number(after.group(1))
+    if left_money is not None or right_money is not None:
+        return left is not None and right is not None
+    if left is None or right is None:
+        return False
+    if (_BARE_YEAR.fullmatch(left)
+            and (_BARE_YEAR.fullmatch(right)
+                 or _TWO_DIGIT_YEAR.fullmatch(right))):
+        return False
+    return True
+
+
+def find_non_ascii_date_ranges(text: str) -> list[tuple[str, str]]:
+    """Return (line, dash) for every year joined to a non-ASCII dash in raw text.
+
+    Works on the raw text layer, never on the folded output: the fold maps
+    U+2013 back to `-` so `--`-based date ranges read as ASCII. A year on
+    either side of the dash is enough ("Mar 2016 - Jul 2016", "2016 - Present"),
+    so the check is locale-agnostic. A range whose two ends are both bare
+    numbers is a date only when both are years: "EUR 600k-1M",
+    "EUR 1500-2000" and "2000-5000 requests/s" are quantities and are left
+    alone, while a numerically formatted date ("03/2016-07/2024", "2016-03-2024-07")
+    is not a bare number on either side and is still caught.
+    """
+    hits = []
+    for match in NON_ASCII_DATE_RANGE.finditer(text or ""):
+        dash = next(c for c in match.group(0) if c in _NON_ASCII_DASHES)
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.end())
+        line_end = line_end if line_end != -1 else len(text)
+        line = text[line_start:line_end]
+        dash_index = match.start() + match.group(0).index(dash) - line_start
+        if _quantity_range(line, dash_index):
+            continue
+        hits.append((" ".join(line.split()), dash))
+    return hits
+
 
 # Comparison-time fold: NFC, the ligatures LaTeX emits, typographic quotes,
 # and every dash to ASCII. The layer stays raw for the ASCII-date check.
@@ -56,11 +158,6 @@ def normalize_text(text: str) -> str:
     """Fold a string for comparison only - never for the ASCII-date scan."""
     text = unicodedata.normalize("NFC", text or "").translate(_FOLD)
     return _WS_RE.sub(" ", text).strip().casefold()
-
-
-def _date_dash_hits(text: str) -> list[str]:
-    """Every year/dash or dash/year hit in the raw layer, in document order."""
-    return [m.group(0) for m in _DATE_DASH_RE.finditer(text or "")]
 
 
 def _check(name: str, ok: bool, detail: str) -> dict:
@@ -113,11 +210,12 @@ def verify_pdf(path: str, expected_pages: int | None = 1,
         "no CID/replacement damage" if not damage
         else "damaged text: " + ", ".join(damage)))
 
-    hits = _date_dash_hits(raw)
+    hits = find_non_ascii_date_ranges(raw)
     checks.append(_check(
         "ascii_dates", not hits,
         "dates use ASCII separators" if not hits
-        else "non-ASCII date separator(s): " + "; ".join(hits[:5])))
+        else "non-ASCII date separator(s): " + "; ".join(
+            f"U+{ord(dash):04X} in {line[:80]!r}" for line, dash in hits[:5])))
 
     literals = [str(lit).strip() for lit in required_literals or () if str(lit).strip()]
     if literals:
