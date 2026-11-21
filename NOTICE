@@ -10,7 +10,9 @@ Adapted in this repository:
 
 - `agent/posting_guard.py` - posting integrity gate (hidden-HTML removal,
   invisible-Unicode cleaning, instruction-shaped-line detection). Adapted
-  from `tools/posting_guard.py`.
+  from `tools/posting_guard.py`; adopted the reference's shell/config
+  instruction patterns (`curl|wget|ssh|scp`, `.env`, `settings.json`,
+  `allowed-tools`) as extras (they were the one pattern gap).
 - `agent/pdf_verify.py` - shipped-PDF text-layer verification (text layer,
   CID/replacement damage, ASCII date separators, required literals).
   Adapted from `tools/verify_pdf.py` and the ASCII-date rule in

@@ -85,9 +85,12 @@ _DROP_TAGS = ("script", "style", "noscript", "svg", "template")
 
 # --- Detection --------------------------------------------------------------
 _URL = re.compile(r"https?://[^\s<>\"')\]]+")
-# Narrow on purpose: every pattern targets an agent, not a reader. Ordinary
-# engineering prose ("SSH access", ".env file", "run the following command")
-# is posting content, not an injection.
+# Narrow on purpose: every pattern targets an agent, not a reader. The few
+# direct shell/config names (`curl|wget|ssh|scp`, `.env`, `settings.json`,
+# `allowed-tools`) are rarer in honest postings than the patterns above; when
+# they do appear in ordinary prose (an "SSH administrator" role, a team page
+# that mentions `.env`), the quote is what lets the user dismiss the flag in a
+# second - same as `ignore`-shaped lines.
 _INSTRUCTION_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\bignore (?:all |any |the |your )?(?:previous|prior|above|earlier)"
     r" (?:instructions?|prompts?|directions?|rules?)\b",
@@ -104,6 +107,10 @@ _INSTRUCTION_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"[^.\n]{0,30}\bto the user\b",
     r"\b(?:run|execute) the following"
     r" (?:command|commands|script|code|shell|instruction|instructions|steps)\b",
+    r"\b(?:curl|wget|ssh|scp)\b",
+    r"\.env\b",
+    r"settings\.json",
+    r"allowed-tools",
     r"^\s*(?:assistant|system|user)\s*:",
     r"<\|",
     r"\[INST\]",
