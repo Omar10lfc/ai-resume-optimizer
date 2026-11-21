@@ -3557,6 +3557,10 @@ class _FakeFeedbackClient:
     def __init__(self):
         self.calls = []
 
+    def read_project(self, project_name=None):
+        # SmithDB v2 create_feedback requires session_id (the project UUID).
+        return type("Project", (), {"id": "test-session"})()
+
     def create_feedback(self, run_id, **kwargs):
         self.calls.append((run_id, kwargs))
 
@@ -3572,9 +3576,11 @@ def test_log_feedback_forwards_to_client_and_swallows_errors(monkeypatch, capsys
     assert agent.log_feedback("run-x", "composite_score", score=67.0) is True
     assert agent.log_feedback("run-x", "review_failed", value=1) is True
     assert fake.calls[0] == ("run-x", {"key": "composite_score", "score": 67.0,
-                                       "value": None, "comment": None})
+                                       "value": None, "comment": None,
+                                       "session_id": "test-session"})
     assert fake.calls[1][1] == {"key": "review_failed", "score": None,
-                                "value": 1, "comment": None}
+                                "value": 1, "comment": None,
+                                "session_id": "test-session"}
 
     class BrokenClient:
         def create_feedback(self, *args, **kwargs):

@@ -162,6 +162,8 @@ async def _fetch_all_runs(client, project_id: str) -> list:
         now_window: list = []
         for selects in (_SELECTS_FULL, _SELECTS_MID, _SELECTS_CORE):
             try:
+                # SmithDB-backed: `client.runs.query` is the alias to
+                # query_v2 in langsmith>=0.14.17 -> POST /api/v2/runs/query.
                 async for run in client.runs.query(
                         project_ids=[project_id],
                         min_start_time=window_min,

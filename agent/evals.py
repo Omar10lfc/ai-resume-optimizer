@@ -180,6 +180,8 @@ async def fetch_recent_runs(client, project_id: str, *, limit: int = 50,
     last_error = None
     for selects in (_SELECTS_EVAL, _SELECTS_CORE):
         try:
+            # SmithDB-backed: in langsmith>=0.14.17 `Client.runs.query` is
+            # the alias to query_v2, which hits POST /api/v2/runs/query.
             async for run in client.runs.query(
                     project_ids=[project_id],
                     min_start_time=min_start,

@@ -208,13 +208,19 @@ To export your LangSmith traces for analysis:
 1. **Web UI**: Go to smith.langchain.com → your project → select runs → click **Export**
 2. **Python SDK** (programmatic export):
    ```python
+   import asyncio
+
    from langsmith import Client
-   client = Client()
-   runs = list(client.list_runs(project_name="resume-optimizer"))
-   # Export as JSON
-   import json
-   with open("traces.json", "w") as f:
-       json.dump([r.dict() for r in runs], f, indent=2, default=str)
+
+
+   async def main():
+       client = Client()
+       project = client.read_project(project_name="resume-optimizer")
+       async for run in client.runs.query(project_ids=[project.id]):
+           print(run.id)
+
+   asyncio.run(main())
+   # Export the runs as JSON via the v2 SDK method above.
    ```
 3. **CSV Export**: In the LangSmith UI, filter your runs and use the **Download CSV** button
 

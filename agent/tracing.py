@@ -162,6 +162,30 @@ if os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true":
         os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
 
+# Lazily resolved SmithDB project UUID - create_feedback (the v2 endpoint)
+# requires session_id. Resolved once on first feedback emission so
+# tracing-off paths and tests never touch the API.
+_PROJECT_ID: str | None = None
+_PROJECT_ID_RESOLVED = False
+
+
+def _resolve_project_id() -> str | None:
+    """The tracing project UUID feedback is recorded against (None if
+    unresolvable - the v2 endpoint accepts session_id as required for
+    SmithDB-backed self-hosted)."""
+    global _PROJECT_ID, _PROJECT_ID_RESOLVED
+    if _CLIENT is None or _PROJECT_ID_RESOLVED:
+        return _PROJECT_ID
+    _PROJECT_ID_RESOLVED = True
+    try:
+        project = _CLIENT.read_project(
+            project_name=os.environ.get("LANGCHAIN_PROJECT"))
+        _PROJECT_ID = str(project.id)
+    except Exception as exc:
+        print(f"[LangSmith] feedback session_id resolution failed: {exc}")
+    return _PROJECT_ID
+
+
 def log_feedback(run_id, key, *, score=None, value=None, comment=None) -> bool:
     """Attach a feedback record to a LangSmith run (usually the trace root).
 
@@ -172,7 +196,8 @@ def log_feedback(run_id, key, *, score=None, value=None, comment=None) -> bool:
         return False
     try:
         _CLIENT.create_feedback(run_id, key=key, score=score, value=value,
-                                comment=comment)
+                                comment=comment,
+                                session_id=_resolve_project_id())
         return True
     except Exception as exc:
         print(f"[LangSmith] feedback '{key}' failed: {exc}")
