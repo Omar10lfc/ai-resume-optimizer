@@ -9,6 +9,13 @@ resume text) pair - re-optimizing the same posting against the same resume
 attaches a new attempt to the existing application instead of forking a
 duplicate, so history groups itself.
 
+Plus the submitted-materials archive (adapted from documents/applications/
+in the MIT ai-job-search repo): every application also stores the shipped
+cover letter text and the artifact manifest (PDF/DOCX/TEX/HTML paths +
+API-download URLs). The texts and the manifest are permanent; the artifact
+FILES themselves follow the usual retention (the exporter's 24h artifact
+sweep applies).
+
 Differences from the runs ledger (both stores exist on purpose):
 - PERSISTENT: no retention sweep. The resume/job text at rest IS the point
   (the artifacts under %TEMP% evaporate after 24h; the history does not).
@@ -35,7 +42,13 @@ CREATE TABLE IF NOT EXISTS applications (
     resume_text TEXT NOT NULL DEFAULT '',
     status      TEXT NOT NULL DEFAULT 'active',
     created_at  REAL NOT NULL,
-    updated_at  REAL NOT NULL
+    updated_at  REAL NOT NULL,
+    -- Archive of the submitted materials (see module docstring): the final
+    -- shipped cover letter, and the JSON list of {"kind", "filename", "url"}
+    -- artifact rows (PDF/DOCX/TEX/HTML). '' / '[]' on rows written before
+    -- the columns existed (migrated by _migrate_applications).
+    cover_letter_text TEXT NOT NULL DEFAULT '',
+    artifact_paths    TEXT NOT NULL DEFAULT '[]'
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_applications_pair
     ON applications(jd_hash, resume_hash);
@@ -56,6 +69,26 @@ CREATE INDEX IF NOT EXISTS idx_runs_application
 """
 
 
+def _migrate_applications(conn: sqlite3.Connection) -> None:
+    """Add the archive columns to an existing database.
+
+    Fresh DBs get the columns from ``_SCHEMA``; rows written by older
+    versions of this store get '' / '[]' defaults (the '' for artifact_paths
+    is normalized by callers reading it via _parse_artifact_paths).
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(applications)")}
+    defaults = {"cover_letter_text": "''", "artifact_paths": "'[]'"}
+    for name in ("cover_letter_text", "artifact_paths"):
+        if name in columns:
+            continue
+        try:
+            conn.execute(
+                f"ALTER TABLE applications ADD COLUMN {name}"
+                f" TEXT NOT NULL DEFAULT {defaults[name]}")
+        except sqlite3.Error:
+            pass
+
+
 def _connect() -> sqlite3.Connection:
     path = agent_config.PROFILE_DB_PATH
     Path(path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -65,6 +98,7 @@ def _connect() -> sqlite3.Connection:
     for statement in _SCHEMA.split(";"):
         if statement.strip():
             conn.execute(statement)
+    _migrate_applications(conn)
     return conn
 
 
@@ -109,6 +143,16 @@ def record_run(job_text: str, resume_text: str, session: str,
         now = time.time()
         conn = _connect()
         try:
+            # The submitted-materials archive (see module docstring): the
+            # final shipped letter and the artifact manifest (kind/filename/
+            # url, like the SSE result payload's "artifacts" rows).
+            cover_letter_text = str(result.get("cover_letter") or "")
+            artifact_paths = json.dumps([
+                {"kind": a.get("kind"), "filename": a.get("filename"),
+                 "url": a.get("url")}
+                for a in (result.get("artifacts") or [])
+                if isinstance(a, dict) and a.get("kind")
+            ], ensure_ascii=False)
             with conn:
                 row = conn.execute(
                     "SELECT id, title FROM applications"
@@ -119,16 +163,22 @@ def record_run(job_text: str, resume_text: str, session: str,
                     cur = conn.execute(
                         "INSERT INTO applications(jd_hash, resume_hash,"
                         " title, job_text, resume_text, status,"
+                        " cover_letter_text, artifact_paths,"
                         " created_at, updated_at)"
-                        " VALUES(?,?,?,?,?,'active',?,?)",
+                        " VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (jd_hash, resume_hash, title, job_text, resume_text,
-                         now, now))
+                         "active", cover_letter_text, artifact_paths, now, now))
                     app_id = cur.lastrowid
                 else:
                     app_id = row["id"]
                     conn.execute(
-                        "UPDATE applications SET updated_at = ? WHERE id = ?",
-                        (now, app_id))
+                        "UPDATE applications SET updated_at = ?"
+                        " , cover_letter_text = COALESCE(NULLIF(?, ''),"
+                        " cover_letter_text)"
+                        " , artifact_paths = COALESCE(NULLIF(?, ''),"
+                        " artifact_paths)"
+                        " WHERE id = ?",
+                        (now, cover_letter_text, artifact_paths, app_id))
                 cur = conn.execute(
                     "INSERT INTO runs(application_id, session, score,"
                     " ats_percentage, llm_score, review_failed, result_json,"
@@ -185,6 +235,11 @@ def get_application(app_id: int) -> dict | None:
             if row is None:
                 return None
             app = dict(row)
+            try:
+                app["artifact_paths"] = json.loads(
+                    app.get("artifact_paths") or "[]")
+            except (TypeError, ValueError):
+                app["artifact_paths"] = []
             run_rows = conn.execute(
                 "SELECT * FROM runs WHERE application_id = ?"
                 " ORDER BY created_at DESC, id DESC", (app_id,)).fetchall()

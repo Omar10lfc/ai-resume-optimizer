@@ -1467,6 +1467,77 @@ def test_step2_resume_writes_notes_without_reentering_the_graph(client,
 # BB1 Phase A: persistent profile store (application history)
 # ==========================================
 
+
+def test_profile_store_archives_submitted_materials(runs_db):
+    import server.profile_store as profile_store
+
+    artifacts = [
+        {"kind": "resume_pdf", "filename": "Optimized_Resume.pdf",
+         "url": "api/v1/artifacts/uuid1/resume_pdf?file=Optimized_Resume.pdf"},
+        {"kind": "resume_docx", "filename": "Optimized_Resume.docx",
+         "url": "api/v1/artifacts/uuid1/resume_docx?file=Optimized_Resume.docx"},
+    ]
+    profile_store.record_run(JD, RESUME_TEXT, "sess-9", {
+        "score": 71,
+        "cover_letter": "Dear Hiring Manager, I write to apply...",
+        "artifacts": artifacts})
+
+    apps = profile_store.list_applications()
+    assert len(apps) == 1
+
+    detail = profile_store.get_application(apps[0]["id"])
+    assert detail["cover_letter_text"] == "Dear Hiring Manager, I write to apply..."
+    assert [a["kind"] for a in detail["artifact_paths"]] == ["resume_pdf", "resume_docx"]
+    assert detail["artifact_paths"][0]["url"] == artifacts[0]["url"]
+    assert detail["artifact_paths"][0]["filename"] == "Optimized_Resume.pdf"
+
+    # A repeat attempt on the same pair refreshes the archive with the latest materials.
+    profile_store.record_run(JD, RESUME_TEXT, "sess-10",
+                             {"cover_letter": "Second letter", "artifacts": []})
+    detail2 = profile_store.get_application(apps[0]["id"])
+    assert detail2["cover_letter_text"] == "Second letter"
+    assert detail2["artifact_paths"] == []
+
+
+def test_profile_store_migrates_archive_columns(runs_db):
+    import sqlite3
+    from agent import config
+    import server.profile_store as profile_store
+
+    # A pre-archive database: the old applications schema without
+    # cover_letter_text / artifact_paths (and a row written under it).
+    path = config.PROFILE_DB_PATH
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE applications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        jd_hash TEXT NOT NULL,
+        resume_hash TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        job_text TEXT NOT NULL DEFAULT '',
+        resume_text TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL)""")
+    conn.execute("INSERT INTO applications(jd_hash, resume_hash, status,"
+                 " created_at, updated_at)"
+                 " VALUES('a', 'b', 'active', 1.0, 1.0)")
+    conn.commit()
+    conn.close()
+
+    conn2 = profile_store._connect()
+    try:
+        cols = {row[1] for row in
+                conn2.execute("PRAGMA table_info(applications)")}
+        assert {"cover_letter_text", "artifact_paths"} <= cols
+        row = conn2.execute(
+            "SELECT cover_letter_text, artifact_paths FROM applications"
+            " WHERE id = 1").fetchone()
+        assert row["cover_letter_text"] == ""
+        assert row["artifact_paths"] == "[]"
+    finally:
+        conn2.close()
+
+
 def test_profile_store_records_and_dedupes_by_pair(runs_db):
     import server.profile_store as profile_store
 
