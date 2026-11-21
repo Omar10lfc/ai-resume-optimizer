@@ -2669,6 +2669,7 @@ def test_fetch_job_description_follows_redirects(monkeypatch):
 
     monkeypatch.setattr(uf, "_validate_job_url", lambda url: url)
     monkeypatch.setattr(uf, "_is_public_host", lambda h: True)
+    monkeypatch.setattr(uf, "_robots_gate_check", lambda url: None)
     monkeypatch.setattr(uf, "build_opener", lambda *a: type('Opener', (), {'open': staticmethod(fake_open)})())
 
     result = uf._fetch_job_description("https://example.com/job")
@@ -2687,6 +2688,7 @@ def test_fetch_job_description_rejects_html_file(monkeypatch):
 
     monkeypatch.setattr(uf, "_validate_job_url", lambda url: url)
     monkeypatch.setattr(uf, "_is_public_host", lambda h: True)
+    monkeypatch.setattr(uf, "_robots_gate_check", lambda url: None)
 
     class FakeResponse:
         status = 200

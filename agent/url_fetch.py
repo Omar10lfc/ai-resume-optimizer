@@ -3,9 +3,11 @@ import ipaddress
 import re
 import socket
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from . import robots_check
 from .config import (ALLOWED_JOB_URL_DOMAINS, MAX_FETCH_BYTES, MAX_PDF_BYTES,
                      MAX_PDF_PAGES, MAX_RESUME_CHARS, FETCH_TIMEOUT_SECONDS)
 from .helpers import _safe_print, _safe_truncate
@@ -83,33 +85,82 @@ def _validate_job_url(raw_url: str) -> str:
     return parsed.geturl()
 
 
-def _fetch_job_description(raw_url: str) -> str:
-    """Fetch an allowlisted job page with bounded redirects and response size.
+def _robots_gate_check(url: str) -> None:
+    """Raise when robots.txt policy does not permit fetching ``url``.
+
+    Adapted from ``tools/robots_check.py`` in the MIT ai-job-search repo
+    (see NOTICE): a job-posting fetch is the browser-header retry, not the
+    right tool, for a site that has said no - and the gate fails closed, so
+    an unreadable or unconfirmed robots.txt also stops the fetch.
+    """
+    code, msg = robots_check.gate(url)
+    if code != 0:
+        raise ValueError(f"Job URL refused by robots.txt policy: {msg}")
+
+
+def _read_page_body(response) -> str:
+    """Decode the body of a fetched page (``_fetch_job_description`` contract).
 
     The body is returned decoded and bounded by MAX_FETCH_BYTES - NOT by the
     much smaller MAX_JOB_CHARS. The loader cleans raw HTML first (hidden
     elements, markup) and truncates the visible text afterwards, so a markup-
     heavy page does not lose half its posting to the character cap.
     """
+    content_type = response.headers.get_content_type()
+    if content_type not in {"text/html", "text/plain"}:
+        raise ValueError("Job URL must return HTML or plain text.")
+    body = response.read(MAX_FETCH_BYTES + 1)
+    if len(body) > MAX_FETCH_BYTES:
+        raise ValueError("Job page is too large to import.")
+    return body.decode(response.headers.get_content_charset() or "utf-8",
+                       errors="replace")
+
+
+def _get_page_text(opener, url: str, user_agent: str) -> str:
+    """GET one allowlisted page (no status branching: caller reads status)."""
+    request = Request(url, headers={"User-Agent": user_agent})
+    response = opener.open(request, timeout=FETCH_TIMEOUT_SECONDS)
+    return _read_page_body(response)
+
+
+def _fetch_job_description(raw_url: str) -> str:
+    """Fetch an allowlisted job page with bounded redirects and response size.
+
+    robots.txt is enforced on every hop (RFC 9309, ``agent/robots_check``;
+    adapted from ``tools/robots_check.py``): fetching is never done against
+    a policy that says no. A browser-header retry recovers recruiters and
+    ATSes that answer the bot UA with a 403 while serving the same page to
+    a browser - reachable only when the gate passes for that URL.
+    """
     current_url = _validate_job_url(raw_url)
+    _robots_gate_check(current_url)
     opener = build_opener(_NoRedirect())
     for _ in range(4):
-        request = Request(current_url, headers={"User-Agent": "ResumeOptimizer/1.0"})
-        response = opener.open(request, timeout=FETCH_TIMEOUT_SECONDS)
-        if response.status in {301, 302, 303, 307, 308}:
-            location = response.headers.get("Location")
-            if not location:
-                raise ValueError("Job URL redirected without a destination.")
-            current_url = _validate_job_url(location)
-            continue
-        content_type = response.headers.get_content_type()
-        if content_type not in {"text/html", "text/plain"}:
-            raise ValueError("Job URL must return HTML or plain text.")
-        body = response.read(MAX_FETCH_BYTES + 1)
-        if len(body) > MAX_FETCH_BYTES:
-            raise ValueError("Job page is too large to import.")
-        return body.decode(response.headers.get_content_charset() or "utf-8",
-                           errors="replace")
+        try:
+            request = Request(current_url, headers={"User-Agent": "ResumeOptimizer/1.0"})
+            response = opener.open(request, timeout=FETCH_TIMEOUT_SECONDS)
+            if response.status in {301, 302, 303, 307, 308}:
+                location = response.headers.get("Location")
+                if not location:
+                    raise ValueError("Job URL redirected without a destination.")
+                current_url = _validate_job_url(location)
+                _robots_gate_check(current_url)
+                continue
+            return _read_page_body(response)
+        except HTTPError as exc:
+            location = exc.headers.get("Location") \
+                if exc.code in {301, 302, 303, 307, 308} else None
+            if location:
+                current_url = _validate_job_url(location)
+                _robots_gate_check(current_url)
+                continue
+            if exc.code == 403:
+                # Browser-header retry: many recruiters/ATSes reject the
+                # bot UA with 403 while serving the page to a browser. The
+                # robots gate already passed for this URL, so policy
+                # permitting, retry once with the browser UA.
+                return _get_page_text(opener, current_url, robots_check.BROWSER)
+            raise
     raise ValueError("Too many job URL redirects.")
 
 

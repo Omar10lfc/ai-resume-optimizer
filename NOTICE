@@ -15,6 +15,11 @@ Adapted in this repository:
   CID/replacement damage, ASCII date separators, required literals).
   Adapted from `tools/verify_pdf.py` and the ASCII-date rule in
   `.claude/skills/job-application-assistant/05-cv-templates.md`.
+- `agent/robots_check.py` - RFC 9309 robots.txt gate for job-posting fetches
+  (longest-match, BOM, decodable-rule checks; the spec's cautious fail-closed
+  rules; the GHSA-xhqf-8q8x-4jwm backtracking regression is pinned). Adapted
+  from `tools/robots_check.py`; the browser-header retry lives in
+  `agent/url_fetch.py` per its robots gate.
 - `agent/verify_layout.py` - compiled-PDF layout measurement (holes,
   orphaned entry headers across page breaks, footer collisions, thin final
   page, early page ends). Adapted from `tools/verify_layout.py`.
