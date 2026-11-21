@@ -138,6 +138,27 @@ _STOPWORDS = {
     "specialized", "experienced", "solid", "deep",
 }
 
+# Deal-breaker terms (adapted from the MIT ai-job-search fit framework):
+# hard-requirement terms the posting may name ("Visa sponsorship",
+# "security clearance"). They are NOT scored into the percentage (the resume
+# expresses them in boilerplate differently - see _STOPWORDS); instead they
+# are surfaced in the ATS report as an honest advisory gap when the resume
+# does not address them. Advisory only, like everything else: never vetoes.
+DEAL_BREAKER_KEYWORDS = {
+    "visa", "sponsorship", "security clearance",
+}
+
+
+def _deal_breaker_hits(job_text: str, resume_lower: str) -> list[dict]:
+    """Terms the posting names and the resume does not address (see above)."""
+    hits = []
+    for term in sorted(DEAL_BREAKER_KEYWORDS):
+        term_re = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+        if term_re.search(job_text or "") and not term_re.search(resume_lower or ""):
+            hits.append({"keyword": term})
+    return hits
+
+
 _LOW_SIGNAL_TERMS = {
     "support", "engineering", "teams", "computer", "coding", "testing",
     "frameworks", "automation", "workflows", "platforms", "systems",
@@ -630,6 +651,10 @@ def compute_ats_match(job_text: str, resume_text: str,
             for word in re.findall(r'[a-z]+', kw):
                 matched_stems.add(_simple_stem(word))
 
+    # Deal-breakers (see DEAL_BREAKER_KEYWORDS): terms the posting names and
+    # the resume does not address - advisory rows in the report.
+    deal_breakers = _deal_breaker_hits(job_text, resume_lower)
+
     results = []
     seen_stems = set()
 
@@ -656,11 +681,13 @@ def compute_ats_match(job_text: str, resume_text: str,
             "status": "+" if found else "-"
         })
 
-    return _format_ats_result(results)
+    return _format_ats_result(results, deal_breakers)
 
 
-def _format_ats_result(results: list[dict]) -> dict:
+def _format_ats_result(results: list[dict],
+                       deal_breakers: list[dict] | None = None) -> dict:
     """Calculates weighted scores, breakdown, and markdown summary from keyword match results."""
+    deal_breakers = deal_breakers or []
     total_weight = sum(r["weight"] for r in results)
     earned_weight = sum(r["weight"] for r in results if r["found"])
     percentage = round((earned_weight / total_weight * 100), 1) if total_weight > 0 else 0
@@ -699,6 +726,14 @@ def _format_ats_result(results: list[dict]) -> dict:
             lines.append(f"- `{r['keyword']}` - *try adding to: {suggestion}*")
         lines.append("")
 
+    if deal_breakers:
+        lines.append("### Deal-breakers")
+        for r in deal_breakers:
+            lines.append(
+                f"- `{r['keyword']}` - the posting names this as a requirement; "
+                "not addressed in the resume. Decide if the gap matters to you.")
+        lines.append("")
+
     if percentage >= 80:
         lines.append("> **Strong match** - your resume covers most key terms.")
     elif percentage >= 50:
@@ -718,6 +753,7 @@ def _format_ats_result(results: list[dict]) -> dict:
         "percentage": percentage,
         "weighted_earned": earned_weight,
         "weighted_total": total_weight,
+        "deal_breakers": deal_breakers,
         "formatted": "\n".join(lines)
     }
 

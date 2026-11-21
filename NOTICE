@@ -6,6 +6,12 @@ MIT-licensed project:
 - **ai-job-search** - https://github.com/ai-job-search-dev/ai-job-search
   Copyright (c) 2026 Mads Lorentzen
 
+Behavior-level adoptions (reference concepts made concrete in my engine):
+- ATS deal-breakers (`agent/ats.py`): hard-requirement terms the posting
+  names (visa, sponsorship, security clearance) and the resume does not
+  address are surfaced in the ATS report as an advisory gap, never vetoing
+  a run - the user decides what "requires" means.
+
 Adapted in this repository:
 
 - `agent/posting_guard.py` - posting integrity gate (hidden-HTML removal,

@@ -2532,6 +2532,35 @@ def test_semantic_verification_reclassifies_expressed_keywords(fake_llms, monkey
 
 
 # ==========================================
+# Deal-breakers (adapted from the MIT ai-job-search fit framework)
+# ==========================================
+
+def test_ats_deal_breakers_surface_when_the_posting_names_them():
+    jd = "Python engineer. This role requires visa sponsorship and relocation."
+    resume_a = "Jane Roe, Python developer with cloud exposure."
+    resume_b = resume_a + " Visa support is available."
+
+    ra = agent.compute_ats_match(jd, resume_a)
+    terms_a = [b["keyword"] for b in ra["deal_breakers"]]
+    assert "visa" in terms_a
+    assert "sponsorship" in terms_a
+    assert "### Deal-breakers" in ra["formatted"]
+
+    # The resume addressing the term clears the hit for that term;
+    # sponsorship is still named unaddressed.
+    rb = agent.compute_ats_match(jd, resume_b)
+    terms_b = [b["keyword"] for b in rb["deal_breakers"]]
+    assert "visa" not in terms_b
+    assert "sponsorship" in terms_b
+
+    # No deal-breaker terms named -> the section never renders and the
+    # structured list is empty.
+    plain = agent.compute_ats_match("Python engineer. Remote.", resume_a)
+    assert plain["deal_breakers"] == []
+    assert "### Deal-breakers" not in plain["formatted"]
+
+
+# ==========================================
 # _strip_emoji_from_html
 # ==========================================
 
