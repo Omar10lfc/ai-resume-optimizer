@@ -15,6 +15,9 @@ Adapted in this repository:
   CID/replacement damage, ASCII date separators, required literals).
   Adapted from `tools/verify_pdf.py` and the ASCII-date rule in
   `.claude/skills/job-application-assistant/05-cv-templates.md`.
+- `agent/verify_layout.py` - compiled-PDF layout measurement (holes,
+  orphaned entry headers across page breaks, footer collisions, thin final
+  page, early page ends). Adapted from `tools/verify_layout.py`.
 - `agent/trim.py` - relevance-weighted trim suggestions (posting relevance,
   uniqueness, cover-letter narrative load). Adapted from the
   "Relevance-weighted cutting" guidance in

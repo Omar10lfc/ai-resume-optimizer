@@ -32,6 +32,7 @@ from ..pdf_verify import normalize_text, verify_pdf
 from ..trim import suggest_trims
 from .. import latex_render as _latex
 from .. import html_render as _html
+from .. import verify_layout as _layout
 
 
 def _export_resume_latex(resume_text: str, request_dir: Path) -> dict:
@@ -322,6 +323,21 @@ def export_documents(resume_text: str, cover_text: str, request_dir: Path,
     # --- Cover letter: HTML→PDF (unchanged) ---
     cover_path = _html_to_pdf(cover_text, "Cover_Letter.pdf", "Cover Letter", request_dir)
 
+    # Layout measurement (adapted from tools/verify_layout.py in the
+    # MIT ai-job-search repo, see NOTICE): advisory rows from Poppler
+    # word bounding boxes (holes, orphaned entry headers, footer collisions,
+    # thin final page, ...) for the Integrity tab. Advisory only - never
+    # blocks, never edits. Empty when pdftotext is unavailable.
+    layout_findings: list[dict] = []
+    for target, path in (("resume", resume_out.get("resume_pdf_path") or ""),
+                         ("cover", cover_path)):
+        if not path:
+            continue
+        findings = _layout.measure_pdf_layout(path)
+        for finding in findings:
+            _safe_print(f"   [PDF layout] {target} {finding['kind']}: {finding['detail']}")
+            layout_findings.append({"target": target, **finding})
+
     # Text-layer gate (Nov 19 2026): the PDF an ATS parses, read back. Name
     # and email are the required literals every engine must preserve; the
     # ATS keyword sample proves the keyword leg of the score is not measuring
@@ -341,6 +357,7 @@ def export_documents(resume_text: str, cover_text: str, request_dir: Path,
         "page_overflow_warning": resume_out.get("page_overflow_warning") or "",
         "render_engine": resume_out.get("render_engine") or "",
         "pdf_checks": pdf_checks,
+        "layout_findings": layout_findings,
     }
 
 

@@ -152,6 +152,13 @@ class AgentState(TypedDict):
     # cover_letter_metrics: cover_letter writes from the concurrent fan-out,
     # so guardrail_warnings (last-writer-wins) cannot carry it reliably.
     cover_letter_unevidenced_tools: NotRequired[list]
+    # Layout measurement findings (pdf_exporter, adapted from the MIT
+    # ai-job-search repo's tools/verify_layout.py): advisory rows of
+    # {"target", "kind", "detail"} describing measurable layout problems in
+    # the shipped PDFs - orphaned entry headers across page breaks, holes,
+    # footer collisions, thin final page, etc. Advisory only: never edited
+    # into the resume.
+    layout_findings: NotRequired[list]
     # QW1 forensics: one stamp per node, e.g. {"improver": "improver@2"}.
     # Reducer merge so the concurrent cover_letter / interview_prep
     # fan-out (both writing this key in one superstep) keeps BOTH entries
