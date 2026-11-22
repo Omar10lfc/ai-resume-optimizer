@@ -187,7 +187,7 @@ _SSE_HEADERS = {
 
 
 def _save_upload(upload: UploadFile) -> str:
-    """Saves an UploadFile to a named temp file with its original suffix.
+    """Saves an UploadFile into the app-owned uploads dir with its suffix.
 
     Enforces the type gate and MAX_PDF_BYTES while copying. The caller owns
     cleanup (handled in _wrapped_pipeline's finally).
@@ -198,8 +198,10 @@ def _save_upload(upload: UploadFile) -> str:
             HTTP_400_BAD_REQUEST,
             "Unsupported resume file type (PDF or DOCX only).")
     max_bytes = agent_config.MAX_PDF_BYTES
+    upload_dir = agent_config.OUTPUT_UPLOAD_DIR
+    upload_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = tempfile.NamedTemporaryFile(delete=False, prefix="resume_upload_",
-                                      suffix=suffix)
+                                      suffix=suffix, dir=str(upload_dir))
     try:
         written = 0
         with tmp:
@@ -251,7 +253,6 @@ def _safeguard_session(session: str | None) -> str | None:
 async def lifespan(app: FastAPI):
     agent_config.init_output_dirs()
     agent_config.start_background_cleanup()
-
     # MR3: runs left 'running' by a previous process are dead (their mid-run
     # LLM work stopped at some checkpoint) - mark them failed-with-retry the
     # way Dossier's recoverInterruptedJobs() does, instead of letting a

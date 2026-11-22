@@ -62,44 +62,62 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _write_once(session: str, status: str, *, step: str | None,
+                error: str | None, missing_skills: str | None,
+                result: dict | None) -> None:
+    conn = _connect()
+    try:
+        with conn:
+            existing = conn.execute(
+                "SELECT missing_skills, result_json FROM runs"
+                " WHERE session = ?", (session,)).fetchone()
+            ms = (missing_skills if missing_skills is not None
+                  else (existing["missing_skills"] if existing else ""))
+            rj = (json.dumps(result, ensure_ascii=False)
+                  if result is not None
+                  else (existing["result_json"] if existing else None))
+            now = time.time()
+            conn.execute(
+                """INSERT INTO runs(session, status, step, error,
+                                    missing_skills, result_json,
+                                    created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(session) DO UPDATE SET
+                       status=excluded.status, step=excluded.step,
+                       error=excluded.error,
+                       missing_skills=excluded.missing_skills,
+                       result_json=excluded.result_json,
+                       updated_at=excluded.updated_at""",
+                (session, status, step or "", error or "", ms, rj,
+                 now, now))
+    finally:
+        conn.close()
+
+
 def _write(session: str, status: str, *, step: str | None = None,
            error: str | None = None, missing_skills: str | None = None,
            result: dict | None = None) -> None:
     """Upsert one row, preserving fields the caller does not touch.
 
     Failure is always non-fatal: the ledger must never break a run that
-    the LLMs already paid for.
+    the LLMs already paid for. WAL + busy_timeout handles most contention;
+    brief retries on transient SQLITE_BUSY remain for first-connection
+    races that can otherwise strand one of a concurrent burst.
     """
-    try:
-        conn = _connect()
+    for attempt in range(6):
         try:
-            with conn:
-                existing = conn.execute(
-                    "SELECT missing_skills, result_json FROM runs"
-                    " WHERE session = ?", (session,)).fetchone()
-                ms = (missing_skills if missing_skills is not None
-                      else (existing["missing_skills"] if existing else ""))
-                rj = (json.dumps(result, ensure_ascii=False)
-                      if result is not None
-                      else (existing["result_json"] if existing else None))
-                now = time.time()
-                conn.execute(
-                    """INSERT INTO runs(session, status, step, error,
-                                        missing_skills, result_json,
-                                        created_at, updated_at)
-                       VALUES(?,?,?,?,?,?,?,?)
-                       ON CONFLICT(session) DO UPDATE SET
-                           status=excluded.status, step=excluded.step,
-                           error=excluded.error,
-                           missing_skills=excluded.missing_skills,
-                           result_json=excluded.result_json,
-                           updated_at=excluded.updated_at""",
-                    (session, status, step or "", error or "", ms, rj,
-                     now, now))
-        finally:
-            conn.close()
-    except Exception as exc:
-        print(f"[Runs] ledger write failed (non-fatal): {exc}")
+            _write_once(session, status, step=step, error=error,
+                        missing_skills=missing_skills, result=result)
+            return
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                print(f"[Runs] ledger write failed (non-fatal): {exc}")
+                return
+            time.sleep(min(0.05 * (2 ** attempt), 0.5))
+        except Exception as exc:
+            print(f"[Runs] ledger write failed (non-fatal): {exc}")
+            return
+    print("[Runs] ledger write still locked after retries (non-fatal).")
 
 
 def start(session: str, step: str) -> None:

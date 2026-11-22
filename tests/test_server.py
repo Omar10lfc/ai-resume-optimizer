@@ -9,10 +9,12 @@ Run with: venv\\Scripts\\python.exe -m pytest tests/test_server.py -v
 """
 
 import concurrent.futures
+import io
 import json
 import os
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -1118,6 +1120,43 @@ def runs_db(tmp_path, monkeypatch):
                         str(tmp_path / "profile.sqlite3"))
     monkeypatch.setattr(agent.config, "PROFILE_DB_ENABLED", True)
     return path
+
+
+def test_save_upload_saves_into_app_owned_upload_dir(tmp_path, monkeypatch):
+    from fastapi import UploadFile
+
+    upload_dir = tmp_path / "app_owned_uploads"
+    monkeypatch.setattr(agent.config, "OUTPUT_UPLOAD_DIR", upload_dir)
+    upload = UploadFile(file=io.BytesIO(b"fake-pdf-bytes"),
+                        filename="Resume.pdf")
+    path = Path(server_app._save_upload(upload))
+    assert path.parent.resolve() == upload_dir.resolve()
+    assert path.name.startswith("resume_upload_")
+    assert path.suffix == ".pdf"
+    assert path.exists() and path.stat().st_size > 0
+    path.unlink()
+
+
+def test_sweep_orphaned_uploads_removes_only_stale_app_files(tmp_path, monkeypatch):
+    upload_dir = tmp_path / "app_owned_uploads"
+    upload_dir.mkdir()
+    monkeypatch.setattr(agent.config, "OUTPUT_UPLOAD_DIR", upload_dir)
+    old_mtime = time.time() - (agent.config.OUTPUT_RETENTION_HOURS + 1) * 3600
+    stale = upload_dir / "resume_upload_stale.pdf"
+    stale.write_bytes(b"stale")
+    os.utime(stale, (old_mtime, old_mtime))
+    fresh = upload_dir / "resume_upload_fresh.pdf"
+    fresh.write_bytes(b"fresh")
+    unrelated = upload_dir / "unrelated.txt"
+    unrelated.write_bytes(b"unrelated")
+    os.utime(unrelated, (old_mtime, old_mtime))
+
+    removed = agent.config._sweep_orphaned_uploads()
+
+    assert removed == 1
+    assert not stale.exists()
+    assert fresh.exists()
+    assert unrelated.exists()
 
 
 def test_runs_endpoint_roundtrips_step1_and_step2(client, fake_llms):

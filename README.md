@@ -259,6 +259,7 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 | **Error Recovery** | Structured output failures gracefully flag and proceed instead of crashing or retrying pointlessly |
 | **Selective Fallbacks** | Model failover triggers only on transient errors (rate limits, outages); auth errors fail fast instead of burning doomed calls |
 | **Queue System** | `demo.queue(max_size=5)` prevents concurrent request overload on Groq's free tier |
+| **Pipeline Concurrency Stays At One** | `server/app.py::_RUN_LOCK` serializes pipeline runs today, and the BYO-key holder in `agent/llms._ACTIVE_GROQ_KEY` is process-global; until the lock accepts per-request keys, keep uvicorn/Gunicorn workers at 1 so that serialization guarantee still holds |
 | **Per-Request Output Dirs** | Each run writes PDFs to its own UUID folder under the temp root — no cross-user file collisions |
 | **Streaming Status Updates** | `agent_app.stream(stream_mode="updates")` surfaces per-node progress to the UI — no polling, no WebSocket overhead |
 | **Checkpoint-Based Sessions** | Documents loaded once per session (loader → scanner → interrupt); resumes don't re-parse the PDF on every Step 2 run |

@@ -109,6 +109,7 @@ LAYOUT_VERIFY_ENABLED = os.environ.get(
 _OUTPUT_ROOT_RAW = os.environ.get("OUTPUT_ROOT", "").strip()
 OUTPUT_ROOT = (Path(_OUTPUT_ROOT_RAW) if _OUTPUT_ROOT_RAW
                else Path(__file__).resolve().parents[1] / "data" / "artifacts")
+OUTPUT_UPLOAD_DIR = OUTPUT_ROOT / "uploads"
 OUTPUT_RETENTION_HOURS = 24
 # Durable session checkpoints (the Dossier study's crash-resilient job store,
 # consumed by graphs._create_checkpointer's SqliteSaver hook): DEFAULTS ON
@@ -193,6 +194,27 @@ def _cleanup_stale_request_dirs(max_age_hours: int = OUTPUT_RETENTION_HOURS) -> 
     return removed
 
 
+def _sweep_orphaned_uploads(max_age_hours: int = OUTPUT_RETENTION_HOURS) -> int:
+    """Deletes old app-owned upload files older than the retention window."""
+    import time
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    try:
+        if not OUTPUT_UPLOAD_DIR.is_dir():
+            return 0
+        for entry in OUTPUT_UPLOAD_DIR.iterdir():
+            try:
+                if (entry.is_file() and entry.name.startswith("resume_upload_")
+                        and entry.stat().st_mtime < cutoff):
+                    entry.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return removed
+
+
 # No longer runs at import time — call init_output_dirs() explicitly from app/graph entry points.
 # This prevents filesystem side effects during test collection.
 def init_output_dirs():
@@ -201,7 +223,9 @@ def init_output_dirs():
     Call once at application startup (app.py main block or graphs.py CLI).
     """
     OUTPUT_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    OUTPUT_UPLOAD_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     _cleanup_stale_request_dirs()
+    _sweep_orphaned_uploads()
 
 
 def start_background_cleanup(
