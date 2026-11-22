@@ -36,6 +36,12 @@ def _clear_pdftotext_cache():
     vl.find_pdftotext.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _enable_layout_measurement(monkeypatch):
+    """Measurement tests opt in; the default-off gate has its own tests."""
+    monkeypatch.setattr(vl, "LAYOUT_VERIFY_ENABLED", True)
+
+
 # ==========================================
 # Gap + bottom-space measurement (the "internal hole")
 # ==========================================
@@ -287,6 +293,45 @@ class TestMeasurePdfLayout:
         monkeypatch.setattr(vl, "parse_pdf", lambda path: [holed])
         rows = vl.measure_pdf_layout(pdf)
         assert any(row["kind"] == "hole" for row in rows), rows
+
+
+class TestEnvironmentGate:
+    def test_disabled_returns_empty_without_touching_poppler(
+            self, monkeypatch, tmp_path):
+        monkeypatch.setattr(vl, "LAYOUT_VERIFY_ENABLED", False)
+        pdf = tmp_path / "synthetic.pdf"
+        pdf.write_bytes(b"%PDF-fake")
+        monkeypatch.setattr(
+            vl, "parse_pdf",
+            lambda path: pytest.fail("parse_pdf must not run when disabled"))
+        assert vl.measure_pdf_layout(pdf) == []
+
+    def test_enabled_with_missing_poppler_never_raises(
+            self, monkeypatch, tmp_path):
+        pdf = tmp_path / "synthetic.pdf"
+        pdf.write_bytes(b"%PDF-fake")
+        monkeypatch.setattr(vl, "find_pdftotext", lambda: None)
+        assert vl.measure_pdf_layout(pdf) == []
+
+
+class TestMeasureOnDeliberatelyBadPdf:
+    def test_large_internal_gap_is_flagged_on_a_real_one_page_pdf(
+            self, tmp_path):
+        if vl.find_pdftotext() is None:
+            pytest.skip("Poppler pdftotext not installed")
+        canvas = pytest.importorskip("reportlab.pdfgen.canvas")
+        pdf = tmp_path / "bad_layout.pdf"
+        c = canvas.Canvas(str(pdf), pagesize=(612, 792))
+        c.drawString(72, 750, "Alex Candidate")
+        c.drawString(72, 730, "Experience")
+        c.drawString(72, 710, "Built Python services")
+        c.drawString(72, 120, "Education")  # ~590pt hole above this line
+        c.showPage()
+        c.save()
+
+        rows = vl.measure_pdf_layout(pdf)
+
+        assert [row["kind"] for row in rows] == ["hole"], rows
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")

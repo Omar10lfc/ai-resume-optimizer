@@ -93,6 +93,13 @@ _RESUME_THEME_RAW = os.environ.get("RESUME_THEME", "").strip().lower()
 RESUME_THEME = (_RESUME_THEME_RAW
                 if _RESUME_THEME_RAW in {"classic", "serif", "modern"}
                 else "")
+# Optional PDF layout diagnostics (agent/verify_layout.py): Poppler
+# `pdftotext -bbox` measurement of the shipped resume/cover PDFs (holes,
+# orphaned entry headers, footer collisions, thin final pages). Off by
+# default - a diagnostic, not part of the render contract. Set
+# LAYOUT_VERIFY_ENABLED=1 to include the advisory rows in the Integrity tab.
+LAYOUT_VERIFY_ENABLED = os.environ.get(
+    "LAYOUT_VERIFY_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 
 # --- Output Directories & Persistence ---# BB1 Phase B (PB1): artifacts live under the project's gitignored data/
 # dir by default (visible to the user, survives OS temp cleaners, and

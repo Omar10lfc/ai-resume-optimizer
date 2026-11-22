@@ -116,7 +116,9 @@ pip install -r requirements.txt
 * **pdflatex** — via [MiKTeX](https://miktex.org/) or [TeX Live](https://tug.org/texlive/), plus the packages `fontawesome5`, `hyperref`, `enumitem`, `tabularx`, `geometry`, `anyfontsize`.
 * **pandoc** — from [pandoc.org](https://pandoc.org/).
 
-Without these, the app still works: the resume PDF falls back to HTML→PDF and the DOCX/.tex downloads are simply unavailable.
+**Optional — PDF layout diagnostics.** Poppler's `pdftotext` (via `poppler-utils` on Debian/Ubuntu, `poppler` on Homebrew, or a Windows build such as the one bundled with Git for Windows) powers the advisory layout rows (holes, orphaned entry headers, footer collisions, thin final pages). The measurement is **off by default**; set `LAYOUT_VERIFY_ENABLED=1` to enable it. Missing Poppler is always a silent skip — it never fails a run.
+
+Without pdflatex/pandoc, the app still works: the resume PDF falls back to HTML→PDF and the DOCX/.tex downloads are simply unavailable.
 
 ### 2. Configure Environment
 

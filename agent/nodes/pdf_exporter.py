@@ -327,7 +327,8 @@ def export_documents(resume_text: str, cover_text: str, request_dir: Path,
     # MIT ai-job-search repo, see NOTICE): advisory rows from Poppler
     # word bounding boxes (holes, orphaned entry headers, footer collisions,
     # thin final page, ...) for the Integrity tab. Advisory only - never
-    # blocks, never edits. Empty when pdftotext is unavailable.
+    # blocks, never edits. Off by default behind LAYOUT_VERIFY_ENABLED;
+    # empty when the flag is off or pdftotext is unavailable.
     layout_findings: list[dict] = []
     for target, path in (("resume", resume_out.get("resume_pdf_path") or ""),
                          ("cover", cover_path)):

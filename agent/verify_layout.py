@@ -21,6 +21,10 @@ The thresholds below are calibrated for the stock moderncv/cover.cls
 geometry; the LaTeX classes this product renders differ, so read rows, not
 exit codes - a hole of 101pt under another template is noise.
 
+The whole measurement is gated behind ``LAYOUT_VERIFY_ENABLED`` (default
+off): a diagnostic, not part of the render contract. When disabled,
+``measure_pdf_layout()`` returns ``[]`` without looking for Poppler.
+
 Geometry comes from Poppler ``pdftotext -bbox`` (see docstring there for the
 Git-for-Windows xpdf/-bbox quirk); if no ``pdftotext`` on PATH has the ``-bbox``
 flag, ``measure_pdf_layout()`` returns ``[]`` (skipped). Works on the raw
@@ -38,6 +42,8 @@ import subprocess
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+
+from .config import LAYOUT_VERIFY_ENABLED
 
 # A gap larger than this between consecutive lines is a hole, not spacing.
 GAP_LIMIT_PT = 100.0
@@ -352,10 +358,14 @@ def report(path: Path, pages: list[Page]) -> list[dict]:
 def measure_pdf_layout(path) -> list[dict]:
     """Advisory layout rows for a compiled PDF, or [] when skipped.
 
-    Returns [] when pdftotext is unavailable or the PDF has no pages - a
-    measurement problem is itself an advisory row only when we can measure;
-    on skip we stay quiet like the other advisory channels do.
+    Returns [] when ``LAYOUT_VERIFY_ENABLED`` is off (the default), when
+    pdftotext is unavailable, or when the PDF has no pages - a measurement
+    problem is itself an advisory row only when we can measure; on skip we
+    stay quiet like the other advisory channels do. Missing Poppler never
+    raises, whether the gate is on or off.
     """
+    if not LAYOUT_VERIFY_ENABLED:
+        return []
     path = Path(path)
     if not path.is_file():
         return []
