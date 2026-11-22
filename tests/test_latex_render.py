@@ -1937,6 +1937,35 @@ def test_compact_tier1_airy_restores_rule_air_inside_the_page_budget(tmp_path):
     assert not list(tmp_path.glob("__compact_tier*"))
 
 
+def test_compact_probe_names_are_unique(monkeypatch, tmp_path):
+    """The compact ladder's probe paths come from ``mkstemp`` - request-scoped
+    and collision-free if two renders share an output dir."""
+    import agent.latex_render as lr
+    captured = []
+
+    def fake_latex(tex, output_dir, filename):
+        captured.append(filename)
+        return str(Path(output_dir) / filename)
+
+    def fake_pages(path):
+        match = re.search(r"__compact_tier(\d+)_", Path(path).name)
+        return 2 if match and match.group(1) == "1" else 1
+
+    def fake_baseline(path):
+        match = re.search(r"__compact_tier(\d+)_", Path(path).name)
+        return 500.0 if match and match.group(1) == "1" else 700.0
+
+    monkeypatch.setattr(lr, "latex_to_pdf", fake_latex)
+    monkeypatch.setattr(lr, "pdf_page_count", fake_pages)
+    monkeypatch.setattr(lr, "pdf_last_baseline", fake_baseline)
+    got = lr.render_compact_tiers(parse_markdown_resume(SAMPLE), tmp_path,
+                                  "out.pdf")
+    assert got
+    assert len(captured) >= 2
+    assert all(name.startswith("__compact_tier") for name in captured)
+    assert len(captured) == len(set(captured))
+
+
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
                     reason="pdflatex/pdfplumber not installed")
 def test_compact_tier_falls_back_to_balanced_when_airy_crosses_the_stop(tmp_path):

@@ -18,9 +18,11 @@ empty, even for oddly-formatted LLM output.
 """
 
 import logging
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -1772,6 +1774,13 @@ def pdf_last_baseline(pdf_path) -> Optional[float]:
         return None
 
 
+def _mkstemp_pdf_name(output_dir: Path, prefix: str) -> Path:
+    """Per-render unique probe name from ``mkstemp`` (request-dir scoped)."""
+    fd, name = tempfile.mkstemp(prefix=prefix, suffix=".pdf", dir=str(output_dir))
+    os.close(fd)
+    return Path(name)
+
+
 def render_compact_tiers(data: ResumeData, output_dir,
                          filename: str = "Optimized_Resume.pdf") -> Optional[dict]:
     """Auto-compact tier pass for the >1-page containment (pdf_exporter).
@@ -1799,7 +1808,8 @@ def render_compact_tiers(data: ResumeData, output_dir,
     chosen_tier = None
     for tier in (1, 2, 3):
         tex = render_resume_tex(data, compact=True, compact_tier=tier)
-        probe = latex_to_pdf(tex, output_dir, f"__compact_tier{tier}.pdf")
+        probe = latex_to_pdf(tex, output_dir,
+                             _mkstemp_pdf_name(output_dir, f"__compact_tier{tier}_").name)
         probes[tier] = (tex, probe)
         if not probe or (pdf_page_count(probe) or 99) != 1:
             continue

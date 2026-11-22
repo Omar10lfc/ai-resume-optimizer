@@ -810,6 +810,13 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
 _HTML_BOTTOM_STOP = 743.2
 
 
+def _mkstemp_pdf_name(output_dir: Path, prefix: str) -> Path:
+    """Per-render unique probe name from ``mkstemp`` (request-dir scoped)."""
+    fd, name = tempfile.mkstemp(prefix=prefix, suffix=".pdf", dir=str(output_dir))
+    os.close(fd)
+    return Path(name)
+
+
 def render_density_tiers(data: ResumeData, output_dir,
                          filename: str = "Optimized_Resume.pdf",
                          theme: str = DEFAULT_THEME
@@ -833,7 +840,8 @@ def render_density_tiers(data: ResumeData, output_dir,
     chosen_tier = None
     for tier in (1, 2, 3):
         page = render_resume_html(data, density=tier, theme=theme)
-        probe = html_to_pdf(page, output_dir, f"__density_tier{tier}.pdf")
+        probe = html_to_pdf(page, output_dir,
+                            _mkstemp_pdf_name(output_dir, f"__density_tier{tier}_").name)
         probes[tier] = (page, probe)
         if not probe or (pdf_page_count(probe) or 99) != 1:
             continue

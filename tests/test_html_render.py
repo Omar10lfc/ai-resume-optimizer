@@ -330,14 +330,14 @@ def fake_measurer(monkeypatch, tmp_path):
         return str(out)
 
     def fake_pages(pdf_path):
-        m = re.search(r"__density_tier(\d+)\.pdf$", str(pdf_path))
+        m = re.search(r"__density_tier(\d+)_.+\.pdf$", str(pdf_path))
         if not m:
             return 2
         pages, _ = state["script"].get(int(m.group(1)), (2, 700.0))
         return pages
 
     def fake_baseline(pdf_path):
-        m = re.search(r"__density_tier(\d+)\.pdf$", str(pdf_path))
+        m = re.search(r"__density_tier(\d+)_.+\.pdf$", str(pdf_path))
         if not m:
             return 700.0
         _, baseline = state["script"].get(int(m.group(1)), (2, 700.0))
@@ -360,6 +360,18 @@ def test_density_tiers_adopt_first_fitting_tier(fake_measurer, tmp_path):
     for probe in ("__density_tier1.pdf", "__density_tier2.pdf",
                   "__density_tier3.pdf"):
         assert not (tmp_path / probe).exists(), probe
+
+
+def test_density_probe_names_are_unique(fake_measurer, tmp_path):
+    """Concurrent-safe, request-scoped names: the ladder cannot collide on a
+    shared output directory."""
+    fake_measurer["script"] = {1: (1, 700.0), 2: (2, 700.0), 3: (2, 700.0)}
+    got = render_density_tiers(
+        parse_markdown_resume(SPEC_B_MD), tmp_path, "out.pdf")
+    assert got
+    names = [name for _, name in fake_measurer["probes"]]
+    assert names and all(name.startswith("__density_tier") for name in names)
+    assert len(names) == len(set(names))
 
 
 def test_density_tiers_gate_tier1_on_bottom_stop(fake_measurer, tmp_path):
