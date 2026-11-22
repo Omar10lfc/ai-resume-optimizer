@@ -115,14 +115,14 @@ class TestPathRules:
 
 
 class TestAgentSelection:
-    def test_named_claude_user_opt_out_is_honored(self):
-        body = "User-agent: Claude-User\nDisallow: /\n\nUser-agent: *\nAllow: /\n"
-        assert not allowed(body, "Claude-User", "/a")
+    def test_named_app_opt_out_is_honored(self):
+        body = "User-agent: ResumeOptimizer\nDisallow: /\n\nUser-agent: *\nAllow: /\n"
+        assert not allowed(body, "ResumeOptimizer", "/a")
         assert allowed(body, "*", "/a")
 
     def test_agent_match_is_case_insensitive(self):
-        body = "User-agent: CLAUDE-USER\nDisallow: /x\n"
-        assert not allowed(body, "claude-user", "/x")
+        body = "User-agent: RESUMEOPTIMIZER\nDisallow: /x\n"
+        assert not allowed(body, "resumeoptimizer", "/x")
 
 
 # ==========================================

@@ -1,21 +1,22 @@
 """Decide whether fetching a job-posting URL may proceed.
 
 Adapted from ``tools/robots_check.py`` in the MIT-licensed ai-job-search
-repository (Copyright (c) 2026 Mads Lorentzen); see NOTICE. The companion
-browser-header retry lives in ``agent/url_fetch.py`` - the two tools share
-the posture: **never override a site that has said no**.
+repository (Copyright (c) 2026 Mads Lorentzen); see NOTICE. The gate is
+enforced by ``agent/url_fetch.py`` on every hop; the robots.txt request and
+the page request both identify honestly as ``ResumeOptimizer/1.0`` - no
+browser impersonation.
 
 RFC 9309 walk, deliberately on the cautious side:
   * longest-match wins; on equal specificity Disallow wins
-  * a Disallow for either "*" or "Claude-User" blocks the retry
+  * a Disallow for either "*" or "ResumeOptimizer" blocks the fetch
   * blank lines inside a record do not end it (Python's robotparser drops
     rules in that case, which fails open)
   * one leading UTF-8 BOM is skipped (left in, it hides a first
     "User-agent" line and drops that whole group, which fails open)
-  * 404 means no published policy, which permission
+  * 404 means no published policy, which is permission
   * any other failure to read robots.txt leaves permission unconfirmed,
-    and no retry happens - including a U+FFFD byte in a rule (a byte that
-    is not valid UTF-8)
+    and the fetch is refused - including a U+FFFD byte in a rule (a byte
+    that is not valid UTF-8)
   * only http/https URLs with a host are checked; anything else is
     unconfirmed without a request
 
@@ -28,8 +29,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 from urllib.request import Request, urlopen
 
-BROWSER = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-           '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36')
+USER_AGENT = "ResumeOptimizer/1.0"
 
 
 def is_robots_body(text):
@@ -178,35 +178,29 @@ def gate(url):
     # Only http(s) with a host is a page this tool can have a policy for; any
     # other input fails closed before a request is asked.
     if parts.scheme not in ('http', 'https'):
-        return 1, f'UNCONFIRMED (unsupported URL scheme {parts.scheme!r}) - do not retry, go to step 3'
+        return 1, f'UNCONFIRMED (unsupported URL scheme {parts.scheme!r}) - robots.txt could not be read'
     if not parts.netloc:
-        return 1, 'UNCONFIRMED (no host in the URL) - do not retry, go to step 3'
+        return 1, 'UNCONFIRMED (no host in the URL) - robots.txt could not be read'
     path = unquote(parts.path) or '/'
     if parts.query:
         path += '?' + unquote(parts.query)
     robots = f'{parts.scheme}://{parts.netloc}/robots.txt'
-    body, last = None, 'no attempt'
-    for ua in ('Claude-User', BROWSER):
-        try:
-            text, code = _fetch(robots, ua)
-        except Exception as e:
-            last = type(e).__name__
-            continue
-        if code == 404:
-            return 0, 'ALLOWED - no robots.txt published'
-        if code == 200:
-            if not is_robots_body(text):
-                last = 'HTTP 200 but the body is not a robots.txt'
-                continue
-            if has_undecodable_rule(text):
-                last = 'HTTP 200 but a User-agent/Allow/Disallow line is not valid UTF-8'
-                continue
-            body = text
-            break
-        last = f'HTTP {code}'
-    if body is None:
-        return 1, f'UNCONFIRMED ({last}) - do not retry, go to step 3'
-    for a in ('Claude-User', '*'):
-        if not allowed(body, a, path):
-            return 1, f'DISALLOWED for {a} - do not retry, go to step 3'
+    try:
+        text, code = _fetch(robots, USER_AGENT)
+    except Exception as e:
+        return 1, f'UNCONFIRMED ({type(e).__name__}) - robots.txt could not be read'
+    if code == 404:
+        return 0, 'ALLOWED - no robots.txt published'
+    if code != 200:
+        return 1, f'UNCONFIRMED (HTTP {code}) - robots.txt could not be read'
+    if not is_robots_body(text):
+        return 1, ('UNCONFIRMED (HTTP 200 but the body is not a robots.txt) '
+                   '- robots.txt could not be read')
+    if has_undecodable_rule(text):
+        return 1, ('UNCONFIRMED (HTTP 200 but a User-agent/Allow/Disallow '
+                   'line is not valid UTF-8) - robots.txt could not be read')
+    for agent in ('ResumeOptimizer', '*'):
+        if not allowed(text, agent, path):
+            return 1, (f'DISALLOWED for {agent} - robots.txt does not '
+                       'permit this path')
     return 0, 'ALLOWED - robots.txt permits this path'

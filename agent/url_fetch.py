@@ -89,13 +89,16 @@ def _robots_gate_check(url: str) -> None:
     """Raise when robots.txt policy does not permit fetching ``url``.
 
     Adapted from ``tools/robots_check.py`` in the MIT ai-job-search repo
-    (see NOTICE): a job-posting fetch is the browser-header retry, not the
-    right tool, for a site that has said no - and the gate fails closed, so
-    an unreadable or unconfirmed robots.txt also stops the fetch.
+    (see NOTICE): the gate fails closed, so an unreadable or unconfirmed
+    robots.txt also stops the fetch. There is no browser impersonation and
+    no retry around a refusal - the user is asked to paste the posting.
     """
     code, msg = robots_check.gate(url)
     if code != 0:
-        raise ValueError(f"Job URL refused by robots.txt policy: {msg}")
+        raise ValueError(
+            f"Job URL refused by robots.txt policy: {msg}. "
+            "Paste the job description text instead."
+        )
 
 
 def _read_page_body(response) -> str:
@@ -116,28 +119,26 @@ def _read_page_body(response) -> str:
                        errors="replace")
 
 
-def _get_page_text(opener, url: str, user_agent: str) -> str:
-    """GET one allowlisted page (no status branching: caller reads status)."""
-    request = Request(url, headers={"User-Agent": user_agent})
-    response = opener.open(request, timeout=FETCH_TIMEOUT_SECONDS)
-    return _read_page_body(response)
-
-
 def _fetch_job_description(raw_url: str) -> str:
     """Fetch an allowlisted job page with bounded redirects and response size.
 
     robots.txt is enforced on every hop (RFC 9309, ``agent/robots_check``;
     adapted from ``tools/robots_check.py``): fetching is never done against
-    a policy that says no. A browser-header retry recovers recruiters and
-    ATSes that answer the bot UA with a 403 while serving the same page to
-    a browser - reachable only when the gate passes for that URL.
+    a policy that says no. The opener disables implicit redirects, so every
+    destination is validated (allowlist + public IP) before it is fetched.
+    Requests identify honestly as the app user agent; a site that blocks
+    automated access gets a clear error asking the user to paste the posting
+    instead of a browser-impersonating retry.
     """
     current_url = _validate_job_url(raw_url)
     _robots_gate_check(current_url)
     opener = build_opener(_NoRedirect())
     for _ in range(4):
         try:
-            request = Request(current_url, headers={"User-Agent": "ResumeOptimizer/1.0"})
+            request = Request(
+                current_url,
+                headers={"User-Agent": robots_check.USER_AGENT},
+            )
             response = opener.open(request, timeout=FETCH_TIMEOUT_SECONDS)
             if response.status in {301, 302, 303, 307, 308}:
                 location = response.headers.get("Location")
@@ -155,11 +156,11 @@ def _fetch_job_description(raw_url: str) -> str:
                 _robots_gate_check(current_url)
                 continue
             if exc.code == 403:
-                # Browser-header retry: many recruiters/ATSes reject the
-                # bot UA with 403 while serving the page to a browser. The
-                # robots gate already passed for this URL, so policy
-                # permitting, retry once with the browser UA.
-                return _get_page_text(opener, current_url, robots_check.BROWSER)
+                raise ValueError(
+                    "The site blocked automated access (HTTP 403). "
+                    "Open the job posting in your browser and paste the "
+                    "description instead."
+                ) from exc
             raise
     raise ValueError("Too many job URL redirects.")
 
