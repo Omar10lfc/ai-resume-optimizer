@@ -2560,6 +2560,25 @@ def test_ats_deal_breakers_surface_when_the_posting_names_them():
     assert "### Deal-breakers" not in plain["formatted"]
 
 
+def test_visa_the_company_is_not_a_deal_breaker():
+    """Visa is a payments company, not an immigration requirement."""
+    jd = ("Visa is a global payments technology company. Visa Inc. connects "
+          "consumers and businesses. Join Visa to build Python payment APIs.")
+    report = agent.compute_ats_match(jd, "Jane Roe, Python developer.")
+    assert report["deal_breakers"] == []
+    assert "### Deal-breakers" not in report["formatted"]
+
+
+def test_visa_company_name_does_not_hide_a_real_sponsorship_gap():
+    """The company name is ignored, but a real immigration phrase still fires."""
+    jd = ("Visa is hiring a Python engineer. This role requires visa "
+          "sponsorship, and Visa values thoughtful engineers.")
+    report = agent.compute_ats_match(jd, "Jane Roe, Python developer.")
+    terms = [row["keyword"] for row in report["deal_breakers"]]
+    assert "visa" in terms
+    assert "sponsorship" in terms
+
+
 # ==========================================
 # _strip_emoji_from_html
 # ==========================================

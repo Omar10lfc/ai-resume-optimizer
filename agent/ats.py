@@ -144,17 +144,36 @@ _STOPWORDS = {
 # expresses them in boilerplate differently - see _STOPWORDS); instead they
 # are surfaced in the ATS report as an honest advisory gap when the resume
 # does not address them. Advisory only, like everything else: never vetoes.
-DEAL_BREAKER_KEYWORDS = {
-    "visa", "sponsorship", "security clearance",
+#
+# The bare word "visa" is also a company name (Visa Inc.), so its pattern
+# requires immigration context; the other terms are unambiguous.
+_DEAL_BREAKER_PATTERNS = {
+    "visa": re.compile(
+        r"\b(?:"
+        r"visas?\s+(?:sponsorship|support|status|application|transfer|stamp|"
+        r"requirements?|assistance|permit|processing|holder|category|type|number)"
+        r"|(?:work|employment|h-?1b|h-?2b|f-?1|j-?1|student|immigration|entry|"
+        r"residence|business)\s+visas?"
+        r"|(?:requires?|required|obtain|valid|without|needs?|needed)\s+"
+        r"(?:a\s+)?visas?"
+        r"|(?:sponsors?|sponsoring|sponsored)\s+(?:a\s+|work\s+)?visas?"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "sponsorship": re.compile(r"\bsponsorship\b", re.IGNORECASE),
+    "security clearance": re.compile(r"\bsecurity\s+clearance\b", re.IGNORECASE),
 }
 
 
 def _deal_breaker_hits(job_text: str, resume_lower: str) -> list[dict]:
-    """Terms the posting names and the resume does not address (see above)."""
+    """Terms the posting names and the resume does not address (see above).
+
+    "visa" is context-aware: a posting at Visa (the payments company) is not
+    an immigration requirement.
+    """
     hits = []
-    for term in sorted(DEAL_BREAKER_KEYWORDS):
-        term_re = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
-        if term_re.search(job_text or "") and not term_re.search(resume_lower or ""):
+    for term, pattern in sorted(_DEAL_BREAKER_PATTERNS.items()):
+        if pattern.search(job_text or "") and not pattern.search(resume_lower or ""):
             hits.append({"keyword": term})
     return hits
 
@@ -651,7 +670,7 @@ def compute_ats_match(job_text: str, resume_text: str,
             for word in re.findall(r'[a-z]+', kw):
                 matched_stems.add(_simple_stem(word))
 
-    # Deal-breakers (see DEAL_BREAKER_KEYWORDS): terms the posting names and
+    # Deal-breakers (see _DEAL_BREAKER_PATTERNS): terms the posting names and
     # the resume does not address - advisory rows in the report.
     deal_breakers = _deal_breaker_hits(job_text, resume_lower)
 
