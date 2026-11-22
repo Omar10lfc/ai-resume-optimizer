@@ -28,7 +28,10 @@ from agent.latex_render import (  # noqa: E402
     pdf_last_baseline,
     HAVE_PDFLATEX,
     HAVE_PANDOC,
+    _assert_tex_file_access,
+    _clean_latex_url,
     _latex_escape,
+    _run,
 )
 
 
@@ -495,6 +498,81 @@ def test_latex_to_pdf_compiles(tmp_path):
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_latex_to_pdf_disables_shell_escape(tmp_path, monkeypatch):
+    """The compile argv explicitly passes ``-no-shell-escape`` even though
+    pdflatex defaults to it; capture the argv and assert the switch."""
+    import agent.latex_render as lr
+
+    captured = {}
+    def fake_run(cmd, cwd, timeout):
+        captured["cmd"] = list(cmd)
+        return 0, ""
+    monkeypatch.setattr(lr, "_run", fake_run)
+    tex = (r"\documentclass{article}\input{glyphtounicode}"
+           r"\begin{document}Hi\end{document}")
+    latex_to_pdf(tex, tmp_path, "out.pdf")
+    assert "-no-shell-escape" in captured["cmd"]
+
+
+def test_run_returns_minus_two_on_timeout(tmp_path, monkeypatch):
+    """TimeoutExpired in ``_run`` propagates the historical -2 sentinel that
+    ``latex_to_pdf`` maps to a None result."""
+    import agent.latex_render as lr
+    import subprocess
+
+    def raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="pdflatex", timeout=1)
+    monkeypatch.setattr(lr.subprocess, "run", raise_timeout)
+    assert _run(["pdflatex"], tmp_path, timeout=1)[0] == -2
+
+
+def test_latex_to_pdf_timeout_returns_none(tmp_path, monkeypatch):
+    """``_run``'s -2 timeout sentinel is a compile failure: PDF export None."""
+    import agent.latex_render as lr
+    monkeypatch.setattr(lr, "_run",
+                        lambda cmd, cwd, timeout: (-2, "Compilation timed out"))
+    assert latex_to_pdf(SAMPLE, tmp_path, "out.pdf") is None
+
+
+def test_assert_tex_file_access_allows_bare_filenames_and_rejects_paths(tmp_path):
+    root = tmp_path
+    secret = root / "outside_secret.txt"
+    secret.write_text("TOPSECRET_OUTSIDE_MARKER", encoding="utf-8")
+    work = root / "work"; work.mkdir()
+    _assert_tex_file_access(r"\input{glyphtounicode}", work)
+    for target in (str(secret), "../outside_secret.txt", r".\outside_secret.txt",
+                   "/etc/passwd", "C:\\Windows\\system32\\drivers\\etc\\hosts"):
+        with pytest.raises(ValueError):
+            _assert_tex_file_access(rf"\input{{{target}}}", work)
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_latex_to_pdf_refuses_input_outside_compile_dir(tmp_path):
+    root = tmp_path
+    secret = root / "outside_secret.txt"
+    secret.write_text("TOPSECRET_OUTSIDE_MARKER", encoding="utf-8")
+    out_dir = root / "out"; out_dir.mkdir()
+    tex = (r"\documentclass{article}\begin{document}\input{" + str(secret)
+           + r"}\end{document}")
+    pdf = latex_to_pdf(tex, out_dir, "out.pdf")
+    assert pdf is None
+    assert not (out_dir / "out.pdf").exists()
+    assert all("TOPSECRET_OUTSIDE_MARKER" not in p.read_bytes()
+               for p in out_dir.glob("*.pdf"))
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_latex_write18_is_disabled(tmp_path):
+    from pypdf import PdfReader
+    tex = (r"\documentclass{article}\begin{document}"
+           r"\immediate\write18{echo PWNED18}Hello from PDF\end{document}")
+    pdf = latex_to_pdf(tex, tmp_path, "write18.pdf")
+    assert pdf and Path(pdf).exists() and Path(pdf).stat().st_size > 0
+    text = "".join(p.extract_text() or "" for p in PdfReader(pdf).pages)
+    assert "PWNED18" not in text
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
 def test_latex_to_pdf_pdf_is_parsable(tmp_path):
     from pypdf import PdfReader
     tex = render_resume_tex(parse_markdown_resume(SAMPLE))
@@ -720,6 +798,32 @@ def test_url_with_hash_percent_ampersand_compiles():
     data = parse_markdown_resume(md)
     tex = render_resume_tex(data)
     assert r"\href{https://github.com/user/repo\#readme?tab=code\&ref=main\%20branch}" in tex
+
+
+def test_clean_latex_url_encodes_latex_special_characters():
+    """Braces, backslash, dollar, underscore, tilde, caret, and spaces break
+    ``\\href{...}`` or can start TeX control sequences; percent-encode them."""
+    raw = r"https://example.test/\{a\}b c$_~^d%e#f&g "
+    clean = _clean_latex_url(raw)
+    assert "%5C" in clean
+    assert "%7B" in clean and "%7D" in clean
+    assert "%24" in clean
+    assert "%5F" in clean
+    assert "%7E" in clean and "%5E" in clean
+    assert "%20" in clean
+    # #, %, and & keep the hyperref-safe escaped forms.
+    assert r"\#" in clean and r"\%" in clean and r"\&" in clean
+
+
+def test_clean_latex_url_does_not_introduce_latex_controls():
+    raw = r"https://example.test/\write18{echo PWNED}\input{resume.tex}\end{document}"
+    clean = _clean_latex_url(raw)
+    # \write18 stays as text but its leading backslash is percent-encoded, so
+    # it is a literal URL token rather than a live TeX control sequence.
+    assert "%5Cwrite18" in clean
+    assert "%5Cinput" in clean
+    assert "%5Cend" in clean
+    assert "PWNED" in clean
 
 
 def test_name_heading_size_is_reduced_not_huge():

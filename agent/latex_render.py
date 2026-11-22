@@ -24,6 +24,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from .helpers import _force_ascii
 
@@ -962,6 +963,18 @@ def _clean_latex_url(url: str) -> str:
     # % must be \% (otherwise: treated as LaTeX comment)
     # & must be \& (otherwise: treated as tabular cell separator)
     url = url.replace('\\#', '#').replace('\\%', '%').replace('\\&', '&')
+
+    # Characters that terminate or break the \href{...} argument. Percent-encode
+    # these; % and & are still escaped below, preserving the existing shape.
+    url = ''.join(
+        "%5F" if ch == "_"
+        else "%7E" if ch == "~"
+        else quote(ch, safe="") if ch in "\\{}$^"
+        else ch
+        for ch in url
+    )
+
+    url = url.replace(' ', '%20')
     url = url.replace('#', r'\#')
     url = url.replace('%', r'\%')
     url = url.replace('&', r'\&')
@@ -1875,6 +1888,26 @@ def render_resume_tex(data: ResumeData, compact: bool = False,
 # Compilation
 # ---------------------------------------------------------------------------
 
+def _assert_tex_file_access(tex_content: str, allowed_dir: Path) -> None:
+    """Rejects explicit relative/absolute ``\\input`` paths from untrusted TeX.
+
+    Trusted TeX engines also expose ``openin_any`` / ``openout_any`` (TeX Live;
+    MiKTeX ignores the equivalent ini/env settings). This app-level scan is
+    the enforcement that works on every engine: user-visible ``\\input`` paths
+    must be bare filenames, never relative or absolute paths that would read
+    from outside the per-render compile directory.
+    """
+    for target in re.findall(r"\\input\s*\{([^{}]*)\}", tex_content):
+        target = target.strip()
+        if not target:
+            continue
+        if (Path(target).is_absolute()
+                or ".." in target
+                or any(sep in target for sep in ("/", "\\"))
+                or target.startswith((".", ":"))):
+            raise ValueError(f"latex \\input outside the compile dir: {target!r}")
+
+
 def _run(cmd: list[str], cwd: Path, timeout: int = 120) -> tuple[int, str]:
     """Run a subprocess, returning (returncode, combined stdout+stderr)."""
     try:
@@ -1908,8 +1941,14 @@ def latex_to_pdf(tex_content: str, output_dir: Path, filename: str = "Resume.pdf
         teX_file = tmp_dir / "resume.tex"
         # pdflatex expects a specific encoding of some glyphs — write utf8
         teX_file.write_text(tex_content, encoding="utf-8")
+        try:
+            _assert_tex_file_access(tex_content, tmp_dir)
+        except ValueError as exc:
+            logger.error("LaTeX compile refused unsafe \\input: %s", exc)
+            return None
         rc, out = _run([PDFLATEX_PATH, "-interaction=nonstopmode", "-halt-on-error",
-                        teX_file.name], cwd=tmp_dir, timeout=timeout)
+                        "-no-shell-escape", teX_file.name],
+                       cwd=tmp_dir, timeout=timeout)
         if rc != 0:
             # pdflatex writes the log even on error — log the tail for help
             logger.error("pdflatex failed (rc=%s):\n%s", rc, out[-2000:])
