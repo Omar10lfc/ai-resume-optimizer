@@ -5,6 +5,7 @@ PDF/DOCX compile tests run only when pdflatex/pandoc are present on PATH, so
 they pass on CI machines without a TeX distribution.
 """
 
+import concurrent.futures
 import os
 import re
 import sys
@@ -570,6 +571,28 @@ def test_latex_write18_is_disabled(tmp_path):
     assert pdf and Path(pdf).exists() and Path(pdf).stat().st_size > 0
     text = "".join(p.extract_text() or "" for p in PdfReader(pdf).pages)
     assert "PWNED18" not in text
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_parallel_latex_renders_are_sentinel_isolated(tmp_path):
+    """Four real pdflatex compiles run in parallel with unique sentinels; each
+    extracted PDF contains only its own sentinel."""
+    from pypdf import PdfReader
+    sentinels = [f"LATEX-SENTINEL-{i:03d}" for i in range(4)]
+
+    def render(i):
+        tex = (r"\documentclass{article}\begin{document}" + sentinels[i]
+               + r"\end{document}")
+        return latex_to_pdf(tex, tmp_path, f"parallel_{i}.pdf")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        paths = list(pool.map(render, range(4)))
+    assert all(paths)
+    for i, pdf in enumerate(paths):
+        text = "".join(p.extract_text() or "" for p in PdfReader(pdf).pages)
+        assert sentinels[i] in text
+        assert all(other not in text for j, other in enumerate(sentinels)
+                   if j != i)
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")

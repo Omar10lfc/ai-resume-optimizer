@@ -26,6 +26,7 @@ Layers:
   extraction (keywords, '->' arrows, scheme-stripped link text), and the
   density ladder reclaiming a long fixture to one page.
 """
+import concurrent.futures
 import re
 from pathlib import Path
 
@@ -818,6 +819,28 @@ def test_html_render_acceptance_themes_are_looks_never_sizes(tmp_path):
         # the name is the largest line on the page in every look
         name_sizes[theme] = max(l["size"] for l in led["lines"])
     assert len(set(name_sizes.values())) == 1, name_sizes
+
+
+@pytest.mark.skipif(not HAVE_BROWSER, reason="no Chromium-family browser")
+def test_parallel_html_renders_are_sentinel_isolated(tmp_path):
+    """Four real headless prints run in parallel with unique sentinels; each
+    extracted PDF contains only its own sentinel."""
+    sentinels = [f"HTML_SENTINEL_{i:03d}" for i in range(4)]
+
+    def render(i):
+        return html_to_pdf(
+            f"<html><body><h1>{sentinels[i]}</h1></body></html>",
+            tmp_path, f"parallel_{i}.pdf")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        paths = list(pool.map(render, range(4)))
+    assert all(paths)
+    for i, pdf in enumerate(paths):
+        with pdfplumber.open(pdf) as doc:
+            text = "\n".join(page.extract_text() or "" for page in doc.pages)
+        assert sentinels[i] in text
+        assert all(other not in text for j, other in enumerate(sentinels)
+                   if j != i)
 
 
 # ==========================================
