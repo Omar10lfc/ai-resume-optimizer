@@ -116,6 +116,8 @@ pip install -r requirements.txt
 * **pdflatex** — via [MiKTeX](https://miktex.org/) or [TeX Live](https://tug.org/texlive/), plus the packages `fontawesome5`, `hyperref`, `enumitem`, `tabularx`, `geometry`, `anyfontsize`.
 * **pandoc** — from [pandoc.org](https://pandoc.org/).
 
+**Optional — Chromium HTML→PDF (the serif/modern themes).** Install Chrome, Chromium, or Edge; the renderer probes `PATH`, the standard Windows/macOS/Linux install locations, and Playwright's browser caches. `RENDER_BROWSER_PATH` overrides discovery (a missing override is logged and ignored). In a Linux container, run as a **non-root** user. If the container must run as root, opt in explicitly with `RENDER_NO_SANDBOX=1` — only then does the renderer add `--no-sandbox --disable-dev-shm-usage`, and it logs a warning on every render. Every print runs with JavaScript and background networking disabled, DNS blackholed, remote fonts off, and only the local `file://` page loaded; without a browser, non-classic looks fall back to the LaTeX classic.
+
 **Optional — PDF layout diagnostics.** Poppler's `pdftotext` (via `poppler-utils` on Debian/Ubuntu, `poppler` on Homebrew, or a Windows build such as the one bundled with Git for Windows) powers the advisory layout rows (holes, orphaned entry headers, footer collisions, thin final pages). The measurement is **off by default**; set `LAYOUT_VERIFY_ENABLED=1` to enable it. Missing Poppler is always a silent skip — it never fails a run.
 
 Without pdflatex/pandoc, the app still works: the resume PDF falls back to HTML→PDF and the DOCX/.tex downloads are simply unavailable.

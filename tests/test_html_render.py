@@ -823,7 +823,7 @@ class _FakeProc:
 @pytest.fixture
 def print_engine_fakes(monkeypatch):
     """Pins BROWSER_PATH/HAVE_BROWSER and records every subprocess.run call
-    so the sandbox-retry contract is asserted on the exact argv."""
+    so the print-argv contract is asserted on the exact flags."""
     import agent.html_render as hr
 
     calls = []
@@ -838,61 +838,179 @@ def print_engine_fakes(monkeypatch):
     return calls
 
 
-def test_html_to_pdf_retries_once_without_sandbox_after_sandbox_abort(
+def test_html_to_pdf_root_sandbox_failure_is_single_attempt_and_names_opt_in(
+        monkeypatch, tmp_path, print_engine_fakes, caplog):
+    """Root without --no-sandbox exits 1, not rc<0. The engine never retries
+    on its own; it logs the explicit opt-in and the non-root alternative."""
+    import agent.html_render as hr
+
+    def run_side_effect(args, stdout=None, stderr=None, timeout=None, cwd=None):
+        print_engine_fakes.append(list(args))
+        return _FakeProc(
+            returncode=1,
+            stderr="Running as root without --no-sandbox is not supported. "
+                   "See https://crbug.com/638180.")
+    monkeypatch.setattr(hr.subprocess, "run", run_side_effect)
+
+    with caplog.at_level("ERROR"):
+        result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
+    assert result is None
+    assert len(print_engine_fakes) == 1
+    assert "--no-sandbox" not in print_engine_fakes[0]
+    assert "RENDER_NO_SANDBOX=1" in caplog.text
+    assert "non-root" in caplog.text
+
+
+def test_html_to_pdf_sandbox_abort_never_retries(
         monkeypatch, tmp_path, print_engine_fakes):
-    """CI posture: hardened Linux images abort Chrome's namespace sandbox at
-    startup (rc<0 + Impl::Initialize() - observed live: rc=-6). The engine
-    retries ONCE with --no-sandbox --disable-dev-shm-usage, flags kept ahead
-    of the source URI, and ships the retried print."""
+    """A namespace-sandbox abort (rc<0) reports None after exactly ONE
+    attempt - the old automatic --no-sandbox retry is gone."""
+    import agent.html_render as hr
+
+    def run_side_effect(args, stdout=None, stderr=None, timeout=None, cwd=None):
+        print_engine_fakes.append(list(args))
+        return _FakeProc(returncode=-6,
+                         stderr="Failed to move to new namespace: ... "
+                                "Impl::Initialize() failed.")
+    monkeypatch.setattr(hr.subprocess, "run", run_side_effect)
+    result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
+    assert result is None
+    assert len(print_engine_fakes) == 1
+    assert "--no-sandbox" not in print_engine_fakes[0]
+
+
+def test_html_to_pdf_retry_failure_reports_none_after_one_call(
+        tmp_path, print_engine_fakes):
+    """Any failed print still reports None after one browser launch; the
+    export falls back (html -> latex -> xhtml2pdf)."""
+    result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
+    assert result is None
+    assert len(print_engine_fakes) == 1
+
+
+def test_render_no_sandbox_opt_in_adds_flags_and_warns(
+        monkeypatch, tmp_path, print_engine_fakes, caplog):
+    """RENDER_NO_SANDBOX=1 is the only way --no-sandbox is used, and it says
+    so loudly on every render."""
     import agent.html_render as hr
 
     pdf = tmp_path / "out.pdf"
 
     def run_side_effect(args, stdout=None, stderr=None, timeout=None, cwd=None):
         print_engine_fakes.append(list(args))
-        if "--no-sandbox" in args:  # the retried print succeeds
-            pdf.write_bytes(b"%PDF-fake-real")
-            return _FakeProc(returncode=0)
-        return _FakeProc(returncode=-6,
-                         stderr="Failed to move to new namespace: ... "
-                                "Impl::Initialize() failed.")
+        pdf.write_bytes(b"%PDF-fake-real")
+        return _FakeProc(returncode=0)
     monkeypatch.setattr(hr.subprocess, "run", run_side_effect)
+    monkeypatch.setenv("RENDER_NO_SANDBOX", "1")
 
-    result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
+    with caplog.at_level("WARNING"):
+        result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
     assert result == str(pdf)
-    assert len(print_engine_fakes) == 2
-    first, second = print_engine_fakes
-    assert "--no-sandbox" not in first       # sandboxed-first stays default
-    assert "--no-sandbox" in second
-    assert "--disable-dev-shm-usage" in second
-    # the flags stay grouped ahead of the file:// URI
-    assert second[-1].startswith("file://")
-    assert "--no-sandbox" in second[:-1]
-
-
-def test_html_to_pdf_plain_failure_never_retries(tmp_path, print_engine_fakes):
-    """A clean run that produces no PDF (no abort signature) reports None
-    after exactly ONE attempt - no speculative second browser launch."""
-    result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
-    assert result is None
     assert len(print_engine_fakes) == 1
+    args = print_engine_fakes[0]
+    assert "--no-sandbox" in args
+    assert "--disable-dev-shm-usage" in args
+    assert "RENDER_NO_SANDBOX" in caplog.text
+    assert "sandbox" in caplog.text.lower()
 
 
-def test_html_to_pdf_retry_failure_reports_none_after_two_calls(
+def test_print_argv_and_source_disable_scripts_and_external_network(
         monkeypatch, tmp_path, print_engine_fakes):
-    """When the sandboxless retry also fails, None is reported after exactly
-    two attempts - the export falls back (html -> latex -> xhtml2pdf)."""
+    """The print is a local file with scripts and network access removed:
+    the source carries a strict CSP (script-src 'none', default-src 'none')
+    and the argv blackholes DNS. There is no remote URL argument."""
+    import agent.html_render as hr
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    pdf = tmp_path / "out.pdf"
+    captured = {}
+
+    def fake_print(args, output_dir, timeout):
+        captured["args"] = list(args)
+        source = Path(url2pathname(urlparse(args[-1]).path))
+        captured["source"] = source.read_text(encoding="utf-8")
+        pdf.write_bytes(b"%PDF-fake-real")
+        return _FakeProc(returncode=0), ""
+
+    monkeypatch.setattr(hr, "_run_print", fake_print)
+
+    assert html_to_pdf("<html></html>", tmp_path, "out.pdf") == str(pdf)
+    args = captured["args"]
+    source = captured["source"]
+    assert "Content-Security-Policy" in source
+    assert "script-src 'none'" in source
+    assert "default-src 'none'" in source
+    assert "connect-src 'none'" in source
+    assert "--blink-settings=scriptEnabled=false" not in args
+    assert "--disable-background-networking" in args
+    assert "--host-resolver-rules=MAP * ~NOTFOUND" in args
+    assert "--disable-remote-fonts" in args
+    assert "--no-sandbox" not in args
+    assert args[-1].startswith("file://")
+    assert not any(a.startswith(("http://", "https://")) for a in args)
+
+
+def test_lock_down_print_source_preserves_an_existing_csp():
     import agent.html_render as hr
 
-    def run_side_effect(args, stdout=None, stderr=None, timeout=None, cwd=None):
-        print_engine_fakes.append(list(args))
-        return _FakeProc(returncode=-6, stderr="Impl::Initialize() failed.")
-    monkeypatch.setattr(hr.subprocess, "run", run_side_effect)
-    result = html_to_pdf("<html></html>", tmp_path, "out.pdf")
-    assert result is None
-    assert len(print_engine_fakes) == 2
-    assert print_engine_fakes[1][-1].startswith("file://")
-    assert "--no-sandbox" in print_engine_fakes[1]
+    page = '<html><head><meta http-equiv="Content-Security-Policy" ' \
+           'content="default-src \'none\'"></head></html>'
+    assert hr._lock_down_print_source(page) == page
+
+
+def test_lock_down_print_source_inserts_into_head():
+    import agent.html_render as hr
+
+    page = '<html><head lang="en"></head><body></body></html>'
+    locked = hr._lock_down_print_source(page)
+    assert locked.startswith('<html><head lang="en">' + hr._CSP_META)
+    assert locked.endswith("</head><body></body></html>")
+
+
+def test_find_browser_warns_on_missing_override_and_falls_through(
+        monkeypatch, tmp_path, caplog):
+    import agent.html_render as hr
+
+    missing = tmp_path / "missing-chrome.exe"
+    monkeypatch.setenv("RENDER_BROWSER_PATH", str(missing))
+    monkeypatch.setattr(hr, "_standard_browser_candidates", lambda: [])
+    monkeypatch.setattr(hr, "_playwright_cache_roots", lambda: [])
+    monkeypatch.setattr(hr.shutil, "which",
+                        lambda name: "/usr/bin/chromium" if name == "chromium" else None)
+
+    with caplog.at_level("WARNING"):
+        assert hr._find_browser() == "/usr/bin/chromium"
+    assert str(missing) in caplog.text
+    assert "does not exist" in caplog.text
+
+
+def test_find_browser_discovers_linux_playwright_cache(monkeypatch, tmp_path):
+    import agent.html_render as hr
+
+    cache = tmp_path / "ms-playwright"
+    chrome = cache / "chromium-1234" / "chrome-linux" / "chrome"
+    chrome.parent.mkdir(parents=True)
+    chrome.write_bytes(b"fake")
+    monkeypatch.delenv("RENDER_BROWSER_PATH", raising=False)
+    monkeypatch.setattr(hr, "_standard_browser_candidates", lambda: [])
+    monkeypatch.setattr(hr, "_playwright_cache_roots", lambda: [cache])
+    monkeypatch.setattr(hr.shutil, "which", lambda name: None)
+
+    assert hr._find_browser() == str(chrome)
+
+
+def test_find_browser_env_override_wins(monkeypatch, tmp_path):
+    import agent.html_render as hr
+
+    fake = tmp_path / "chrome"
+    fake.write_bytes(b"fake")
+    monkeypatch.setenv("RENDER_BROWSER_PATH", str(fake))
+    monkeypatch.setattr(hr, "_standard_browser_candidates", lambda: [])
+    monkeypatch.setattr(hr, "_playwright_cache_roots", lambda: [])
+    monkeypatch.setattr(hr.shutil, "which", lambda name: "/unexpected/chrome")
+
+    assert hr._find_browser() == str(fake)
 
 
 def test_concurrent_renders_use_distinct_source_and_profile(

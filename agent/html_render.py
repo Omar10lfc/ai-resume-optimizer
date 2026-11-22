@@ -81,17 +81,8 @@ HTML_RENDERER_VERSION = "html-chromium@1"
 # ---------------------------------------------------------------------------
 
 
-def _find_browser() -> Optional[str]:
-    """Locates a Chromium-family binary: explicit env override first, then
-    PATH, then the standard Windows/macOS/Linux install locations, then a
-    Playwright browser cache. Returns the absolute path or None."""
-    override = os.environ.get("RENDER_BROWSER_PATH", "").strip()
-    if override and Path(override).exists():
-        return override
-    for name in ("chrome", "msedge", "chromium", "google-chrome", "microsoft-edge"):
-        found = shutil.which(name)
-        if found:
-            return found
+def _standard_browser_candidates() -> list[Path]:
+    """The fixed-location installs probed after PATH lookup."""
     program_files = [
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")),
         Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")),
@@ -107,15 +98,47 @@ def _find_browser() -> Optional[str]:
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     )]
-    for cand in candidates:
+    return candidates
+
+
+def _playwright_cache_roots() -> list[Path]:
+    """Playwright's per-platform browser caches (Windows and POSIX)."""
+    roots: list[Path] = []
+    local = os.environ.get("LOCALAPPDATA", "").strip()
+    if local:
+        roots.append(Path(local) / "ms-playwright")
+    roots.append(Path.home() / ".cache" / "ms-playwright")
+    return roots
+
+
+def _find_browser() -> Optional[str]:
+    """Locates a Chromium-family binary: explicit env override first, then
+    PATH, then the standard Windows/macOS/Linux install locations, then a
+    Playwright browser cache (Windows or Linux). Returns the absolute path or
+    None."""
+    override = os.environ.get("RENDER_BROWSER_PATH", "").strip()
+    if override:
+        if Path(override).is_file():
+            return override
+        logger.warning("HTML renderer: RENDER_BROWSER_PATH=%s does not exist - "
+                       "ignoring the override and probing the defaults.", override)
+    for name in ("chrome", "msedge", "chromium", "google-chrome", "microsoft-edge"):
+        found = shutil.which(name)
+        if found:
+            return found
+    for cand in _standard_browser_candidates():
         if cand.is_file():
             return str(cand)
-    # Playwright's cached Chromium (if the user ever installed the package)
-    pw_root = Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright"
-    if pw_root.is_dir():
-        for probe in sorted(pw_root.glob("chromium*/chrome-win*/chrome.exe")):
-            if probe.is_file():
-                return str(probe)
+    # Playwright's cached Chromium (only when the user installed the package).
+    # Linux uses chromium-<rev>/chrome-linux/chrome; Windows keeps chrome-win.
+    for pw_root in _playwright_cache_roots():
+        if not pw_root.is_dir():
+            continue
+        for pattern in ("chromium*/chrome-win*/chrome.exe",
+                        "chromium*/chrome-linux*/chrome"):
+            for probe in sorted(pw_root.glob(pattern)):
+                if probe.is_file():
+                    return str(probe)
     return None
 
 
@@ -353,8 +376,12 @@ def _simple_rows(lines: list[str]) -> list[tuple[bool, str]]:
 # The page: self-contained HTML with print CSS + strict CSP
 # ---------------------------------------------------------------------------
 
-_CSP_META = ('<meta http-equiv="Content-Security-Policy" '
-             "content=\"default-src 'none'; style-src 'unsafe-inline'\">")
+_CSP_META = (
+    '<meta http-equiv="Content-Security-Policy" content="default-src '
+    "'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+    "font-src data:; connect-src 'none'; object-src 'none'; frame-src "
+    "'none'; base-uri 'none'; form-action 'none'\">"
+)
 
 # Density tiers (0 = base). Tier 1 is the "airy-tight" analog of the LaTeX
 # tier ladder's tier-1: adopted only when the render stays one page AND the
@@ -603,21 +630,23 @@ def render_resume_html(data: ResumeData, density: int = 0,
 # ---------------------------------------------------------------------------
 
 
-# Hardened CI/container images (GitHub Actions' current Ubuntu, Docker hosts
-# with unprivileged user namespaces restricted) abort Chrome's namespace
-# sandbox at startup: the process dies with rc<0 and the sandbox
-# initialization marker on stderr (observed live in CI: rc=-6,
-# "Impl::Initialize()"). The print is a LOCAL file:// document with a strict
-# CSP and no external fetchables by construction, so on that specific abort
-# the engine retries ONCE with the sandbox disabled - the standard
-# headless-CI posture (Playwright's chromiumSandbox:false, Puppeteer's
-# --no-sandbox). Sandboxed-first stays the default everywhere else.
-_SANDBOX_ABORT_MARKERS = (
-    "Impl::Initialize()",
-    "Failed to move to new namespace",
-    "SUID sandbox helper",
+# Chromium refuses to run as root with its sandbox enabled (the child exits 1
+# with this marker). The app never silently disables the sandbox: the operator
+# opts in with RENDER_NO_SANDBOX=1 (containers only), or runs the app as a
+# non-root user. Everything else keeps the sandbox on. If the marker appears
+# without the opt-in, the render logs the remedy and falls back to LaTeX.
+_SANDBOX_BLOCKED_MARKERS = (
+    "Running as root without --no-sandbox",
+    "No usable sandbox",
 )
-_SANDBOX_OFF_FLAGS = ("--no-sandbox", "--disable-dev-shm-usage")
+_NO_SANDBOX_FLAGS = ("--no-sandbox", "--disable-dev-shm-usage")
+
+
+def _no_sandbox_opted_in() -> bool:
+    """True when the operator explicitly accepted Chromium's sandbox being off."""
+    return os.environ.get("RENDER_NO_SANDBOX", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def _run_print(args: list[str], output_dir: Path, timeout: int):
@@ -653,6 +682,21 @@ def _run_print(args: list[str], output_dir: Path, timeout: int):
             pass
 
 
+# Chromium has no portable CLI switch that disables JavaScript (Edge's Blink
+# preference exits 0 without printing), so the print source carries a strict
+# CSP instead. It is injected when the input page has none: inline styles are
+# needed, everything else (scripts, remote fetches, frames, plugins) is denied.
+def _lock_down_print_source(html_content: str) -> str:
+    """Injects the print CSP at the top of the document head when absent."""
+    if "content-security-policy" in html_content.lower():
+        return html_content
+    marker = re.search(r"<head(?:\s[^>]*)?>", html_content, flags=re.IGNORECASE)
+    if marker is None:
+        return f"<head>{_CSP_META}</head>{html_content}"
+    return (html_content[:marker.end()] + _CSP_META
+            + html_content[marker.end():])
+
+
 def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
                 timeout: int = 90) -> Optional[str]:
     """Prints the HTML page to PDF with the system's headless Chromium/Edge.
@@ -665,13 +709,24 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
     PDF path, or None when no browser is available or the print failed (the
     caller falls back - an export never fails because of the renderer).
     Concurrency is bounded by ``_RENDER_SLOTS`` (the Dossier pool's
-    MAX_CONCURRENT_RENDERS = 2; calls beyond that queue). A sandbox-init abort
-    (hardened CI/container images) gets exactly one retry with
-    ``--no-sandbox --disable-dev-shm-usage``.
+    MAX_CONCURRENT_RENDERS = 2; calls beyond that queue).
+
+    The print is locked down on the argv: JavaScript and background
+    networking are disabled, DNS is blackholed, remote fonts are off, and the
+    only non-flag argument is the local ``file://`` source URI. Chromium's
+    sandbox stays ON unless the operator sets ``RENDER_NO_SANDBOX=1`` (the
+    usual root-in-container escape hatch); a root/no-sandbox failure is logged
+    with that remedy and the caller falls back to LaTeX.
     """
     if not HAVE_BROWSER:
         logger.info("HTML renderer: no browser available - skipping.")
         return None
+    no_sandbox = _no_sandbox_opted_in()
+    if no_sandbox:
+        logger.warning(
+            "HTML renderer: RENDER_NO_SANDBOX is enabled - Chromium runs "
+            "with --no-sandbox (its sandbox is disabled). Use this only in "
+            "a container whose threat model accepts it.")
     output_dir = Path(output_dir)
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     pdf_path = output_dir / filename
@@ -681,7 +736,8 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
             prefix="__print_source_", suffix=".html", dir=str(output_dir))
         os.close(fd)
         src_path = Path(src_name)
-        src_path.write_text(html_content, encoding="utf-8")
+        src_path.write_text(_lock_down_print_source(html_content),
+                            encoding="utf-8")
     except OSError as e:
         logger.warning("HTML renderer: could not write the print source: %s", e)
         if src_path is not None:
@@ -703,31 +759,31 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
         BROWSER_PATH, "--headless", "--disable-gpu", "--disable-extensions",
         "--no-first-run", "--no-default-browser-check",
         "--disable-crash-reporter", "--disable-remote-fonts",
+        "--disable-background-networking",
+        "--host-resolver-rules=MAP * ~NOTFOUND",
         f"--user-data-dir={profile_dir}",
         "--no-pdf-header-footer", "--print-to-pdf-no-header",
-        f"--print-to-pdf={pdf_path}",
-        src_path.resolve().as_uri(),
     ]
+    if no_sandbox:
+        args += list(_NO_SANDBOX_FLAGS)
+    args += [f"--print-to-pdf={pdf_path}", src_path.resolve().as_uri()]
     try:
         with _RENDER_SLOTS:
             proc, stderr_text = _run_print(args, output_dir, timeout)
         if not pdf_path.exists() or pdf_path.stat().st_size == 0:
-            aborted = (proc.returncode is not None and proc.returncode < 0
-                       and any(m in stderr_text for m in _SANDBOX_ABORT_MARKERS))
-            if aborted and "--no-sandbox" not in args:
-                logger.warning("HTML renderer: Chrome sandbox init aborted "
-                               "(rc=%s) - retrying once with the sandbox "
-                               "disabled (CI/container posture).",
-                               proc.returncode)
-                # switch syntax: keep the flags grouped, URI last
-                args = args[:-1] + list(_SANDBOX_OFF_FLAGS) + [args[-1]]
-                with _RENDER_SLOTS:
-                    proc, stderr_text = _run_print(args, output_dir, timeout)
-            if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+            if (not no_sandbox
+                    and any(m in stderr_text for m in _SANDBOX_BLOCKED_MARKERS)):
+                logger.error(
+                    "HTML renderer: Chromium refused to start because its "
+                    "sandbox is unavailable (usually running as root). Set "
+                    "RENDER_NO_SANDBOX=1 to opt in to --no-sandbox in the "
+                    "container, or run the app as a non-root user. Falling "
+                    "back to the LaTeX renderer.")
+            else:
                 tail = stderr_text[-800:]
                 logger.warning("HTML renderer: print produced no PDF (rc=%s): %s",
                                proc.returncode, tail)
-                return None
+            return None
         return str(pdf_path)
     except subprocess.TimeoutExpired:
         logger.warning("HTML renderer: print timed out after %ss.", timeout)
@@ -741,6 +797,7 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
         except OSError:
             pass
         shutil.rmtree(profile_dir, ignore_errors=True)
+
 
 
 # ---------------------------------------------------------------------------
