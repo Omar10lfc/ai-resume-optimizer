@@ -305,15 +305,11 @@ In a test run, the agent handled a "Junior" resume applying for a Data Scientist
 │   ├── test_app_ui.py        # 7 UI streaming/regression tests
 │   └── fixtures/
 │       └── golden_ats.json   # Checked-in JD/resume pair + quality-floor invariants
-├── salary_lookup.py          # Salary benchmark CLI (BYO data; adapted from the MIT ai-job-search repo)
 ├── requirements.txt          # Pinned runtime dependencies
-├── requirements-dev.txt      # Test-only dependencies (pytest, coverage, pdfplumber, openpyxl)
+├── requirements-dev.txt      # Test-only dependencies (pytest, coverage, pdfplumber)
 ├── scripts/
 │   ├── export_langsmith_traces.py  # Bulk-exports ALL project runs from LangSmith (v2 API) to local JSON
 │   └── analyze_langsmith_traces.py # Offline analysis over the export: latency, tokens, scores, errors
-├── tools/                    # Standalone CLI tools (adapted from the MIT ai-job-search repo)
-│   ├── convert_salary_excel.py     # Excel -> salary_data.json (auto-detecting headers)
-│   └── README_SALARY_TOOL.md       # Salary benchmark tool setup instructions
 ├── agent_diagram.png         # Architecture diagram
 ├── .env.example              # Template for all environment variables
 ├── .env                      # API keys (not committed)
