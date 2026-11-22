@@ -109,6 +109,8 @@ def _create_checkpointer():
             from langgraph.checkpoint.sqlite import SqliteSaver
             Path(CHECKPOINTER_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(CHECKPOINTER_DB_PATH, check_same_thread=False)
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA journal_mode = WAL")
             _safe_print(f"[Checkpointer] Using persistent SQLite storage at: {CHECKPOINTER_DB_PATH}")
             return SqliteSaver(conn)
         except Exception as e:

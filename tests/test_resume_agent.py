@@ -3358,6 +3358,14 @@ def test_create_checkpointer_opens_sqlite_and_creates_dirs(monkeypatch, tmp_path
     assert db.exists()              # parent dirs created, file opened
 
 
+def test_create_checkpointer_sets_wal_and_busy_timeout(monkeypatch, tmp_path):
+    db = tmp_path / "cp.sqlite3"
+    monkeypatch.setattr(agent.graphs, "CHECKPOINTER_DB_PATH", str(db))
+    saver = agent.graphs._create_checkpointer()
+    assert saver.conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert saver.conn.execute("PRAGMA busy_timeout").fetchone()[0] > 0
+
+
 def test_create_checkpointer_memory_when_disabled(monkeypatch):
     from langgraph.checkpoint.memory import MemorySaver
     monkeypatch.setattr(agent.graphs, "CHECKPOINTER_DB_PATH", "")

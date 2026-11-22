@@ -8,6 +8,7 @@ guards, app-wide basic auth, and health reporting.
 Run with: venv\\Scripts\\python.exe -m pytest tests/test_server.py -v
 """
 
+import concurrent.futures
 import json
 import os
 import sys
@@ -1215,6 +1216,23 @@ def test_run_store_purges_expired_rows(runs_db):
 
     assert run_store.get("44444444-4444-4444-4444-444444444444") is None
     assert run_store.get("55555555-5555-5555-5555-555555555555") is not None
+
+
+def test_run_store_concurrent_writes_all_rows(runs_db):
+    """WAL + busy_timeout let several ledger connections write one SQLite file
+    without losing a row to `database is locked`."""
+    sessions = [f"concurrent-session-{i:02d}" for i in range(12)]
+
+    def write(session):
+        run_store._write(session, "done")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(write, sessions))
+
+    for session in sessions:
+        row = run_store.get(session)
+        assert row is not None, session
+        assert row["status"] == "done"
 
 
 def test_step2_recovery_recomputes_stale_ats_snapshot(client, fake_llms,
