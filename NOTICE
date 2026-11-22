@@ -13,7 +13,10 @@ Behavior-level adoptions (reference concepts made concrete in my engine):
   a run - the user decides what "requires" means.
 
 Adapted in this repository:
-
+- `salary_lookup.py` (root) and `tools/convert_salary_excel.py` +
+  `tools/README_SALARY_TOOL.md` - salary benchmarking tooling (company
+  fuzzy match + fuzzy city match; Excel -> JSON converter). Adapted from
+  `salary_lookup.py` and `tools/convert_salary_excel.py`.
 - `agent/posting_guard.py` - posting integrity gate (hidden-HTML removal,
   invisible-Unicode cleaning, instruction-shaped-line detection). Adapted
   from `tools/posting_guard.py`; adopted the reference's shell/config
