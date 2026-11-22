@@ -828,7 +828,7 @@ def print_engine_fakes(monkeypatch):
 
     calls = []
 
-    def fake_run(args, capture_output, text, timeout, cwd):
+    def fake_run(args, stdout=None, stderr=None, timeout=None, cwd=None):
         calls.append(list(args))
         return _FakeProc(returncode=0)
 
@@ -848,7 +848,7 @@ def test_html_to_pdf_retries_once_without_sandbox_after_sandbox_abort(
 
     pdf = tmp_path / "out.pdf"
 
-    def run_side_effect(args, capture_output, text, timeout, cwd):
+    def run_side_effect(args, stdout=None, stderr=None, timeout=None, cwd=None):
         print_engine_fakes.append(list(args))
         if "--no-sandbox" in args:  # the retried print succeeds
             pdf.write_bytes(b"%PDF-fake-real")
@@ -884,7 +884,7 @@ def test_html_to_pdf_retry_failure_reports_none_after_two_calls(
     two attempts - the export falls back (html -> latex -> xhtml2pdf)."""
     import agent.html_render as hr
 
-    def run_side_effect(args, capture_output, text, timeout, cwd):
+    def run_side_effect(args, stdout=None, stderr=None, timeout=None, cwd=None):
         print_engine_fakes.append(list(args))
         return _FakeProc(returncode=-6, stderr="Impl::Initialize() failed.")
     monkeypatch.setattr(hr.subprocess, "run", run_side_effect)
@@ -893,3 +893,41 @@ def test_html_to_pdf_retry_failure_reports_none_after_two_calls(
     assert len(print_engine_fakes) == 2
     assert print_engine_fakes[1][-1].startswith("file://")
     assert "--no-sandbox" in print_engine_fakes[1]
+
+
+def test_concurrent_renders_use_distinct_source_and_profile(
+        monkeypatch, tmp_path, print_engine_fakes):
+    """Two concurrent prints never share the print source or browser profile.
+
+    The flaky 2927s suite run launched Chromium from overlapping workers: the
+    fixed ``__print_source.html`` cross-contaminated PDFs and the default
+    Edge profile made renders 3-8x slower and sometimes hang. Each render now
+    writes a unique source file and uses its own ``--user-data-dir``.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import agent.html_render as hr
+
+    lock = threading.Lock()
+
+    def fake_run(args, stdout=None, stderr=None, timeout=None, cwd=None):
+        with lock:
+            print_engine_fakes.append(list(args))
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(hr.subprocess, "run", fake_run)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(
+            lambda name: html_to_pdf("<html></html>", tmp_path, name),
+            ["one.pdf", "two.pdf"],
+        ))
+
+    sources = [next(a for a in args if a.startswith("file://"))
+               for args in print_engine_fakes]
+    profiles = [next(a for a in args if a.startswith("--user-data-dir="))
+                for args in print_engine_fakes]
+    assert len(print_engine_fakes) == 2
+    assert len(set(sources)) == 2
+    assert len(set(profiles)) == 2
+    assert list(tmp_path.glob("__print_source_*.html")) == []

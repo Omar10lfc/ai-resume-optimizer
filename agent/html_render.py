@@ -620,17 +620,54 @@ _SANDBOX_ABORT_MARKERS = (
 _SANDBOX_OFF_FLAGS = ("--no-sandbox", "--disable-dev-shm-usage")
 
 
+def _run_print(args: list[str], output_dir: Path, timeout: int):
+    """Run one browser print with stderr in a file, not a pipe.
+
+    Chrome/Edge child processes inherit the print process's stdout/stderr
+    handles and can keep them open after the direct process exits.
+    ``capture_output=True`` then blocks in ``communicate()`` waiting for EOF -
+    observed as a >120s hang under four concurrent renders. A file handle has
+    no EOF wait, so a timeout can kill the direct process and return.
+    """
+    fd, err_name = tempfile.mkstemp(prefix="__print_stderr_", suffix=".log")
+    os.close(fd)
+    err_path = Path(err_name)
+    try:
+        with err_path.open("wb") as err_file:
+            proc = subprocess.run(
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=err_file,
+                timeout=timeout,
+                cwd=str(output_dir),
+            )
+        # Tests script stderr on the fake process; production writes the file.
+        stderr_text = (proc.stderr if proc.stderr is not None
+                       else err_path.read_text(encoding="utf-8",
+                                               errors="replace"))
+        return proc, stderr_text
+    finally:
+        try:
+            err_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
                 timeout: int = 90) -> Optional[str]:
     """Prints the HTML page to PDF with the system's headless Chromium/Edge.
 
-    The page is written next to the output as a temp ``__print_source.html``
-    and unlinked afterwards. Returns the PDF path, or None when no browser
-    is available or the print failed (the caller falls back - an export
-    never fails because of the renderer). Concurrency is bounded by
-    ``_RENDER_SLOTS`` (the Dossier pool's MAX_CONCURRENT_RENDERS = 2; calls
-    beyond that queue). A sandbox-init abort (hardened CI/container images)
-    gets exactly one retry with ``--no-sandbox --disable-dev-shm-usage``.
+    The page is written next to the output as a unique temp
+    ``__print_source_<random>.html`` and unlinked afterwards. Each render gets
+    its own browser profile (``--user-data-dir``) and source file, so two
+    concurrent renders - or a render while the user's browser is open - never
+    share browser state or overwrite each other's print source. Returns the
+    PDF path, or None when no browser is available or the print failed (the
+    caller falls back - an export never fails because of the renderer).
+    Concurrency is bounded by ``_RENDER_SLOTS`` (the Dossier pool's
+    MAX_CONCURRENT_RENDERS = 2; calls beyond that queue). A sandbox-init abort
+    (hardened CI/container images) gets exactly one retry with
+    ``--no-sandbox --disable-dev-shm-usage``.
     """
     if not HAVE_BROWSER:
         logger.info("HTML renderer: no browser available - skipping.")
@@ -638,28 +675,45 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
     output_dir = Path(output_dir)
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     pdf_path = output_dir / filename
-    src_path = output_dir / "__print_source.html"
+    src_path = None
     try:
+        fd, src_name = tempfile.mkstemp(
+            prefix="__print_source_", suffix=".html", dir=str(output_dir))
+        os.close(fd)
+        src_path = Path(src_name)
         src_path.write_text(html_content, encoding="utf-8")
     except OSError as e:
         logger.warning("HTML renderer: could not write the print source: %s", e)
+        if src_path is not None:
+            try:
+                src_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return None
+    try:
+        profile_dir = Path(tempfile.mkdtemp(prefix="resume-print-profile-"))
+    except OSError as e:
+        logger.warning("HTML renderer: could not create a browser profile: %s", e)
+        try:
+            src_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return None
     args = [
         BROWSER_PATH, "--headless", "--disable-gpu", "--disable-extensions",
         "--no-first-run", "--no-default-browser-check",
         "--disable-crash-reporter", "--disable-remote-fonts",
+        f"--user-data-dir={profile_dir}",
         "--no-pdf-header-footer", "--print-to-pdf-no-header",
         f"--print-to-pdf={pdf_path}",
         src_path.resolve().as_uri(),
     ]
     try:
         with _RENDER_SLOTS:
-            proc = subprocess.run(args, capture_output=True, text=True,
-                                  timeout=timeout, cwd=str(output_dir))
+            proc, stderr_text = _run_print(args, output_dir, timeout)
         if not pdf_path.exists() or pdf_path.stat().st_size == 0:
-            combined = (proc.stderr or "") + "\n" + (proc.stdout or "")
             aborted = (proc.returncode is not None and proc.returncode < 0
-                       and any(m in combined for m in _SANDBOX_ABORT_MARKERS))
+                       and any(m in stderr_text for m in _SANDBOX_ABORT_MARKERS))
             if aborted and "--no-sandbox" not in args:
                 logger.warning("HTML renderer: Chrome sandbox init aborted "
                                "(rc=%s) - retrying once with the sandbox "
@@ -668,10 +722,9 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
                 # switch syntax: keep the flags grouped, URI last
                 args = args[:-1] + list(_SANDBOX_OFF_FLAGS) + [args[-1]]
                 with _RENDER_SLOTS:
-                    proc = subprocess.run(args, capture_output=True, text=True,
-                                          timeout=timeout, cwd=str(output_dir))
+                    proc, stderr_text = _run_print(args, output_dir, timeout)
             if not pdf_path.exists() or pdf_path.stat().st_size == 0:
-                tail = (proc.stderr or proc.stdout or "")[-800:]
+                tail = stderr_text[-800:]
                 logger.warning("HTML renderer: print produced no PDF (rc=%s): %s",
                                proc.returncode, tail)
                 return None
@@ -687,6 +740,7 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
             src_path.unlink(missing_ok=True)
         except OSError:
             pass
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
