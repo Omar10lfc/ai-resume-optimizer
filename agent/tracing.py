@@ -154,6 +154,7 @@ if os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true":
             TRACE_CALLBACKS = [LangChainTracer(client=_CLIENT, project_name=_project)]
             os.environ["LANGCHAIN_TRACING_V2"] = "false"
             print("[LangSmith] Tracing enabled with PII redaction (inputs + outputs) - project:", _project)
+            print("[LangSmith] Note: resume/JD content is stored in local trace copies (traces/, new-traces/, langsmith_export/); disable tracing for strict privacy.")
         except Exception as _e:
             print(f"[LangSmith] Tracing disabled (client init failed: {_e})")
             _CLIENT = None
