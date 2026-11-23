@@ -67,7 +67,13 @@ def _write_once(session: str, status: str, *, step: str | None,
                 result: dict | None) -> None:
     conn = _connect()
     try:
-        with conn:
+        # BEGIN IMMEDIATE: acquire the write lock before the read-then-write
+        # below, so concurrent writers serialize on the lock instead of racing
+        # the deferred transaction's read window. This is the primary fix;
+        # the bounded retry in _write() remains as a last-resort safety net.
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
             existing = conn.execute(
                 "SELECT missing_skills, result_json FROM runs"
                 " WHERE session = ?", (session,)).fetchone()
@@ -90,6 +96,10 @@ def _write_once(session: str, status: str, *, step: str | None,
                        updated_at=excluded.updated_at""",
                 (session, status, step or "", error or "", ms, rj,
                  now, now))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
     finally:
         conn.close()
 

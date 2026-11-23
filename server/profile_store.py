@@ -155,7 +155,14 @@ def record_run(job_text: str, resume_text: str, session: str,
                 for a in (result.get("artifacts") or [])
                 if isinstance(a, dict) and a.get("kind")
             ], ensure_ascii=False)
-            with conn:
+            # BEGIN IMMEDIATE (A1): same read-then-write pattern as
+            # server/run_store.py::_write_once - acquire the write lock before
+            # the dedupe SELECT so concurrent record_run calls serialize on
+            # the lock (the UNIQUE index on (jd_hash, resume_hash) stays as a
+            # backstop; on the race it raises IntegrityError, caught below).
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")
+            try:
                 row = conn.execute(
                     "SELECT id, title FROM applications"
                     " WHERE jd_hash = ? AND resume_hash = ?",
@@ -189,6 +196,10 @@ def record_run(job_text: str, resume_text: str, session: str,
                     (app_id, session or "", score, ats, llm, failed,
                      json.dumps(payload, ensure_ascii=False), now, now))
                 run_id = cur.lastrowid
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
         finally:
             conn.close()
         return run_id
