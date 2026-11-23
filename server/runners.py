@@ -31,6 +31,7 @@ snapshot (shipped ATS 56.2 while the shipped resume recomputed to
 import functools
 import inspect
 import re
+import time
 import traceback
 from pathlib import Path
 from typing import Iterator
@@ -223,6 +224,19 @@ def _capped_job_description(job_input: str) -> str:
                           "Job description")
 
 
+def _pipeline_timeout_message() -> str:
+    """The pipeline-level timeout message: exactly what is enforced and how
+    the user is told to retry (Item 8)."""
+    return (f"Pipeline timed out after "
+            f"{agent_config.MAX_PIPELINE_TIMEOUT_SECONDS}s (total pipeline "
+            "limit); retry from Step 1.")
+
+
+def _check_pipeline_deadline(deadline: float) -> bool:
+    """True when the run's total deadline is exceeded (Item 8)."""
+    return time.monotonic() > deadline
+
+
 def _initial_inputs(job_input: str, resume_source: str) -> dict:
     return {
         "job_description": job_input.strip(),
@@ -291,6 +305,9 @@ def _stream_step1(job_description: str, resume_source: str,
         yield {"type": "error", "message": "Please upload a resume PDF or paste your resume text."}
         return
     job_description = _capped_job_description(job_description)
+    # Item 8: pipeline-level deadline - the total run budget, checked at
+    # each stream-event boundary.
+    deadline = time.monotonic() + agent_config.MAX_PIPELINE_TIMEOUT_SECONDS
 
     with groq_key_override(groq_api_key):
         premask_resume_name(resume_source)
@@ -303,6 +320,10 @@ def _stream_step1(job_description: str, resume_source: str,
             for update in agent_app.stream(_initial_inputs(job_description, resume_source),
                                            config=config, stream_mode="updates",
                                            subgraphs=False):
+                if _check_pipeline_deadline(deadline):
+                    yield {"type": "error",
+                           "message": _pipeline_timeout_message()}
+                    return
                 for node, delta in update.items():
                     if node and delta:
                         yield _status(
@@ -590,6 +611,9 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
         yield {"type": "error", "message": "Please upload a resume PDF or paste your resume text."}
         return
     job_description = _capped_job_description(job_description)
+    # Item 8: pipeline-level deadline - the total run budget, checked at
+    # each stream-event boundary.
+    deadline = time.monotonic() + agent_config.MAX_PIPELINE_TIMEOUT_SECONDS
 
     # Round 14: resolve the look ONCE (validated against the THEMES
     # vocabulary); the exporter re-validates defensively, but the value
@@ -649,6 +673,10 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                 # Step 1 was skipped: run loader -> scanner up to the interrupt
                 for update in agent_app.stream(_initial_inputs(job_description, resume_source),
                                                config=config, stream_mode="updates"):
+                    if _check_pipeline_deadline(deadline):
+                        yield {"type": "error",
+                               "message": _pipeline_timeout_message()}
+                        return
                     for node, delta in update.items():
                         if node and delta:
                             yield _status(f"{NODE_STATUS.get(node, node + '...')} (1/2)", node)
@@ -729,6 +757,10 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                     config=_thread_config(session, resume_run_id,
                                           callbacks=[usage]),
                     stream_mode="updates"):
+                if _check_pipeline_deadline(deadline):
+                    yield {"type": "error",
+                           "message": _pipeline_timeout_message()}
+                    return
                 for node, delta in update.items():
                     if node and delta:
                         final_state.update(delta)

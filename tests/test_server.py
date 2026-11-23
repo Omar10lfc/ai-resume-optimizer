@@ -177,6 +177,8 @@ def test_health_reflects_startup_check_when_lifespan_ran(monkeypatch):
         "ok": False,
         "message": "groq is down",
         "url_import": {"enabled": False, "allowed_domains": []},
+        # Item 8: health is the limits surface (resume/job/notes chars + timeout).
+        "limits": server_app._edge_limits(),
     }
 
 
@@ -1084,6 +1086,7 @@ def test_health_with_user_key_validates_that_key(client, monkeypatch):
         "ok": True,
         "message": "API reachable (99 models).",
         "url_import": {"enabled": False, "allowed_domains": []},
+        "limits": server_app._edge_limits(),
     }
 
     # no header -> unchanged behavior (pre-parse comes from startup state)
@@ -1716,6 +1719,8 @@ def test_regenerate_run_artifacts_from_stored_text(client, fake_llms, monkeypatc
     """PB2: a past run's artifacts are re-created from the STORED text after
     the originals hit the 24h sweep. Regeneration goes through the CURRENT
     template; with LaTeX absent the resume still degrades to HTML->PDF."""
+    # Item 8: disable the per-app regenerate rate guard for this multi-call test.
+    monkeypatch.setattr(server_app, "_REGEN_LIMIT_PER_APP_SECONDS", 0.0)
     monkeypatch.setattr(agent.config, "OUTPUT_ROOT", tmp_path)
     r = client.post("/api/v1/step2",
                     data={"job_description": JD, "resume_text": RESUME_TEXT, "notes": ""})
@@ -1756,6 +1761,8 @@ def test_regenerate_run_artifacts_from_stored_text(client, fake_llms, monkeypatc
 def test_regenerate_run_artifact_validation(client, monkeypatch, tmp_path):
     import server.profile_store as profile_store
 
+    # Item 8: disable the per-app regenerate rate guard for this multi-call test.
+    monkeypatch.setattr(server_app, "_REGEN_LIMIT_PER_APP_SECONDS", 0.0)
     monkeypatch.setattr(agent.config, "OUTPUT_ROOT", tmp_path)
     assert client.get(
         "/api/v1/applications/1/runs/1/artifacts/resume-xls").status_code == 404
@@ -1829,3 +1836,49 @@ def test_logs_omit_resume_and_job_text(client, fake_llms, caplog):
     for needle in (resume, jd, "jane.roe@example.com", "+1-555-123-4567",
                    "Led the gating team."):
         assert needle not in joined
+
+
+def test_step2_edge_caps_413(client, fake_llms):
+    """Item 8: HTTP-edge size caps on job_description/resume_text/notes -> 413."""
+    r = client.post("/api/v1/step2",
+                    data={"job_description": "x" * (agent.config.MAX_JOB_CHARS + 1),
+                          "resume_text": RESUME_TEXT})
+    assert r.status_code == 413
+    assert "character limit" in r.json()["detail"]
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD,
+                          "resume_text": "y" * (agent.config.MAX_RESUME_CHARS + 1)})
+    assert r.status_code == 413
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": "z" * (agent.config.MAX_NOTES_CHARS + 1)})
+    assert r.status_code == 413
+
+
+def test_step2_pipeline_timeout_error_and_releases_lock(client, fake_llms,
+                                                        monkeypatch):
+    """Item 8: the pipeline-level timeout yields an error event; the run
+    lock is released (a timed-out run must not deadlock the queue)."""
+    import server.app as server_app
+    monkeypatch.setattr(agent.config, "MAX_PIPELINE_TIMEOUT_SECONDS", 0)
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": ""})
+    events = parse_sse(r.text)
+    assert any(e[0] == "error" and "timed out" in e[1].get("message", "")
+               for e in events), events
+    assert not server_app._RUN_LOCK.locked()
+
+
+def test_regenerate_run_artifact_rate_guard(client):
+    """Item 8: the regenerate endpoint has a per-app rate guard (429)."""
+    import server.profile_store as profile_store
+    run_id = profile_store.record_run("JD", "Resume", "regen-guard-1",
+                                      {"type": "done",
+                                       "optimized_resume": "Draft text"})
+    assert run_id is not None
+    app_id = profile_store.list_applications()[0]["id"]
+    url = f"/api/v1/applications/{app_id}/runs/{run_id}/artifacts/resume-pdf"
+    client.get(url)  # first attempt - sets the per-app timestamp
+    r2 = client.get(url)  # rapid repeat - rate guard
+    assert r2.status_code == 429

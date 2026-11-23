@@ -26,6 +26,14 @@ export interface ProviderHealth {
     enabled: boolean;
     allowed_domains: string[];
   };
+  /** HTTP-edge limits (Item 8): the character caps + the pipeline timeout,
+   * so the UI can show users the allowed counts before they hit a 413. */
+  limits?: {
+    resume_chars: number;
+    job_chars: number;
+    notes_chars: number;
+    pipeline_timeout_seconds: number;
+  };
 }
 
 const DEFAULT_SETTINGS: ExtensionSettings = {

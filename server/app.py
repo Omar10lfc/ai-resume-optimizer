@@ -27,6 +27,7 @@ import os
 import secrets
 import tempfile
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -36,7 +37,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.responses import StreamingResponse
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_413_CONTENT_TOO_LARGE
+from starlette.status import (HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND,
+                              HTTP_413_CONTENT_TOO_LARGE,
+                              HTTP_429_TOO_MANY_REQUESTS)
 
 from agent import config as agent_config
 from agent import logging_config
@@ -52,6 +55,11 @@ _QUEUE_MAX = 5          # max waiters, mirrors demo.queue(max_size=5)
 _QUEUE_LEN = 0          # current waiters holding a queue slot
 _QUEUE_LOCK = threading.Lock()
 _RUN_LOCK = threading.Lock()   # one pipeline at a time
+
+# Item 8: per-app rate guard for the regenerate endpoint (app_id -> last attempt).
+_REGEN_LIMITS: dict[int, float] = {}
+_REGEN_LIMITS_LOCK = threading.Lock()
+_REGEN_LIMIT_PER_APP_SECONDS = 60.0
 
 _UPLOAD_SUFFIXES = {".pdf", ".docx"}
 _ARTIFACT_CONTENT_TYPES = {
@@ -83,6 +91,17 @@ def _client_groq_key(request: Request) -> str | None:
     return key[:512] if key else None
 
 
+def _edge_limits() -> dict:
+    """Item 8: HTTP-edge size limits + the pipeline deadline, surfaced so the
+    UI can show users the allowed character counts before they hit a 413."""
+    return {
+        "resume_chars": agent_config.MAX_RESUME_CHARS,
+        "job_chars": agent_config.MAX_JOB_CHARS,
+        "notes_chars": agent_config.MAX_NOTES_CHARS,
+        "pipeline_timeout_seconds": agent_config.MAX_PIPELINE_TIMEOUT_SECONDS,
+    }
+
+
 def _health_with_url_import(payload: dict) -> dict:
     """Add the URL-import configuration the UI needs to tell the truth.
 
@@ -96,6 +115,7 @@ def _health_with_url_import(payload: dict) -> dict:
             "enabled": bool(agent_config.ALLOWED_JOB_URL_DOMAINS),
             "allowed_domains": sorted(agent_config.ALLOWED_JOB_URL_DOMAINS),
         },
+        "limits": _edge_limits(),
     }
 
 
@@ -228,11 +248,24 @@ def _validate_step_common(job_description: str, resume_text: str,
     if not job_description or not job_description.strip():
         raise HTTPException(HTTP_400_BAD_REQUEST,
                             "Please provide a Job Description (text or URL).")
+    # Item 8: HTTP-edge size caps - the pipeline already caps job_description
+    # (runners._capped_job_description); cap the edge so oversized input is
+    # rejected with 413 before any work starts.
+    if len(job_description) > agent_config.MAX_JOB_CHARS:
+        raise HTTPException(
+            HTTP_413_CONTENT_TOO_LARGE,
+            f"Job description exceeds the {agent_config.MAX_JOB_CHARS} "
+            "character limit.")
     resume_path = _save_upload(resume_file) if resume_file else None
     if resume_path is None and not (resume_text or "").strip():
         raise HTTPException(
             HTTP_400_BAD_REQUEST,
             "Please upload a resume PDF or paste your resume text.")
+    if resume_path is None and len(resume_text) > agent_config.MAX_RESUME_CHARS:
+        raise HTTPException(
+            HTTP_413_CONTENT_TOO_LARGE,
+            f"Resume text exceeds the {agent_config.MAX_RESUME_CHARS} "
+            "character limit.")
     return job_description, resume_path
 
 
@@ -353,6 +386,11 @@ def create_app() -> FastAPI:
         # modern); empty = the RESUME_THEME env knob, else the default.
         job_description, resume_path = _validate_step_common(
             job_description, resume_text, resume_file)
+        # Item 8: HTTP-edge cap on the step-2 notes text.
+        if len(notes or "") > agent_config.MAX_NOTES_CHARS:
+            raise HTTPException(
+                HTTP_413_CONTENT_TOO_LARGE,
+                f"Notes exceed the {agent_config.MAX_NOTES_CHARS} character limit.")
         session = _safeguard_session(session)
         gen = runners.stream_step2(job_description,
                                    runners.resolve_resume_source(resume_path, resume_text),
@@ -444,6 +482,16 @@ def create_app() -> FastAPI:
         run = next((r for r in detail["runs"] if r["id"] == run_id), None)
         if run is None:
             raise HTTPException(HTTP_404_NOT_FOUND, "Unknown run.")
+        # Item 8: per-app rate guard on regenerate. Ownership above is
+        # already validated (app + run); the guard limits repeated
+        # regenerate spam to one attempt per app per minute.
+        with _REGEN_LIMITS_LOCK:
+            last = _REGEN_LIMITS.get(app_id, 0.0)
+            if time.time() - last < _REGEN_LIMIT_PER_APP_SECONDS:
+                raise HTTPException(
+                    HTTP_429_TOO_MANY_REQUESTS,
+                    "Regenerate rate limit exceeded - try again shortly.")
+            _REGEN_LIMITS[app_id] = time.time()
         result = run.get("result") or {}
         optimized = result.get("optimized_resume") or ""
         cover = result.get("cover_letter") or ""

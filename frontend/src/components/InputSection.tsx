@@ -9,6 +9,7 @@ import {
   WarningCircle,
   CheckCircle,
 } from "@phosphor-icons/react";
+import type { ProviderHealth } from "../api";
 
 /**
  * Inputs panel. Two cards side by side (stacked at panel width): the target
@@ -40,6 +41,9 @@ interface InputSectionProps {
   /** null until health answers; false = the server has no URL allowlist */
   urlImportEnabled: boolean | null;
   allowedJobUrlDomains: string[];
+  /** Item 8: edge limits from /api/v1/health (resume + job char caps);
+   * undefined until health loads (fallbacks mirror server/config.py). */
+  limits?: ProviderHealth["limits"];
   onAnalyze: () => void;
   isProcessing: boolean;
   disabled: boolean;
@@ -65,6 +69,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
   setResumeMode,
   urlImportEnabled,
   allowedJobUrlDomains,
+  limits,
   onAnalyze,
   isProcessing,
   disabled,
@@ -216,6 +221,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
               onChange={(e) => setJobText(e.target.value)}
               placeholder="Paste the full job posting here (requirements, responsibilities, tech stack)..."
               disabled={disabled || isProcessing}
+              maxLength={limits?.job_chars ?? 6000}
               className="input font-mono resize-none"
               aria-describedby="job-wordcount"
             />
@@ -231,6 +237,10 @@ export const InputSection: React.FC<InputSectionProps> = ({
                 </button>
               )}
             </div>
+            {/* Item 8: show the allowed character count for the job field. */}
+            <p className="text-2xs text-ink-3 mt-1 font-mono" role="status">
+              Job description limit: {(limits?.job_chars ?? 6000).toLocaleString("en-US")} characters
+            </p>
           </div>
         ) : (
           <div className="py-2">
@@ -391,6 +401,7 @@ export const InputSection: React.FC<InputSectionProps> = ({
               onChange={(e) => setResumeText(e.target.value)}
               placeholder="Paste your resume here (sections, bullets, skills, education)..."
               disabled={disabled || isProcessing}
+              maxLength={limits?.resume_chars ?? 12000}
               className="input font-mono resize-none"
               aria-describedby="resume-wordcount"
             />
@@ -406,6 +417,10 @@ export const InputSection: React.FC<InputSectionProps> = ({
                 </button>
               )}
             </div>
+            {/* Item 8: show the allowed character count for the resume field. */}
+            <p className="text-2xs text-ink-3 font-mono mt-1" role="status">
+              Resume limit: {(limits?.resume_chars ?? 12000).toLocaleString("en-US")} characters
+            </p>
           </div>
         )}
 

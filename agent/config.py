@@ -153,6 +153,9 @@ MAX_PDF_BYTES = int(os.environ.get("MAX_PDF_BYTES", 5 * 1024 * 1024))
 MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", 8))
 MAX_RESUME_CHARS = int(os.environ.get("MAX_RESUME_CHARS", 12_000))
 MAX_JOB_CHARS = int(os.environ.get("MAX_JOB_CHARS", 6_000))
+# Item 8: edge caps + the pipeline-level deadline.
+MAX_NOTES_CHARS = int(os.environ.get("MAX_NOTES_CHARS", 4_000))
+MAX_PIPELINE_TIMEOUT_SECONDS = int(os.environ.get("MAX_PIPELINE_TIMEOUT_SECONDS", 900))
 MAX_FETCH_BYTES = int(os.environ.get("MAX_FETCH_BYTES", 1_000_000))
 FETCH_TIMEOUT_SECONDS = int(os.environ.get("FETCH_TIMEOUT_SECONDS", 8))
 

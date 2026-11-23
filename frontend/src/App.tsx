@@ -13,7 +13,7 @@ import { useToasts } from "./lib/useToasts";
 import { isOnboarded } from "./lib/onboarding";
 import { parseGapSkills } from "./lib/gaps";
 import { ReviewSkeleton, ResultsSkeleton } from "./components/Skeleton";
-import { runStep1, runStep2, checkProviderHealth } from "./api";
+import { runStep1, runStep2, checkProviderHealth, type ProviderHealth } from "./api";
 import { classifyError, type ErrorInfo } from "./lib/errors";
 import type { PipelineStage, OptimizationResult } from "./types";
 import { FileText, X } from "@phosphor-icons/react";
@@ -74,6 +74,8 @@ export function App() {
     enabled: boolean;
     allowedDomains: string[];
   } | null>(null);
+  // Item 8: edge limits (resume/job/notes chars, pipeline timeout) from health.
+  const [providerLimits, setProviderLimits] = useState<ProviderHealth["limits"]>(undefined);
   const [stage, setStage] = useState<PipelineStage>("idle");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [errorInfo, setErrorInfo] = useState<ErrorInfo | null>(null);
@@ -194,6 +196,7 @@ export function App() {
     checkProviderHealth().then((res) => {
       setHealthOk(res.ok);
       setHealthMessage(res.message);
+      setProviderLimits(res.limits);
       setUrlImport(
         res.url_import
           ? {
@@ -563,6 +566,7 @@ export function App() {
               setResumeMode={setResumeMode}
               urlImportEnabled={urlImport ? urlImport.enabled : null}
               allowedJobUrlDomains={urlImport?.allowedDomains ?? []}
+              limits={providerLimits}
               onAnalyze={handleAnalyzeStep1}
               isProcessing={stage === "step1_running"}
               disabled={stage === "step2_running"}
@@ -584,11 +588,15 @@ export function App() {
                 value={userNotes}
                 onChange={(e) => setUserNotes(e.target.value)}
                 rows={3}
-                maxLength={3000}
+                maxLength={providerLimits?.notes_chars ?? 4000}
                 disabled={stage === "step1_running" || stage === "step2_running"}
                 placeholder={`e.g. "I built an n8n workflow cutting delivery errors 30% — feature it." or "Do NOT feature MCP, I have no hands-on experience."`}
                 className="input mt-2 w-full"
               />
+              {/* Item 8: show the allowed character count for the notes field. */}
+              <p className="text-2xs text-ink-3 mt-1 font-mono" role="status">
+                Context limit: {(providerLimits?.notes_chars ?? 4000).toLocaleString("en-US")} characters
+              </p>
               {/* Round 14: the resume look - a pure CSS-variable set over
                   fonts/colors/decoration (never sizes, so the measured
                   1-page density ladder holds for every theme). Applies to
