@@ -223,7 +223,7 @@ def _patch_stack(state: AgentState, draft: str) -> tuple[
     evidence = f"{state.get('resume_text') or ''}\n{state.get('human_notes') or ''}"
     warnings = find_unevidenced_metric_claims(final_text, evidence)
     if warnings:
-        _safe_print(f"   [Integrity] Unevidenced metric claims in draft: {', '.join(warnings)}")
+        _safe_print(f"   [Integrity] Unevidenced metric claims in draft: {len(warnings)}")
 
     # Removal notes surface alongside metric findings so the user sees what
     # was deterministically removed before the result landed.
@@ -267,8 +267,7 @@ def _patch_stack(state: AgentState, draft: str) -> tuple[
         state.get('human_notes') or '', final_text,
         state.get('resume_text') or '')
     if unused_context:
-        _safe_print(f"   [Integrity] User-context term(s) not in the "
-                    f"resume: {', '.join(unused_context)}")
+        _safe_print(f"   [Integrity] User-context term(s) not in the resume: {len(unused_context)}")
     guardrail += [f"user-context term not in the final resume: {t}"
                   for t in unused_context]
 
@@ -411,8 +410,7 @@ def _postprocess_draft(state: AgentState, draft: str, current_iter: int, *,
     if (allow_context_weave and unused_context
             and not state.get("context_weave_attempted")):
         weave_attempted = True
-        _safe_print(f"   [Integrity] Context weave-in pass triggered: "
-                    f"{', '.join(unused_context)}")
+        _safe_print(f"   [Integrity] Context weave-in pass triggered: {len(unused_context)} term(s)")
         woven, weave_declined, weave_warnings = _context_weave_pass(
             state, final_text, unused_context)
         if woven is not None:

@@ -196,9 +196,10 @@ def reviewer_node(state: AgentState):
             _safe_print(f"   [Integrity] Removed {len(removals)} feedback "
                         "sentence(s) naming unevidenced tool(s)")
         _safe_print(f"-> LLM quality score: {result.score}/100")
-        _safe_print(f"-> Feedback: {feedback}")
+        # Item 10: feedback/section text is resume-derived - omitted from logs.
+        _safe_print("-> Feedback: (omitted from logs)")
         if method != "direct" and result.sections:
-            _safe_print(f"-> Feedback targets: {', '.join(result.sections)}")
+            _safe_print(f"-> Feedback targets: {len(result.sections)}")
         elif method == "salvage":
             _safe_print("-> (salvaged prose carries no section targets - the"
                         " polisher will consider the whole document)")

@@ -2037,12 +2037,14 @@ def latex_to_pdf(tex_content: str, output_dir: Path, filename: str = "Resume.pdf
                        cwd=tmp_dir, timeout=timeout, env=_tex_env())
         if rc != 0:
             # pdflatex writes the log even on error — log the tail for help
-            logger.error("pdflatex failed (rc=%s):\n%s", rc, out[-2000:])
+            # Item 10: pdflatex's error output can echo source lines from the
+            # resume document - keep it out of logs.
+            logger.error("pdflatex failed (rc=%s); compile output not logged.", rc)
             return None
 
         produced = tmp_dir / "resume.pdf"
         if not produced.exists():
-            logger.error("pdflatex reported success but no resume.pdf produced.\n%s", out[-1000:])
+            logger.error("pdflatex reported success but no resume.pdf produced (rc=%s); output not logged.", rc)
             return None
 
         dest = output_dir / filename

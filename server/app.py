@@ -39,6 +39,7 @@ from starlette.responses import StreamingResponse
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_404_NOT_FOUND, HTTP_413_CONTENT_TOO_LARGE
 
 from agent import config as agent_config
+from agent import logging_config
 from agent.llms import _groq_models_status
 from agent.nodes.pdf_exporter import export_documents
 from server import profile_store, run_store, runners
@@ -251,6 +252,7 @@ def _safeguard_session(session: str | None) -> str | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logging_config.setup_logging()
     agent_config.init_output_dirs()
     agent_config.start_background_cleanup()
     # MR3: runs left 'running' by a previous process are dead (their mid-run

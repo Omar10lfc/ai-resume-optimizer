@@ -258,7 +258,7 @@ def invoke_structured_with_repair(llm, schema, messages, *,
         return llm.with_structured_output(schema).invoke(messages), "direct"
     except Exception as exc:
         _safe_print(f"   [Warning] [{label or 'provider'}] structured"
-                    f" attempt 1/2 failed: {exc}")
+                    f" attempt 1/2 failed: {type(exc).__name__}")  # Item 10: message omitted (may quote resume/JD)
         answer = extract_failed_generation(exc)
         # Attempt 1.5 - the extract rung (free, no LLM call): when the failed
         # generation itself parses as JSON and validates against the schema,
@@ -307,7 +307,7 @@ def invoke_structured_with_repair(llm, schema, messages, *,
             except Exception as e2:
                 exc2 = e2
         _safe_print(f"   [Warning] [{label or 'provider'}] structured"
-                    f" attempt 2/2 failed: {exc2}")
+                    f" attempt 2/2 failed: {type(exc2).__name__}")  # Item 10: message omitted (may quote resume/JD)
         if salvage is not None:
             salvaged = salvage(exc2)
             if salvaged is not None:

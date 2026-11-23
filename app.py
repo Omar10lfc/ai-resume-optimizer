@@ -719,6 +719,8 @@ with gr.Blocks(title="AI Resume Optimizer Agent") as demo:
     )
 
 if __name__ == "__main__":
+    from agent import logging_config
+    logging_config.setup_logging()
     init_output_dirs()
     start_background_cleanup()
 

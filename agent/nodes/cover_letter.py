@@ -99,7 +99,7 @@ def cover_letter_node(state: AgentState):
     letter_metrics = find_unevidenced_metric_claims(letter, evidence)
     if letter_metrics:
         _safe_print(f"   [Integrity] Unevidenced metric claims in cover "
-                    f"letter: {', '.join(letter_metrics)}")
+                    f"letter: {len(letter_metrics)}")  # Item 10
 
     warnings = list(state.get("guardrail_warnings") or [])
     warnings.extend(r.warning for r in removals)

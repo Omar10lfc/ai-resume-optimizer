@@ -148,8 +148,8 @@ def polisher_node(state: AgentState):
                              version_key="polisher",
                              version=POLISHER_FULL_VERSION)
 
-    _safe_print(f"--- NODE 2b: POLISHING (targeted: {', '.join(c for c, *_ in targets)}) "
-                f"(Iteration {current_iter}) ---")
+    _safe_print(f"--- NODE 2b: POLISHING (targeted: {len(targets)} section(s)) "
+                f"(Iteration {current_iter}) ---")  # Item 10: section names not logged
 
     # Context of everything that must NOT be rewritten (given to the model so
     # it avoids repeating what other sections already state - the sections
@@ -166,11 +166,11 @@ def polisher_node(state: AgentState):
         ])
         body = _extract_section_body(str(answer.content), header_line)
         if body is None:
-            _safe_print(f"   [Polish] No usable rewrite returned for '{canon}'.")
+            _safe_print("   [Polish] No usable rewrite returned for this section.")  # Item 10: section name not logged
         elif not _rewrite_kept_links(section_body, body):
             # Link-dropping rewrite is refused deterministically: keep the
             # original section rather than lose a project/demo URL.
-            _safe_print(f"   [Polish] Rewrite for '{canon}' dropped links - keeping original.")
+            _safe_print("   [Polish] Rewrite dropped links - keeping original.")  # Item 10
         else:
             rewrites[canon] = body
 

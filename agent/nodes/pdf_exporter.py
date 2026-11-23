@@ -290,8 +290,9 @@ def _verify_exported_pdfs(resume_pdf: str, cover_pdf: str,
                             required_literals=required)
         failed = [c for c in result["checks"] if not c["ok"]]
         if failed:
+            from ..tracing import _redact_pii
             _safe_print(f"   [PDF verify] {target}: " + "; ".join(
-                f"{c['name']}: {c['detail']}" for c in failed))
+                f"{c['name']}: {_redact_pii(c['detail'])}" for c in failed))  # Item 10
         checks.extend({"target": target, **check}
                       for check in result["checks"])
     return checks
@@ -335,8 +336,9 @@ def export_documents(resume_text: str, cover_text: str, request_dir: Path,
         if not path:
             continue
         findings = _layout.measure_pdf_layout(path)
+        from ..tracing import _redact_pii
         for finding in findings:
-            _safe_print(f"   [PDF layout] {target} {finding['kind']}: {finding['detail']}")
+            _safe_print(f"   [PDF layout] {target} {finding['kind']}: {_redact_pii(finding['detail'])}")  # Item 10
             layout_findings.append({"target": target, **finding})
 
     # Text-layer gate (Nov 19 2026): the PDF an ATS parses, read back. Name

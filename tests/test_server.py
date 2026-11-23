@@ -11,6 +11,7 @@ Run with: venv\\Scripts\\python.exe -m pytest tests/test_server.py -v
 import concurrent.futures
 import io
 import json
+import logging
 import os
 import sys
 import threading
@@ -1806,3 +1807,25 @@ def test_step2_without_include_diff_omits_original(client, fake_llms):
                           "notes": ""})
     assert parse_sse(r.text)[-1][0] == "result"
     assert "original_resume" not in parse_sse(r.text)[-1][1]
+
+
+def test_logs_omit_resume_and_job_text(client, fake_llms, caplog):
+    """Item 10: resume/job text stays out of logs even at INFO.
+
+    Drives a real step-2 pipeline run with fake LLMs; every log record at
+    INFO+ must not contain the resume, the job description, or the other
+    candidate PII the pre-Item-10 prints used to echo (contact fragments,
+    unredacted feedback, semantic matches, ...)."""
+    resume = (RESUME_TEXT + "\nEmail: jane.roe@example.com"
+              + "\nPhone: +1-555-123-4567")
+    jd = JD + "\nLocation: Remote - must have Python and Docker experience."
+    with caplog.at_level(logging.INFO):
+        r = client.post("/api/v1/step2",
+                        data={"job_description": jd, "resume_text": resume,
+                              "notes": "Led the gating team."})
+        assert r.status_code == 200
+        assert parse_sse(r.text)[-1][0] == "result"
+    joined = "\n".join(rec.getMessage() for rec in caplog.records)
+    for needle in (resume, jd, "jane.roe@example.com", "+1-555-123-4567",
+                   "Led the gating team."):
+        assert needle not in joined

@@ -30,6 +30,6 @@ def scanner_node(state: AgentState):
     # chips, ATS text spans, and notes all assume plain ASCII separators.
     # Live-run evidence (Nov 6 2026): "Claude\u202fCode" / "Hands\u2011on".
     missing = _tame_unicode_bullets(str(response.content))
-    _safe_print(f"   Identified Gaps:\n{missing}")
+    _safe_print(f"   Identified {len(missing)} gap(s)")  # Item 10: no gap text logged
     return {"missing_skills": missing, "iteration": 0,
             "prompt_versions": {"scanner": SCANNER_PROMPT_VERSION}}

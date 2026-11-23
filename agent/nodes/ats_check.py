@@ -47,10 +47,10 @@ def _semantic_verify_missing(resume_text: str, missing_keywords: list[str],
             ], label="ats-semantic")
         expressed = {v.keyword.strip().lower() for v in review.verdicts
                      if not v.genuinely_missing}
-        _safe_print(f"-> Semantic matches: {sorted(expressed) if expressed else 'none'}")
+        _safe_print(f"-> Semantic matches: {len(expressed)} expressed")  # Item 10: keyword text not logged
         return expressed
     except Exception as e:
-        _safe_print(f"   [Warning] Semantic verification failed: {e}. Keeping keywords as missing.")
+        _safe_print("   [Warning] Semantic verification failed. Keeping keywords as missing.")  # Item 10: drop {e}
         return set()
 
 

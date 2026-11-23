@@ -1155,6 +1155,7 @@ def preserve_contact_links(
             head = flat.split("|")[0].strip()[:48]
             normalized.append(f"flattened header link construct to its "
                               f"visible text ({head})")
+            # Item 10: the flattened fragment is resume-derived - never logged.
             _safe_print("   [Contact] Flattened a span-label header link "
                         "to its visible text")
 
@@ -1174,11 +1175,12 @@ def preserve_contact_links(
         lines[contact_idx] = " | ".join(kept)
         changed = True
         if removed:
-            _safe_print(f"   [Contact] Removed placeholder token(s) from "
-                        f"the contact line: {', '.join(removed)}")
+            # Item 10: removed/normalized tokens are resume-derived - log counts.
+            _safe_print(f"   [Contact] Removed {len(removed)} placeholder "
+                        "token(s) from the contact line")
         if normalized:
-            _safe_print(f"   [Contact] Normalized contact link label(s) to "
-                        f"the bare URL: {', '.join(normalized)}")
+            _safe_print(f"   [Contact] Normalized {len(normalized)} contact "
+                        "link label(s) to the bare URL")
 
     src_tokens: dict[str, str] = {}
     for line in _header_region_lines(source_resume):
@@ -1209,8 +1211,9 @@ def preserve_contact_links(
         lines[contact_idx] = contact + " | " + " | ".join(add)
         changed = True
         if restored:
-            _safe_print(f"   [Contact] Restored dropped contact link(s): "
-                        f"{', '.join(restored)}")
+            # Item 10: restored link(s) are resume-derived - log the count.
+            _safe_print(f"   [Contact] Restored {len(restored)} dropped "
+                        "contact link(s)")
     if not changed:
         return draft, [], [], []
     return "\n".join(lines), restored, removed, normalized
