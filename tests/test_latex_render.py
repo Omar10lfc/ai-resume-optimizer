@@ -505,7 +505,7 @@ def test_latex_to_pdf_disables_shell_escape(tmp_path, monkeypatch):
     import agent.latex_render as lr
 
     captured = {}
-    def fake_run(cmd, cwd, timeout):
+    def fake_run(cmd, cwd, timeout, env=None):
         captured["cmd"] = list(cmd)
         return 0, ""
     monkeypatch.setattr(lr, "_run", fake_run)
@@ -531,7 +531,7 @@ def test_latex_to_pdf_timeout_returns_none(tmp_path, monkeypatch):
     """``_run``'s -2 timeout sentinel is a compile failure: PDF export None."""
     import agent.latex_render as lr
     monkeypatch.setattr(lr, "_run",
-                        lambda cmd, cwd, timeout: (-2, "Compilation timed out"))
+                        lambda cmd, cwd, timeout, env=None: (-2, "Compilation timed out"))
     assert latex_to_pdf(SAMPLE, tmp_path, "out.pdf") is None
 
 
@@ -560,6 +560,79 @@ def test_latex_to_pdf_refuses_input_outside_compile_dir(tmp_path):
     assert not (out_dir / "out.pdf").exists()
     assert all("TOPSECRET_OUTSIDE_MARKER" not in p.read_bytes()
                for p in out_dir.glob("*.pdf"))
+
+
+def test_assert_tex_file_access_covers_unbraced_and_new_macros(tmp_path):
+    """Item 2: the guard covers unbraced \\input, \\include, \\openin,
+    \\read, \\InputIfFileExists, \\usepackage with a path and
+    \\verbatiminput - each refused when it names something outside the
+    compile dir (bare package-style names stay allowed)."""
+    work = tmp_path
+    secret = str(work / "outside_secret.txt")
+    # Allowed: bare package-style names (no path separators).
+    _assert_tex_file_access(r"\input{glyphtounicode}", work)
+    _assert_tex_file_access(r"\include{glyphtounicode}", work)
+    _assert_tex_file_access(r"\InputIfFileExists{glyphtounicode}{}{}", work)
+    _assert_tex_file_access(r"\usepackage{helvet}", work)
+    # Refused: one case per new macro form.
+    for bad in (
+        rf"\input {secret}",                    # unbraced \input
+        rf"\include {secret}",                  # unbraced \include
+        rf"\openin1={secret}",                  # \openin<n>=<path>
+        r"\read1 to \foo",                      # \read
+        rf"\InputIfFileExists {secret}",        # \InputIfFileExists<path>
+        rf"\usepackage {secret}",               # \usepackage<path> (space form)
+        r"\usepackage" + secret,                # \usepackage<path> (no space)
+        r"\usepackage" + secret + r".sty",
+        rf"\usepackage{{{secret}}}",            # \usepackage{{path}}
+        r"\usepackage{../outside_secret.sty}",
+        r"\verbatiminput{glyphtounicode}",       # \verbatiminput
+        rf"\verbatiminput {secret}",
+    ):
+        with pytest.raises(ValueError):
+            _assert_tex_file_access(bad, work)
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+def test_latex_to_pdf_refuses_unbraced_input_outside_compile_dir(tmp_path):
+    root = tmp_path
+    secret = root / "outside_secret.txt"
+    secret.write_text("TOPSECRET_OUTSIDE_MARKER", encoding="utf-8")
+    out_dir = root / "out"; out_dir.mkdir()
+    tex = (r"\documentclass{article}\begin{document}\input " + str(secret)
+           + r"\end{document}")
+    pdf = latex_to_pdf(tex, out_dir, "out.pdf")
+    assert pdf is None
+    assert not (out_dir / "out.pdf").exists()
+    assert all("TOPSECRET_OUTSIDE_MARKER" not in p.read_bytes()
+               for p in out_dir.glob("*.pdf"))
+
+
+def test_pdflatex_env_carries_paranoid_file_access():
+    """A2: the compile subprocess runs with openin_any=p / openout_any=p on
+    TeX Live (kpathsea ignores those on MiKTeX, so the app-level guard is
+    the engine-independent backstop)."""
+    from agent.latex_render import _tex_env
+    env = _tex_env()
+    assert env["openin_any"] == "p"
+    assert env["openout_any"] == "p"
+
+
+def test_pdflatex_invoked_with_paranoid_env(monkeypatch, tmp_path):
+    import agent.latex_render as lr
+    captured = {}
+
+    def fake_run(cmd, cwd, timeout=120, env=None):
+        captured["env"] = env
+        return 0, "no pdf"
+
+    monkeypatch.setattr(lr, "_run", fake_run)
+    monkeypatch.setattr(lr, "HAVE_PDFLATEX", True)
+    lr.latex_to_pdf(r"\documentclass{article}\begin{document}x\end{document}",
+                    tmp_path, "out.pdf")
+    env = captured["env"]
+    assert env["openin_any"] == "p"
+    assert env["openout_any"] == "p"
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")

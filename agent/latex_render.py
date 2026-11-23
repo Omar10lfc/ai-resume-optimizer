@@ -1898,31 +1898,107 @@ def render_resume_tex(data: ResumeData, compact: bool = False,
 # Compilation
 # ---------------------------------------------------------------------------
 
+def _tex_env() -> dict:
+    """The TeX-Live paranoid-file-access settings, applied to the compile
+    subprocess: ``openin_any=p`` (never read outside the compile dir) and
+    ``openout_any=p`` (never write outside it). kpathsea honors these env
+    vars on TeX Live; MiKTeX ignores them, so the app-level guard in
+    ``_assert_tex_file_access`` is the engine-independent backstop.
+    """
+    env = os.environ.copy()
+    env["openin_any"] = "p"
+    env["openout_any"] = "p"
+    return env
+
+
+def _assert_path_ok(target: str) -> None:
+    """Shared shape gate for file-reading TeX macros.
+
+    Bare, non-path names are allowed (they name files inside or around the
+    compile dir, which the engine accepts); anything path-ish that could
+    escape it is refused.
+    """
+    target = (target or "").strip()
+    if not target:
+        return
+    if (Path(target).is_absolute()
+            or ".." in target
+            or any(sep in target for sep in ("/", "\\"))
+            or target.startswith((".", ":"))):
+        raise ValueError(
+            f"latex file access outside the compile dir: {target!r}")
+
+
+def _openin_targets(tex_content: str) -> list[str]:
+    """Extracts the file-name token after each ``\\openin<n>=<path>``.
+
+    Requires a digit (the channel number) or ``=`` right after the macro
+    name, so ``\\openin`` followed by e.g. ``\\end{document}`` is not
+    mistaken for a file access."""
+    targets: list[str] = []
+    for m in re.finditer(r"\\openin", tex_content):
+        tail = tex_content[m.end():].lstrip()
+        if not tail or not (tail[0].isdigit() or tail[0] == "="):
+            continue
+        m2 = re.match(r"[\s0-9=]*=?\s*\"?([^\"\s{}]+)", tail)
+        if m2:
+            targets.append(m2.group(1))
+    return targets
+
+
 def _assert_tex_file_access(tex_content: str, allowed_dir: Path) -> None:
-    """Rejects explicit relative/absolute ``\\input`` paths from untrusted TeX.
+    """Rejects any explicit file access from untrusted TeX.
 
     Trusted TeX engines also expose ``openin_any`` / ``openout_any`` (TeX Live;
     MiKTeX ignores the equivalent ini/env settings). This app-level scan is
-    the enforcement that works on every engine: user-visible ``\\input`` paths
-    must be bare filenames, never relative or absolute paths that would read
-    from outside the per-render compile directory.
+    the enforcement that works on every engine. Covered macros: ``\\input``,
+    ``\\include``, ``\\openin`` (and the ``\\read`` channel it gates),
+    ``\\InputIfFileExists``, ``\\usepackage`` with a path, and
+    ``\\verbatiminput`` (which reads a file verbatim). All must be bare
+    filenames, never paths that would read from outside the compile dir.
     """
+    # \input: braced, quoted-unbraced and bare unbraced forms.
     for target in re.findall(r"\\input\s*\{([^{}]*)\}", tex_content):
-        target = target.strip()
-        if not target:
-            continue
-        if (Path(target).is_absolute()
-                or ".." in target
-                or any(sep in target for sep in ("/", "\\"))
-                or target.startswith((".", ":"))):
-            raise ValueError(f"latex \\input outside the compile dir: {target!r}")
+        _assert_path_ok(target)
+    for target in re.findall(r"\\input\s*\"([^\"]*)\"", tex_content):
+        _assert_path_ok(target)
+    for target in re.findall(r"\\input\s+([^\s{}]+)", tex_content):
+        _assert_path_ok(target)
+    # \include: same forms (\includegraphics is a different macro - untouched).
+    for target in re.findall(r"\\include\s*\{([^{}]*)\}", tex_content):
+        _assert_path_ok(target)
+    for target in re.findall(r"\\include\s+([^\s{}]+)", tex_content):
+        _assert_path_ok(target)
+    # \openin<number>=<path> - the channel that \read reads through.
+    for target in _openin_targets(tex_content):
+        _assert_path_ok(target)
+    # \read - refused outright (reads go through open channels). The
+    # negative lookahead keeps \read1 (the real form, number follows the
+    # control word) matched while \readFile-style words stay separate.
+    if re.search(r"\\read(?![a-zA-Z])", tex_content):
+        raise ValueError("latex \\read is not allowed in generated documents")
+    # \InputIfFileExists<path> (braced + unbraced forms).
+    for target in re.findall(r"\\InputIfFileExists\s*\{([^{}]*)\}", tex_content):
+        _assert_path_ok(target)
+    for target in re.findall(r"\\InputIfFileExists\s+([^\s{}]+)", tex_content):
+        _assert_path_ok(target)
+    # \usepackage with a path (braced + unbraced/no-space forms).
+    for target in re.findall(r"\\usepackage\s*\{([^{}]*)\}", tex_content):
+        _assert_path_ok(target)
+    for target in re.findall(r"\\usepackage\s*([^\s{}]+)", tex_content):
+        _assert_path_ok(target)
+    # \verbatiminput reads a file verbatim - refused outright.
+    if re.search(r"\\verbatiminput", tex_content):
+        raise ValueError("latex \\verbatiminput is not allowed in generated documents")
 
 
-def _run(cmd: list[str], cwd: Path, timeout: int = 120) -> tuple[int, str]:
+def _run(cmd: list[str], cwd: Path, timeout: int = 120,
+         env: dict | None = None) -> tuple[int, str]:
     """Run a subprocess, returning (returncode, combined stdout+stderr)."""
     try:
         proc = subprocess.run(
             cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout,
+            env=env,
         )
         output = (proc.stdout or "") + (proc.stderr or "")
         return proc.returncode, output
@@ -1958,7 +2034,7 @@ def latex_to_pdf(tex_content: str, output_dir: Path, filename: str = "Resume.pdf
             return None
         rc, out = _run([PDFLATEX_PATH, "-interaction=nonstopmode", "-halt-on-error",
                         "-no-shell-escape", teX_file.name],
-                       cwd=tmp_dir, timeout=timeout)
+                       cwd=tmp_dir, timeout=timeout, env=_tex_env())
         if rc != 0:
             # pdflatex writes the log even on error — log the tail for help
             logger.error("pdflatex failed (rc=%s):\n%s", rc, out[-2000:])
