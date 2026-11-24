@@ -151,6 +151,15 @@ cd frontend && npm install && npm run dev
 
 Open `http://localhost:3000`. Optional basic auth for the API: set `APP_AUTH_USERNAME` / `APP_AUTH_PASSWORD`.
 
+**Browser Extension (Chrome MV3 Side Panel)**:
+
+```bash
+# Build extension from frontend folder (outputs to extension/ and extension/dist/):
+cd frontend && npm install && npm run build:extension
+```
+
+Load unpacked in Chrome from `extension/` (or `extension/dist/`) via `chrome://extensions` with Developer mode enabled. Details in [extension/README.md](extension/README.md).
+
 **Legacy - Gradio UI** (still fully wired, superseded by the frontend):
 
 ```bash

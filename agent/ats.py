@@ -53,6 +53,18 @@ _STOPWORDS = {
     "concepts", "trends", "productivity", "tooling", "documentation",
     "major", "graduation", "grads", "emerging", "current", "senior",
     # Action verbs and verb forms (not skills)
+    # Live-run evidence (Nov 7 2026, FortyGuard AI Automation Intern post):
+    # 'interact', 'understand', 'built', 'efficiently', 'internal',
+    # 'someone' fed the top-20 from prose. None can be resume keywords.
+    "interact", "interacts", "interacting", "interaction", "interactions",
+    "understand", "understands", "understood", "realize", "realize",
+    "learn", "learning", "loves", "love",
+    "help", "helps", "helping", "sounds",
+    "efficient", "efficiently", "efficiency",
+    "someone", "anyone", "everyone", "internal", "minimum",
+    "minute", "minutes", "short", "shorter", "form",
+    "built", "building", "builds", "sound", "sounding",
+    "similar", "hear", "hearing", "heard",
     "translate", "translating", "translates", "translation",
     "prepare", "preparing", "prepared", "preparation",
     "present", "presenting", "presents", "presentation", "presentations",
@@ -95,7 +107,76 @@ _STOPWORDS = {
     "premium", "headcount", "applicant", "applicants",
     # Location words
     "riyadh", "cairo", "egypt", "saudi", "arabia", "remote", "hybrid", "onsite",
+    # Dates, timelines, and application logistics. Live-run evidence (Nov 5
+    # 2026, trace 520188c7): 'january', 'basic', 'start', 'date', 'duration'
+    # all scored as keywords while real terms missed — none of these can be
+    # resume content, so they are stopped outright.
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct",
+    "nov", "dec",
+    "start", "starting", "starts", "begin", "begins", "beginning",
+    "date", "dates", "duration", "timeline", "timing", "deadline",
+    "immediately", "immediate", "flexibility", "flexible", "availability",
+    "available", "commence", "commencing", "commencement", "ongoing",
+    "eligible", "eligibility", "relocate", "relocation", "relocating",
+    "visa", "sponsorship", "stipend", "salary", "compensation", "benefits",
+    "perks", "weekday", "weekdays", "weekly", "monthly", "hours",
+    # Posting-header fields. Live-run evidence (Nov 7 2026, traces
+    # 01a1b4cb/09cf51fc, FortyGuard AI Automation Intern post): a tiny
+    # scraped JD carried a plain-text header block ("Location: Remote /
+    # Duration: 3-6 months / Type: Paid internship / which enables ...") -
+    # 5 of the 20 weighted keywords became words no resume can contain.
+    "location", "locations", "month", "months", "paid", "unpaid",
+    "type", "types", "enable", "enables", "enabling", "empower",
+    "empowers", "empowering", "responsibilities", "requirements",
+    "requirement", "qualifications", "qualification", "expectations",
+    "discipline", "disciplines",
+    # Generic qualifier/noise adjectives carrying no signal
+    "basic", "basics", "general", "generally", "typical", "typically",
+    "various", "certain", "relevant", "respective", "powered", "focused",
+    "specialized", "experienced", "solid", "deep",
 }
+
+# Deal-breaker terms (adapted from the MIT ai-job-search fit framework):
+# hard-requirement terms the posting may name ("Visa sponsorship",
+# "security clearance"). They are NOT scored into the percentage (the resume
+# expresses them in boilerplate differently - see _STOPWORDS); instead they
+# are surfaced in the ATS report as an honest advisory gap when the resume
+# does not address them. Advisory only, like everything else: never vetoes.
+#
+# The bare word "visa" is also a company name (Visa Inc.), so its pattern
+# requires immigration context; the other terms are unambiguous.
+_DEAL_BREAKER_PATTERNS = {
+    "visa": re.compile(
+        r"\b(?:"
+        r"visas?\s+(?:sponsorship|support|status|application|transfer|stamp|"
+        r"requirements?|assistance|permit|processing|holder|category|type|number)"
+        r"|(?:work|employment|h-?1b|h-?2b|f-?1|j-?1|student|immigration|entry|"
+        r"residence|business)\s+visas?"
+        r"|(?:requires?|required|obtain|valid|without|needs?|needed)\s+"
+        r"(?:a\s+)?visas?"
+        r"|(?:sponsors?|sponsoring|sponsored)\s+(?:a\s+|work\s+)?visas?"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "sponsorship": re.compile(r"\bsponsorship\b", re.IGNORECASE),
+    "security clearance": re.compile(r"\bsecurity\s+clearance\b", re.IGNORECASE),
+}
+
+
+def _deal_breaker_hits(job_text: str, resume_lower: str) -> list[dict]:
+    """Terms the posting names and the resume does not address (see above).
+
+    "visa" is context-aware: a posting at Visa (the payments company) is not
+    an immigration requirement.
+    """
+    hits = []
+    for term, pattern in sorted(_DEAL_BREAKER_PATTERNS.items()):
+        if pattern.search(job_text or "") and not pattern.search(resume_lower or ""):
+            hits.append({"keyword": term})
+    return hits
+
 
 _LOW_SIGNAL_TERMS = {
     "support", "engineering", "teams", "computer", "coding", "testing",
@@ -103,6 +184,8 @@ _LOW_SIGNAL_TERMS = {
     "solutions", "services", "processes", "tools", "technologies",
     "assistants", "pipelines", "code", "design", "engineers",
     "integrations", "configurations", "environments", "ides",
+    "scheduling", "planning", "tracking",
+    "platform", "servers",
 }
 
 
@@ -111,22 +194,56 @@ def _extract_company_names(text: str) -> set[str]:
     patterns = [
         r'(?:[Jj]oin|[Aa]t|[Aa]bout)\s+([A-Z][a-zA-Z]+)',
         r'([A-Z][a-zA-Z]+)\s+is an? ',
-        r'([A-Z][a-zA-Z]+)\s+(?:values?|welcomes?|offers?)',
-        r'([A-Z][a-zA-Z]+)\s+(?:values?|welcomes?|offers?|develops?)',
+        # Trailing \b: without it 'develops?' prefix-matched 'development!'
+        # ("3+ years of Python development experience" -> 'python' captured as
+        # a company name and dropped from the whole ATS vocabulary; probe
+        # evidence Nov 10 2026, surfaced via the MR2 requirement table).
+        r'([A-Z][a-zA-Z]+)\s+(?:values?|welcomes?|offers?|develops?|builds?)\b',
     ]
     for pat in patterns:
         for match in re.findall(pat, text):
-            if match.lower() not in _STOPWORDS and len(match) >= 3:
-                names.add(match.lower())
             m_lower = match.lower()
             if m_lower not in _STOPWORDS and m_lower not in _LOW_SIGNAL_TERMS and len(match) >= 3:
                 names.add(m_lower)
+    # CamelCase brand names (FortyGuard, TempFlow). These are entity noise for
+    # a resume ("try adding fortyguard" is useless advice), but genuine
+    # CamelCase tech terms (JavaScript, GitHub) must survive — they are
+    # protected via the tier lists and the allowlist, checked at call time
+    # because the tier constants are defined later in the module.
+    for match in _CAMEL_NAME_RE.findall(text):
+        m_lower = match.lower()
+        if len(match) < 6:
+            continue
+        if m_lower in _CAMEL_TECH_ALLOW:
+            continue
+        if m_lower in _TIER1_TOOLS or m_lower in _TIER2_CONCEPTS:
+            continue
+        if m_lower in _LOW_SIGNAL_TERMS:
+            continue
+        if m_lower in _COMPOUND_PHRASES or any(
+            m_lower == _normalize_phrase_key(p) for p in _COMPOUND_PHRASES
+        ):
+            continue
+        names.add(m_lower)
     return names
 
 
 # ==========================================
 # Compound Phrases & Short Tech Terms
 # ==========================================
+
+# CamelCase brand/entity detector (two capitalised segments): FortyGuard,
+# TempFlow. One-off names from the posting are not resume content.
+_CAMEL_NAME_RE = re.compile(r'\b([A-Z][a-z]+(?:[A-Z][a-z]+)+[A-Za-z]*)\b')
+
+# CamelCase forms that are REAL tech terms and must never be treated as
+# companies when they are not in the tier lists above (checked at call time).
+# Golden-fixture evidence (Nov 5 2026): 'DevSecOps' was eaten by the brand
+# filter (Dev|Sec|Ops camel-shaped, and absent from the tier lists) which
+# silently dropped a required ATS keyword.
+_CAMEL_TECH_ALLOW = {"mysql", "opencv", "sqlite", "nosql", "github", "gitlab",
+                     "devsecops", "devops", "jupyter", "colab", "nodejs",
+                     "nextjs", "reactjs", "vuejs", "openai", "agenticai"}
 
 _COMPOUND_PHRASES = [
     "machine learning", "deep learning", "natural language processing",
@@ -197,7 +314,6 @@ _SYNONYMS = {
     "ci/cd": ["continuous integration", "continuous deployment", "ci cd"],
     "continuous integration": ["ci/cd"], "ci cd": ["ci/cd"],
     "iac": ["infrastructure as code"], "infrastructure as code": ["iac", "terraform"],
-    "docker": ["containerization"], "containerization": ["docker"],
     "docker": ["containerization", "containers"], "containerization": ["docker"],
     "js": ["javascript"], "javascript": ["js"],
     "ts": ["typescript"], "typescript": ["ts"],
@@ -245,7 +361,6 @@ def _simple_stem(word: str) -> str:
 
 _TIER1_TOOLS = {
     "python", "java", "scala", "rust", "go", "r", "julia",
-    "javascript", "typescript", "c++", "c#", "sql",
     "javascript", "typescript", "c++", "c#", ".net", "dotnet", "sql",
     "pytorch", "tensorflow", "keras", "jax", "scikit-learn", "sklearn",
     "hugging face", "huggingface", "langchain", "llamaindex", "langgraph",
@@ -274,7 +389,6 @@ _TIER2_CONCEPTS = {
     "prompt engineering", "fine tuning", "fine-tuning",
     "retrieval augmented generation", "rag",
     "distributed computing", "microservices",
-    "rest api", "restful api", "api",
     "rest api", "restful api", "api", "apis", "cloud", "monitoring",
     "etl", "data warehouse", "data lake",
     "vector database", "semantic search",
@@ -323,7 +437,12 @@ def _keyword_found_in_text(keyword: str, text_lower: str) -> tuple[bool, str]:
         if len(kw_stem) >= 3:
             words_in_text = re.findall(r'[a-zA-Z#+/.:_-]{2,}', text_lower)
             for word in words_in_text:
-                if _simple_stem(word) == kw_stem and word != keyword:
+                # Sentence punctuation rides along in the token class above
+                # ("workflows."), so normalize the same way _extract_keywords
+                # does before stemming. Without this, a period at the end of
+                # a sentence hides a real keyword match.
+                normalized = word.strip('.-/:')
+                if _simple_stem(normalized) == kw_stem and normalized != keyword:
                     return True, "stem"
     return False, ""
 
@@ -343,14 +462,94 @@ def _suggest_section(keyword: str) -> str:
 
 
 # ==========================================
+# JD Section Hygiene (boilerplate stripping)
+# ==========================================
+
+# Headings whose content never yields resume keywords: perks/compensation,
+# legal/EEO, application logistics. Matches markdown ("## Benefits:"),
+# bold-label ("**What we offer**"), and colon-plain ("Benefits:") styles.
+_BOILERPLATE_HEADING_RE = re.compile(
+    r"^\s*(?:#+\s*)?(?:\*\*)?\s*"
+    r"(?:what\s+(?:we\s+offer|'?s\s+in\s+it\s+for\s+you|you.?ll\s+(?:get|gain))|"
+    r"perks?|benefits?|pay\s*(?:&|and)?\s*benefits|compensation|salary|"
+    r"why\s+(?:us|join(?:\s+us)?|you|work\s+with\s+us)|about\s+us|who\s+we\s+are|"
+    r"equal\s+opp(?:ortunity)?|e\.?e\.?o\.?|diversity|inclusion\s+\(?.*\)?$|"
+    r"how\s+to\s+apply|application\s+(?:process|instructions|details)|"
+    r"apply\s+now|to\s+apply|our\s+values|selection\s+process|hiring\s+process)"
+    r"\b.*?:?\s*(?:\*\*)?\s*(?:#+)?\s*$",
+    re.IGNORECASE,
+)
+
+# Headings that DO carry requirement/qualification content — they end any
+# active skip even if they also contain a boilerplate word ("Requirements &
+# Compensation" resolves to content).
+_CONTENT_HEADING_RE = re.compile(
+    r"^\s*(?:#+\s*)?(?:\*\*)?\s*"
+    r"(?:requirements|qualifications|responsibilities|duties|"
+    r"who\s+you\s+are|what\s+you.?ll\s+do|what\s+(?:we.?re\s+looking\s+for|"
+    r"you.?ll\s+be\s+doing|you.?re\s+going\s+to\s+do)|"
+    r"your\s+(?:role|responsibilities)|the\s+role|job\s+description|"
+    r"about\s+the\s+role|description|overview|skills|"
+    r"nice\s+to\s+have|preferred|bonus|must[- ]haves?)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_boilerplate_sections(text: str) -> str:
+    """Drops the *content* of perk/legal/application-logistics sections.
+
+    Extraction scans the whole posting, so 'Free snacks' or 'Send your CV to'
+    otherwise become scored keywords (live-run evidence, Nov 5 2026: 'tools',
+    'basic' entering via such sections). A heading-less JD passes through
+    untouched; skipped blocks end at the next recognized heading or after two
+    consecutive blank lines. If stripping removes over 75% of the text, the
+    original text wins (protects against a heading regex going wide).
+    """
+    lines = text.splitlines()
+    if not any(_BOILERPLATE_HEADING_RE.match(line.strip()) for line in lines):
+        return text
+
+    kept: list[str] = []
+    skipping = False
+    blanks = 0
+    removed_chars = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            blanks += 1
+            if skipping and blanks >= 2:
+                skipping = False  # paragraph-block separator ends the section
+            if not skipping:
+                kept.append(line)
+            continue
+        blanks = 0
+        content_heading = _CONTENT_HEADING_RE.match(stripped)
+        if content_heading or _BOILERPLATE_HEADING_RE.match(stripped):
+            skipping = bool(_BOILERPLATE_HEADING_RE.match(stripped)) and content_heading is None
+            if not skipping:
+                kept.append(line)
+            continue
+        if not skipping:
+            kept.append(line)
+        else:
+            removed_chars += len(stripped)
+
+    stripped_text = "\n".join(kept)
+    if removed_chars == 0 or not re.search(r"[a-zA-Z]", stripped_text) \
+            or len(stripped_text) < 0.25 * len(text):
+        return text
+    return stripped_text
+
+
+# ==========================================
 # Keyword Extraction
 # ==========================================
 
 def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
     # Normalize literal \r, \n, \t escapes if text is passed with raw escape sequences
     text = text.replace('\\r', ' ').replace('\\n', ' ').replace('\\t', ' ')
-    text_lower = text.lower()
-    company_names = _extract_company_names(text)
+    # Drop perk/legal/application-logistics sections before counting tokens
+    text = _strip_boilerplate_sections(text)
     # Strip URLs so website links or domains never become keywords
     text_no_urls = re.sub(r'https?://\S+|www\.\S+', ' ', text)
     text_lower = text_no_urls.lower()
@@ -400,10 +599,7 @@ def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
     ]
 
     freq = Counter(meaningful)
-    single_keywords = [kw for kw, _ in freq.most_common(top_n * 2)]
 
-    combined = found_compounds + versioned_keywords + single_keywords
-    return combined[:top_n]
     tier1_singles = [kw for kw, _ in freq.most_common() if kw in _TIER1_TOOLS]
     tier2_singles = [kw for kw, _ in freq.most_common() if kw in _TIER2_CONCEPTS and kw not in _TIER1_TOOLS]
     other_singles = [kw for kw, _ in freq.most_common() if kw not in _TIER1_TOOLS and kw not in _TIER2_CONCEPTS]
@@ -474,6 +670,10 @@ def compute_ats_match(job_text: str, resume_text: str,
             for word in re.findall(r'[a-z]+', kw):
                 matched_stems.add(_simple_stem(word))
 
+    # Deal-breakers (see _DEAL_BREAKER_PATTERNS): terms the posting names and
+    # the resume does not address - advisory rows in the report.
+    deal_breakers = _deal_breaker_hits(job_text, resume_lower)
+
     results = []
     seen_stems = set()
 
@@ -500,11 +700,13 @@ def compute_ats_match(job_text: str, resume_text: str,
             "status": "+" if found else "-"
         })
 
-    return _format_ats_result(results)
+    return _format_ats_result(results, deal_breakers)
 
 
-def _format_ats_result(results: list[dict]) -> dict:
+def _format_ats_result(results: list[dict],
+                       deal_breakers: list[dict] | None = None) -> dict:
     """Calculates weighted scores, breakdown, and markdown summary from keyword match results."""
+    deal_breakers = deal_breakers or []
     total_weight = sum(r["weight"] for r in results)
     earned_weight = sum(r["weight"] for r in results if r["found"])
     percentage = round((earned_weight / total_weight * 100), 1) if total_weight > 0 else 0
@@ -543,6 +745,14 @@ def _format_ats_result(results: list[dict]) -> dict:
             lines.append(f"- `{r['keyword']}` - *try adding to: {suggestion}*")
         lines.append("")
 
+    if deal_breakers:
+        lines.append("### Deal-breakers")
+        for r in deal_breakers:
+            lines.append(
+                f"- `{r['keyword']}` - the posting names this as a requirement; "
+                "not addressed in the resume. Decide if the gap matters to you.")
+        lines.append("")
+
     if percentage >= 80:
         lines.append("> **Strong match** - your resume covers most key terms.")
     elif percentage >= 50:
@@ -562,6 +772,7 @@ def _format_ats_result(results: list[dict]) -> dict:
         "percentage": percentage,
         "weighted_earned": earned_weight,
         "weighted_total": total_weight,
+        "deal_breakers": deal_breakers,
         "formatted": "\n".join(lines)
     }
 
