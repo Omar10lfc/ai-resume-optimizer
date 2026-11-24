@@ -129,3 +129,51 @@ agent_app = interactive_workflow.compile(
     checkpointer=_create_checkpointer(),
     interrupt_before=["improver"],
 )
+
+
+def delete_checkpoint_threads(sessions: list[str]) -> int:
+    """Deletes the durable checkpoint/writes rows for the given sessions
+    (thread_ids) - Item 7 complete delete. No-op when the checkpointer is
+    not SQLite (MemorySaver holds no durable rows)."""
+    sessions = [s for s in sessions if s]
+    if not sessions:
+        return 0
+    checkpointer = agent_app.checkpointer
+    delete_thread = getattr(checkpointer, "delete_thread", None)
+    conn = getattr(checkpointer, "conn", None)
+    n = 0
+    if delete_thread is not None:
+        for session in sessions:
+            delete_thread(session)
+            n += 1
+    elif conn is not None:
+        # Fallback when delete_thread is unavailable: raw SQL through the
+        # checkpointer's connection (langgraph tables: checkpoints, writes).
+        ph = ", ".join("?" * len(sessions))
+        with conn:
+            cur = conn.execute(
+                f"DELETE FROM checkpoints WHERE thread_id IN ({ph})",
+                tuple(sessions))
+            n += cur.rowcount
+            cur = conn.execute(
+                f"DELETE FROM writes WHERE thread_id IN ({ph})",
+                tuple(sessions))
+            n += cur.rowcount
+    if conn is not None:
+        from .helpers import remove_wal_residue
+        remove_wal_residue(CHECKPOINTER_DB_PATH or "")
+    return n
+
+
+def delete_all_checkpoint_threads() -> int:
+    """Deletes every durable checkpoint thread (Item 7 delete-everything)."""
+    checkpointer = agent_app.checkpointer
+    conn = getattr(checkpointer, "conn", None)
+    if conn is None:
+        return 0
+    with conn:
+        n = conn.execute("DELETE FROM checkpoints").rowcount
+        n += conn.execute("DELETE FROM writes").rowcount
+    from .helpers import remove_wal_residue
+    remove_wal_residue(CHECKPOINTER_DB_PATH or "")
+    return n

@@ -1882,3 +1882,96 @@ def test_regenerate_run_artifact_rate_guard(client):
     client.get(url)  # first attempt - sets the per-app timestamp
     r2 = client.get(url)  # rapid repeat - rate guard
     assert r2.status_code == 429
+
+
+def test_remove_wal_residue(tmp_path):
+    """Item 7: remove_wal_residue unlinks -wal/-shm residue best-effort."""
+    from agent.helpers import remove_wal_residue
+    db = tmp_path / "store.sqlite3"
+    wal = Path(str(db) + "-wal")
+    shm = Path(str(db) + "-shm")
+    wal.write_text("x", encoding="utf-8")
+    shm.write_text("x", encoding="utf-8")
+    removed = remove_wal_residue(db)
+    assert not wal.exists() and not shm.exists()
+    assert sorted(p.name for p in removed) == ["store.sqlite3-shm", "store.sqlite3-wal"]
+
+
+def test_delete_application_is_complete(client, fake_llms):
+    """Item 7: deleting an application removes the profile row + cascade,
+    the runs.sqlite3 ledger row, the checkpointer thread and the artifact
+    directories named in the app row."""
+    import agent.graphs as graphs
+    import server.profile_store as profile_store
+    from server import run_store
+    r = client.post("/api/v1/step2",
+                    data={"job_description": JD, "resume_text": RESUME_TEXT,
+                          "notes": ""})
+    assert parse_sse(r.text)[-1][0] == "result"
+    session = parse_sse(r.text)[-1][1]["session"]
+    apps = profile_store.list_applications()
+    assert apps
+    app_id = apps[0]["id"]
+    detail = profile_store.get_application(app_id)
+    # Pre-delete: ledger row + checkpointer thread + artifact dirs exist.
+    assert run_store.get(session) is not None
+    checkpointer = agent.agent_app.checkpointer
+    conn = getattr(checkpointer, "conn", None)
+    if conn is not None:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?",
+            (session,)).fetchone()[0] > 0
+    artifact_dirs = set()
+    for row in (detail or {}).get("artifact_paths") or []:
+        url = str(row.get("url") or "")
+        parts = url.split("/")
+        if "artifacts" in parts:
+            artifact_dirs.add(parts[parts.index("artifacts") + 1])
+    artifact_dirs.add(session)
+    assert any((agent.config.OUTPUT_ROOT / d).is_dir() for d in artifact_dirs)
+    r = client.delete(f"/api/v1/applications/{app_id}")
+    assert r.status_code == 200
+    # Post-delete: everything gone.
+    assert profile_store.get_application(app_id) is None
+    assert run_store.get(session) is None
+    if conn is not None:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?",
+            (session,)).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM writes WHERE thread_id = ?",
+            (session,)).fetchone()[0] == 0
+    assert not any((agent.config.OUTPUT_ROOT / d).exists()
+                   for d in artifact_dirs)
+
+
+def test_delete_all_data(client, monkeypatch, tmp_path):
+    """Item 7: DELETE /api/v1/data wipes applications, runs ledger,
+    checkpointer threads and artifact dirs."""
+    import server.profile_store as profile_store
+    from server import run_store
+    monkeypatch.setattr(agent.config, "PROFILE_DB_PATH",
+                        str(tmp_path / "profile.sqlite3"))
+    monkeypatch.setattr(agent.config, "RUNS_DB_PATH",
+                        str(tmp_path / "runs.sqlite3"))
+    monkeypatch.setattr(agent.config, "OUTPUT_ROOT", tmp_path)
+    run_id = profile_store.record_run("JD", "Resume", "del-all-1",
+                                      {"type": "done",
+                                       "optimized_resume": "X"})
+    assert run_id is not None
+    run_store.start("del-all-1", "step2")
+    assert run_store.get("del-all-1") is not None
+    (tmp_path / "artifact-dir-1").mkdir()
+    r = client.delete("/api/v1/data")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["applications"] == 1
+    assert body["ledger_rows"] >= 1
+    assert body["artifact_dirs"] == 1
+    assert profile_store.list_applications() == []
+    assert run_store.get("del-all-1") is None
+    assert not (tmp_path / "artifact-dir-1").exists()
+    # Idempotent on a second call.
+    r = client.delete("/api/v1/data")
+    assert r.status_code == 200
+    assert r.json()["applications"] == 0

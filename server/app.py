@@ -56,6 +56,22 @@ _QUEUE_LEN = 0          # current waiters holding a queue slot
 _QUEUE_LOCK = threading.Lock()
 _RUN_LOCK = threading.Lock()   # one pipeline at a time
 
+def _delete_output_root_dirs() -> int:
+    """Deletes every directory under OUTPUT_ROOT (artifact/request dirs and
+    the uploads dir) - Item 7 delete-everything. Best-effort; the 24h
+    sweep remains the periodic backstop for strays."""
+    import shutil
+    root = agent_config.OUTPUT_ROOT
+    if not root.is_dir():
+        return 0
+    removed = 0
+    for entry in root.iterdir():
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+            removed += 1
+    return removed
+
+
 # Item 8: per-app rate guard for the regenerate endpoint (app_id -> last attempt).
 _REGEN_LIMITS: dict[int, float] = {}
 _REGEN_LIMITS_LOCK = threading.Lock()
@@ -458,6 +474,21 @@ def create_app() -> FastAPI:
         if not profile_store.delete_application(app_id):
             raise HTTPException(HTTP_404_NOT_FOUND, "Unknown application.")
         return {"deleted": app_id}
+
+    @app.delete("/api/v1/data")
+    def delete_all_data() -> dict:
+        """Item 7: 'delete everything' - applications + runs (profile,
+        runs.sqlite3 ledger, checkpointer threads) + artifact dirs (WAL
+        residue cleaned). Local trace copies (traces/, new-traces/,
+        langsmith_export/) are NOT touched - they are audit exports, not
+        app data. Requires auth when APP_AUTH_* is enabled."""
+        from agent import graphs
+        apps = profile_store.wipe()
+        ledger = run_store.delete_all()
+        threads = graphs.delete_all_checkpoint_threads()
+        dirs = _delete_output_root_dirs()
+        return {"applications": apps, "ledger_rows": ledger,
+                "checkpoint_threads": threads, "artifact_dirs": dirs}
 
     # BB1 Phase B (PB2): history re-download. Stored run text outlives the
     # 24h artifact sweep, so regenerating from it is the honest "versions /

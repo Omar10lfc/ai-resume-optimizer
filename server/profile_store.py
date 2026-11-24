@@ -274,18 +274,89 @@ def get_application(app_id: int) -> dict | None:
 
 
 def delete_application(app_id: int) -> bool:
-    """Removes one application and (via FK cascade) its runs."""
+    """Complete delete (Item 7): removes the application row, the
+    profile.runs cascade, the run_store ledger rows for the app's sessions,
+    the checkpointer threads and the artifact directories. WAL/SHM residue
+    of the stores is checkpointed and unlinked best-effort."""
     if not agent_config.PROFILE_DB_ENABLED:
         return False
+    try:
+        # Sessions must be read BEFORE the DELETE: the FK cascade removes
+        # the profile.runs rows that carry them.
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT id, artifact_paths FROM applications WHERE id = ?",
+                (app_id,)).fetchone()
+            if row is None:
+                return False
+            sessions = [r[0] for r in conn.execute(
+                "SELECT session FROM runs WHERE application_id = ?", (app_id,))]
+            artifact_paths = _parse_artifact_paths(row["artifact_paths"])
+            with conn:
+                conn.execute("DELETE FROM applications WHERE id = ?", (app_id,))
+        finally:
+            conn.close()
+        # Item 7: ledger rows (run_store), checkpointer threads, artifacts.
+        from server import run_store
+        from agent import graphs
+        run_store.delete_sessions(sessions)
+        graphs.delete_checkpoint_threads(sessions)
+        _delete_artifact_dirs(sessions, artifact_paths)
+        return True
+    except Exception as exc:
+        print(f"[Profile] delete failed (non-fatal): {exc}")
+        return False
+
+
+def wipe() -> int:
+    """Deletes every application (and its runs via the FK cascade) - the
+    'delete everything' backend action (Item 7; ledger/threads/artifacts
+    are wiped by the caller). Returns the number of applications removed."""
+    if not agent_config.PROFILE_DB_ENABLED:
+        return 0
     try:
         conn = _connect()
         try:
             with conn:
-                cur = conn.execute("DELETE FROM applications WHERE id = ?",
-                                   (app_id,))
-            return cur.rowcount > 0
+                cur = conn.execute("DELETE FROM applications")
+            n = cur.rowcount
         finally:
             conn.close()
+        from agent.helpers import remove_wal_residue
+        remove_wal_residue(agent_config.PROFILE_DB_PATH)
+        return n
     except Exception as exc:
-        print(f"[Profile] delete failed (non-fatal): {exc}")
-        return False
+        print(f"[Profile] wipe failed (non-fatal): {exc}")
+        return 0
+
+
+def _parse_artifact_paths(raw) -> list[dict]:
+    """Parses the applications.artifact_paths JSON (Tolerant to bad JSON)."""
+    try:
+        rows = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def _delete_artifact_dirs(sessions: list[str], artifact_paths: list[dict]) -> int:
+    """Deletes the artifact directories under OUTPUT_ROOT for the deleted
+    application (Item 7: complete delete). The artifact rows' "url" is
+    api/v1/artifacts/<dir-name>/<kind>?file=... - the URL segment is the
+    actual artifact dir name (the loader's request_id, independent of the
+    session) - plus OUTPUT_ROOT/<session> dirs. Returns dirs removed."""
+    import shutil
+    dirs = {s for s in sessions if s}
+    for row in artifact_paths:
+        url = str(row.get("url") or "")
+        parts = url.split("/")
+        if "artifacts" in parts:
+            dirs.add(parts[parts.index("artifacts") + 1])
+    removed = 0
+    for d in dirs:
+        p = agent_config.OUTPUT_ROOT / d
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+            removed += 1
+    return removed

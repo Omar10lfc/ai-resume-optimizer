@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { X, Check, PlugsConnected, ArrowClockwise, Key, Globe, Shield, WarningCircle } from "@phosphor-icons/react";
-import { getSettings, saveSettings, checkProviderHealth, type ExtensionSettings, type ProviderHealth } from "../api";
+import { X, Check, PlugsConnected, ArrowClockwise, Key, Globe, Shield, WarningCircle, Trash } from "@phosphor-icons/react";
+import { getSettings, saveSettings, checkProviderHealth, getBaseUrl, getAuthHeaders, type ExtensionSettings, type ProviderHealth } from "../api";
 import { isExtension } from "../lib/theme";
 
 /**
@@ -33,6 +33,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [eraseArmed, setEraseArmed] = useState(false);
   const [eraseDone, setEraseDone] = useState(false);
+  const [deleteAllText, setDeleteAllText] = useState("");
+  const [deleteAllBusy, setDeleteAllBusy] = useState(false);
+  const [deleteAllDone, setDeleteAllDone] = useState(false);
+  const [deleteAllError, setDeleteAllError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
 
@@ -82,6 +86,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
       setSavedSuccess(false);
       onClose();
     }, 800);
+  };
+
+  const handleDeleteAll = async () => {
+    if (deleteAllText.trim().toUpperCase() !== "DELETE ALL") {
+      setDeleteAllError("Type DELETE ALL to confirm this destructive action.");
+      return;
+    }
+    setDeleteAllBusy(true);
+    setDeleteAllError(null);
+    try {
+      const baseUrl = await getBaseUrl();
+      const authHeaders = await getAuthHeaders();
+      const res = await fetch(`${baseUrl}/api/v1/data`, {
+        method: "DELETE",
+        headers: authHeaders,
+      });
+      if (!res.ok) {
+        const detail = ((await res.json().catch(() => ({}))) as { detail?: string }).detail;
+        setDeleteAllError(detail ?? `Delete failed (HTTP ${res.status}).`);
+        return;
+      }
+      setDeleteAllDone(true);
+      onSettingsSaved?.();
+    } catch {
+      setDeleteAllError("Delete failed. Is the backend running?");
+    } finally {
+      setDeleteAllBusy(false);
+    }
   };
 
   const handleErase = async () => {
@@ -254,6 +286,49 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 </span>
               )}
             </div>
+          </div>
+
+          {/* Delete-all: backend-side erase (history + runs ledger +
+              checkpoints + artifact dirs). Requires typed confirmation. */}
+          <div className="pt-3 border-t border-line">
+            <span className="field-label flex items-center gap-1.5">
+              <Trash weight="bold" className="w-3.5 h-3.5 text-danger" />
+              Delete all server data
+            </span>
+            <p className="text-2xs text-ink-3 mb-2 leading-relaxed">
+              Removes every application, run, checkpoint thread and artifact directory on the server.
+              This deletes your data where the backend stores it; browser-side copies elsewhere are untouched.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+              <input
+                type="text"
+                value={deleteAllText}
+                onChange={(e) => setDeleteAllText(e.target.value)}
+                placeholder="Type DELETE ALL to confirm"
+                className="input text-2xs sm:max-w-[260px]"
+                aria-label="Type DELETE ALL to confirm"
+              />
+              <button
+                type="button"
+                onClick={handleDeleteAll}
+                disabled={deleteAllBusy || deleteAllText.trim().toUpperCase() !== "DELETE ALL"}
+                className="btn btn-danger-primary btn-sm"
+              >
+                {deleteAllBusy ? "Deleting..." : "Delete all"}
+              </button>
+            </div>
+            {deleteAllDone && (
+              <span className="flex items-center gap-1 text-2xs text-ok mt-1">
+                <Check weight="bold" className="w-3 h-3" />
+                All data deleted
+              </span>
+            )}
+            {deleteAllError && (
+              <p role="alert" className="flex items-start gap-1.5 mt-1.5 text-2xs text-danger leading-relaxed">
+                <WarningCircle weight="bold" className="w-3.5 h-3.5 shrink-0 mt-px" />
+                {deleteAllError}
+              </p>
+            )}
           </div>
 
           {/* Actions */}

@@ -18,6 +18,22 @@ def _safe_print(msg: str):
     logger.info(msg)
 
 
+def remove_wal_residue(db_path) -> list[Path]:
+    """Best-effort removal of -wal/-shm files of a closed SQLite store
+    (Item 7: complete delete - freed pages in the WAL must not linger).
+    Returns the paths that existed and were unlinked (errors suppressed)."""
+    removed = []
+    for suffix in ("-wal", "-shm"):
+        p = Path(str(db_path) + suffix)
+        if p.exists():
+            try:
+                p.unlink()
+                removed.append(p)
+            except OSError:
+                pass
+    return removed
+
+
 def _safe_truncate(text: str, max_chars: int, label: str = "text") -> str:
     """Truncate text at the nearest word boundary."""
     if len(text) > max_chars:

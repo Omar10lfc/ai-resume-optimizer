@@ -221,3 +221,37 @@ def recover_interrupted() -> int:
     except Exception as exc:
         print(f"[Runs] startup recovery failed (non-fatal): {exc}")
         return 0
+
+
+def delete_sessions(sessions: list[str]) -> int:
+    """Deletes ledger rows for the given sessions (Item 7: complete delete).
+    Returns the number of rows deleted."""
+    sessions = [s for s in sessions if s]
+    if not sessions:
+        return 0
+    conn = _connect()
+    try:
+        with conn:
+            cur = conn.execute(
+                f"DELETE FROM runs WHERE session IN ({','.join('?' * len(sessions))})",
+                tuple(sessions))
+            n = cur.rowcount
+        from agent.helpers import remove_wal_residue
+        remove_wal_residue(agent_config.RUNS_DB_PATH)
+        return n
+    finally:
+        conn.close()
+
+
+def delete_all() -> int:
+    """Deletes every ledger row (Item 7 delete-everything)."""
+    conn = _connect()
+    try:
+        with conn:
+            cur = conn.execute("DELETE FROM runs")
+            n = cur.rowcount
+        from agent.helpers import remove_wal_residue
+        remove_wal_residue(agent_config.RUNS_DB_PATH)
+        return n
+    finally:
+        conn.close()
