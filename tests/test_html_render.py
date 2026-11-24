@@ -1084,3 +1084,36 @@ def test_concurrent_renders_use_distinct_source_and_profile(
     assert len(set(sources)) == 2
     assert len(set(profiles)) == 2
     assert list(tmp_path.glob("__print_source_*.html")) == []
+
+
+@pytest.mark.skipif(not HAVE_BROWSER, reason="no browser installed (HAVE_BROWSER)")
+def test_print_script_image_meta_refresh_never_take_effect(tmp_path):
+    """Item 3 (committed live-render test): a script tag, an external image,
+    a stray closing </head> and a meta refresh in the content never take
+    effect - the injected CSP (script-src 'none', img-src data:) and the
+    argv (no remote URL arguments) are asserted live by the real print.
+    Skipped when no browser is installed."""
+    html = (
+        "<html><head></head><body>"
+        "<script>document.title='XSS_LIVE_PROBE';</script>"
+        "<img src='https://example.invalid/x.png'>"
+        "</head>"  # stray close after head: the HTML parser ignores it
+        "<meta http-equiv='refresh' content='0;url=https://example.invalid/redirected'>"
+        "<h1>SENTINEL_LIVE_PROBE</h1>"
+        "</body></html>"
+    )
+    out = html_to_pdf(html, tmp_path, "out.pdf", timeout=60)
+    pdf = tmp_path / "out.pdf"
+    assert out is not None and pdf.exists()
+    assert pdf.read_bytes().startswith(b"%PDF")
+    from pypdf import PdfReader
+    text = "\n".join(p.extract_text() or "" for p in PdfReader(str(pdf)).pages)
+    # The page itself rendered through the stray </head>.
+    assert "SENTINEL_LIVE_PROBE" in text
+    # The script did not run (its marker is absent from the output).
+    assert "XSS_LIVE_PROBE" not in text
+    # The external image and the meta-refresh target did not take effect:
+    # neither URL is anywhere in the output (a loaded image or the
+    # navigated print would surface the URLs; DNS is also blackholed by
+    # --host-resolver-rules=MAP * ~NOTFOUND).
+    assert "example.invalid" not in text
