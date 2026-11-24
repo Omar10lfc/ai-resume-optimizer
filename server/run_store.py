@@ -64,17 +64,25 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _begin_immediate(conn) -> None:
+    """Starts the store's write transaction: BEGIN IMMEDIATE (the A1 fix:
+    acquire the write lock before the read-then-write below, so concurrent
+    writers serialize on the lock instead of racing the deferred
+    transaction's read window). Also the monkeypatch seam for the
+    read-then-write repro test (tests/test_run_store_read_then_write.py)."""
+    conn.execute("BEGIN IMMEDIATE")
+
+
 def _write_once(session: str, status: str, *, step: str | None,
                 error: str | None, missing_skills: str | None,
                 result: dict | None) -> None:
     conn = _connect()
     try:
-        # BEGIN IMMEDIATE: acquire the write lock before the read-then-write
-        # below, so concurrent writers serialize on the lock instead of racing
-        # the deferred transaction's read window. This is the primary fix;
-        # the bounded retry in _write() remains as a last-resort safety net.
+        # BEGIN IMMEDIATE: the write lock is acquired before the
+        # read-then-write below (primary fix; the bounded retry in _write()
+        # stays as a last-resort safety net).
         conn.isolation_level = None
-        conn.execute("BEGIN IMMEDIATE")
+        _begin_immediate(conn)
         try:
             existing = conn.execute(
                 "SELECT missing_skills, result_json FROM runs"
