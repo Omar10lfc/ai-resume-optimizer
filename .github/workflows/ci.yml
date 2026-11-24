@@ -36,6 +36,17 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt -r requirements-dev.txt
 
+    # Item 2 (follow-up): install Chrome Stable via the official .deb (not the
+    # Ubuntu chromium-browser snap stub) so the HTML live-render tests RUN,
+    # not skip. TeX Live is already installed by the LaTeX step above (item 2).
+    - name: Install Chrome Stable for the HTML live tests
+      run: |
+        set -e
+        curl -sSfL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/google-chrome-stable.deb
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/google-chrome-stable.deb
+        google-chrome --version
+
     - name: Print browser availability (Item 4)
       run: python -c "from agent.html_render import HAVE_BROWSER, BROWSER_PATH; print(f'HAVE_BROWSER={HAVE_BROWSER}'); print(f'BROWSER_PATH={BROWSER_PATH}')"
 
