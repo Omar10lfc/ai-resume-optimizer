@@ -302,6 +302,17 @@ def _safeguard_session(session: str | None) -> str | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging_config.setup_logging()
+    # Item 9: startup warning when APP_AUTH_* is unset on a non-local bind
+    # (docker-compose.yml publishes on 127.0.0.1 by default and sets
+    # APP_BIND_HOST=0.0.0.0 inside the container).
+    if AUTH_CREDENTIALS is None:
+        bind_host = (os.environ.get("APP_BIND_HOST")
+                     or os.environ.get("HOST") or "127.0.0.1").strip().lower()
+        if bind_host not in ("127.0.0.1", "localhost", "::1", ""):
+            print("[Auth] WARNING: APP_AUTH_USERNAME/APP_AUTH_PASSWORD are not "
+                  "set and the server is bound to a non-local address "
+                  f"({bind_host}); anyone who can reach the port can spend the "
+                  "model quota. Set APP_AUTH_* or bind to 127.0.0.1.")
     agent_config.init_output_dirs()
     agent_config.start_background_cleanup()
     # MR3: runs left 'running' by a previous process are dead (their mid-run

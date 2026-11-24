@@ -38,17 +38,17 @@ def remove_wal_residue(db_path) -> list[Path]:
 
 def ensure_db_migrations(db_path, version: int = 1) -> None:
     """Creates the versioned ``_migrations`` table on a SQLite store if
-    missing and stamps the given schema version (Item 11). Idempotent."""
+    missing and stamps the given schema version (Item 11). Idempotent -
+    concurrent calls are safe (``INSERT OR IGNORE`` on the version
+    primary key)."""
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute("CREATE TABLE IF NOT EXISTS _migrations("
                      " version INTEGER PRIMARY KEY,"
                      " applied_at TEXT NOT NULL)")
-        row = conn.execute("SELECT MAX(version) FROM _migrations").fetchone()
-        if not row or row[0] is None:
-            conn.execute("INSERT INTO _migrations(version, applied_at)"
-                         " VALUES (?, ?)",
-                         (version, time.strftime("%Y-%m-%dT%H:%M:%S%z")))
+        conn.execute("INSERT OR IGNORE INTO _migrations(version, applied_at)"
+                     " VALUES (?, ?)",
+                     (version, time.strftime("%Y-%m-%dT%H:%M:%S%z")))
         conn.commit()
     finally:
         conn.close()

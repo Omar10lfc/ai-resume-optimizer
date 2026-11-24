@@ -1,0 +1,47 @@
+# Job Application Optimizer - self-hosted with Docker (Item 9)
+#
+# Usage:
+#   1. Create .env from .env.example (it is gitignored - do not commit it).
+#   2. docker compose up -d
+#   3. Open http://localhost:8000
+#
+# Item 9 notes:
+#   - Port published on 127.0.0.1:8000:8000 by default (public bind:
+#     change to "0.0.0.0:8000:8000" and set APP_AUTH_USERNAME/APP_AUTH_PASSWORD
+#     in .env - the server warns if you forget).
+#   - Data volume: ./data is mounted at /app/data (application history
+#     data/profile.sqlite3, artifacts/runs.sqlite3, checkpoints/). The
+#     container user is non-root (uid 1000 by default; override with
+#     HOST_UID/HOST_GID or chown ./data to match).
+#   - Health check: GET /api/v1/health (requires auth when APP_AUTH_* is
+#     set - extend the healthcheck with -u user:pass or add a token).
+#   - APP_BIND_HOST is exported into the container; server/app.py uses it
+#     for the startup warning when APP_AUTH_* is unset on a non-local bind.
+
+services:
+  app:
+    build: .
+    image: job-application-optimizer:dev
+    container_name: job-application-optimizer
+    restart: unless-stopped
+    # Item 9: publish on loopback by default.
+    ports:
+      - "127.0.0.1:8000:8000"
+    # Item 9: data volume (./data -> /app/data).
+    volumes:
+      - "./data:/app/data"
+    # Item 9: give Chromium a comfortable /dev/shm.
+    shm_size: 2g
+    # Item 9: non-root user in the image (override with HOST_UID/HOST_GID).
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    env_file: .env
+    environment:
+      # Item 9: the startup warning (server/app.py) fires when APP_AUTH_*
+      # is unset and this address is non-local.
+      - APP_BIND_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

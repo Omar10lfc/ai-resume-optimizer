@@ -1,0 +1,21 @@
+# .dockerignore - keep secrets and dev artifacts out of the build context.
+.env
+.env.local
+venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.git/
+data/
+traces/
+new-traces/
+langsmith_export/
+tests_out/
+scratch/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+*.sqlite3
+*.pyc
+.coverage

@@ -182,6 +182,36 @@ def test_health_reflects_startup_check_when_lifespan_ran(monkeypatch):
     }
 
 
+def test_startup_warning_when_auth_unset_and_nonlocal_bind(monkeypatch, capsys):
+    """Item 9: the lifespan prints the startup warning when APP_AUTH_* is
+    unset and APP_BIND_HOST is non-local."""
+    monkeypatch.setattr(server_app, "AUTH_CREDENTIALS", None)
+    monkeypatch.setenv("APP_BIND_HOST", "0.0.0.0")
+    with TestClient(server_app.app) as c:
+        assert c.get("/api/v1/health").status_code == 200
+    assert ("APP_AUTH_USERNAME/APP_AUTH_PASSWORD are not set"
+            in capsys.readouterr().out)
+
+
+def test_no_startup_warning_when_local_bind_or_auth_set(monkeypatch, capsys):
+    """Item 9: no startup warning when the bind is local, or APP_AUTH_* is
+    set (even on a non-local bind)."""
+    # Local bind: no warning.
+    monkeypatch.setattr(server_app, "AUTH_CREDENTIALS", None)
+    monkeypatch.setenv("APP_BIND_HOST", "127.0.0.1")
+    with TestClient(server_app.app) as c:
+        assert c.get("/api/v1/health").status_code == 200
+    assert ("APP_AUTH_USERNAME/APP_AUTH_PASSWORD are not set"
+            not in capsys.readouterr().out)
+    # Auth set: no warning even on a non-local bind.
+    monkeypatch.setattr(server_app, "AUTH_CREDENTIALS", ("u", "p"))
+    monkeypatch.setenv("APP_BIND_HOST", "0.0.0.0")
+    with TestClient(server_app.app) as c:
+        assert c.get("/api/v1/health", auth=("u", "p")).status_code == 200
+    assert ("APP_AUTH_USERNAME/APP_AUTH_PASSWORD are not set"
+            not in capsys.readouterr().out)
+
+
 def test_step1_rejects_disabled_url_import_before_recording(client, monkeypatch):
     import agent.url_fetch as url_fetch
 
