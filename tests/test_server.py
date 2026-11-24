@@ -1973,6 +1973,18 @@ def test_delete_application_is_complete(client, fake_llms):
             (session,)).fetchone()[0] == 0
     assert not any((agent.config.OUTPUT_ROOT / d).exists()
                    for d in artifact_dirs)
+    # Item 3 (gap): the profile.runs cascade is gone as well (SQL count).
+    conn = profile_store._connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE application_id = ?",
+            (app_id,)).fetchone()[0] == 0
+    finally:
+        conn.close()
+    # Item 3 (gap): WAL/SHM residue of the stores is cleaned up.
+    for p in (agent.config.PROFILE_DB_PATH, agent.config.RUNS_DB_PATH):
+        assert not Path(str(p) + "-wal").exists(), p
+        assert not Path(str(p) + "-shm").exists(), p
 
 
 def test_delete_all_data(client, monkeypatch, tmp_path):
@@ -2005,3 +2017,27 @@ def test_delete_all_data(client, monkeypatch, tmp_path):
     r = client.delete("/api/v1/data")
     assert r.status_code == 200
     assert r.json()["applications"] == 0
+    # Item 3 (gap): no -wal/-shm residue on the wiped stores.
+    for p in (agent.config.PROFILE_DB_PATH, agent.config.RUNS_DB_PATH):
+        assert not Path(str(p) + "-wal").exists(), p
+        assert not Path(str(p) + "-shm").exists(), p
+
+
+def test_delete_all_data_requires_auth_when_enabled(client, monkeypatch, tmp_path):
+    """Item 3 (gap): DELETE /api/v1/data returns 401 without credentials
+    when APP_AUTH_* is enabled (and succeeds with them)."""
+    import agent.graphs as graphs
+    profile = tmp_path / "profile.sqlite3"
+    runs = tmp_path / "runs.sqlite3"
+    monkeypatch.setattr(agent.config, "PROFILE_DB_PATH", str(profile))
+    monkeypatch.setattr(agent.config, "RUNS_DB_PATH", str(runs))
+    monkeypatch.setattr(agent.config, "OUTPUT_ROOT", tmp_path)
+    monkeypatch.setattr(agent.graphs, "CHECKPOINTER_DB_PATH",
+                        str(tmp_path / "ckpt.sqlite3"))
+    # Keep the real (long-lived) checkpointer out of the wipe.
+    monkeypatch.setattr(agent.graphs, "delete_all_checkpoint_threads",
+                        lambda: 0)
+    monkeypatch.setattr(server_app, "AUTH_CREDENTIALS", ("user", "pass"))
+    assert client.delete("/api/v1/data").status_code == 401
+    assert client.delete("/api/v1/data",
+                         auth=("user", "pass")).status_code == 200
