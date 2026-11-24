@@ -2,6 +2,8 @@
 import logging
 import math
 import re
+import sqlite3
+import time
 import unicodedata
 from pathlib import Path
 from typing import Optional
@@ -32,6 +34,41 @@ def remove_wal_residue(db_path) -> list[Path]:
             except OSError:
                 pass
     return removed
+
+
+def ensure_db_migrations(db_path, version: int = 1) -> None:
+    """Creates the versioned ``_migrations`` table on a SQLite store if
+    missing and stamps the given schema version (Item 11). Idempotent."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS _migrations("
+                     " version INTEGER PRIMARY KEY,"
+                     " applied_at TEXT NOT NULL)")
+        row = conn.execute("SELECT MAX(version) FROM _migrations").fetchone()
+        if not row or row[0] is None:
+            conn.execute("INSERT INTO _migrations(version, applied_at)"
+                         " VALUES (?, ?)",
+                         (version, time.strftime("%Y-%m-%dT%H:%M:%S%z")))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def db_schema_version(db_path) -> int:
+    """Current ``_migrations`` version of a SQLite store (0 when the file or
+    the table is absent)."""
+    if not Path(db_path).exists():
+        return 0
+    conn = sqlite3.connect(str(db_path))
+    try:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "_migrations" not in tables:
+            return 0
+        row = conn.execute("SELECT MAX(version) FROM _migrations").fetchone()
+        return int(row[0] or 0)
+    finally:
+        conn.close()
 
 
 def _safe_truncate(text: str, max_chars: int, label: str = "text") -> str:

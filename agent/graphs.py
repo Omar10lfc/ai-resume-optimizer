@@ -10,7 +10,7 @@ from .nodes import (
     ats_check_node, cover_letter_node, interview_prep_node,
     pdf_exporter_node,
 )
-from .helpers import _safe_print
+from .helpers import _safe_print, ensure_db_migrations
 
 
 def should_continue(state: AgentState) -> str | list[str]:
@@ -111,6 +111,7 @@ def _create_checkpointer():
             conn = sqlite3.connect(CHECKPOINTER_DB_PATH, check_same_thread=False)
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("PRAGMA journal_mode = WAL")
+            ensure_db_migrations(CHECKPOINTER_DB_PATH, 1)  # Item 11
             _safe_print(f"[Checkpointer] Using persistent SQLite storage at: {CHECKPOINTER_DB_PATH}")
             return SqliteSaver(conn)
         except Exception as e:

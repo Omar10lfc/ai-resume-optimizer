@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 
 from agent import config as agent_config
+from agent.helpers import ensure_db_migrations
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -59,6 +60,7 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(_SCHEMA)
+    ensure_db_migrations(path, 1)  # Item 11: versioned migration table
     return conn
 
 

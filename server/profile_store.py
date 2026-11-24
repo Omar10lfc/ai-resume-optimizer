@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 
 from agent import config as agent_config
+from agent.helpers import ensure_db_migrations
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS applications (
@@ -101,6 +102,7 @@ def _connect() -> sqlite3.Connection:
         if statement.strip():
             conn.execute(statement)
     _migrate_applications(conn)
+    ensure_db_migrations(path, 1)  # Item 11: versioned migration table
     return conn
 
 
