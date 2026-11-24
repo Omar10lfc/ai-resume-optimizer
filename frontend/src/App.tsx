@@ -6,6 +6,7 @@ import { HumanReviewModal } from "./components/HumanReviewModal";
 import { ResultsDashboard } from "./components/ResultsDashboard";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { SettingsModal } from "./components/SettingsModal";
+import { PrivacyTermsPage } from "./PrivacyTermsPage";
 import { ErrorState } from "./components/ErrorState";
 import { Onboarding } from "./components/Onboarding";
 import { ToastStack } from "./components/ToastStack";
@@ -76,6 +77,8 @@ export function App() {
   } | null>(null);
   // Item 8: edge limits (resume/job/notes chars, pipeline timeout) from health.
   const [providerLimits, setProviderLimits] = useState<ProviderHealth["limits"]>(undefined);
+  // Item 5: Privacy & terms page (reachable from the footer link).
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const [stage, setStage] = useState<PipelineStage>("idle");
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [errorInfo, setErrorInfo] = useState<ErrorInfo | null>(null);
@@ -456,6 +459,11 @@ export function App() {
 
   const isProcessing = stage === "step1_running" || stage === "step2_running";
 
+  // Item 5: Privacy & terms page replaces the app view while open.
+  if (privacyOpen) {
+    return <PrivacyTermsPage onClose={() => setPrivacyOpen(false)} />;
+  }
+
   return (
     <div className="min-h-[100dvh] bg-canvas text-ink flex flex-col font-sans selection:bg-accent-tint">
       {/* 1. Header */}
@@ -657,7 +665,16 @@ export function App() {
       <footer className="w-full border-t border-line py-4 px-3 sm:px-6 text-2xs text-ink-3 text-center font-mono">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>AI Resume Optimizer · LangGraph pipeline</span>
-          <span>Resume text stays in this browser</span>
+          <span className="flex items-center gap-1.5">
+            Local app · model provider processes data ·
+            <button
+              type="button"
+              onClick={() => setPrivacyOpen(true)}
+              className="text-accent hover:underline"
+            >
+              Privacy & terms
+            </button>
+          </span>
         </div>
       </footer>
 
