@@ -173,6 +173,42 @@ The app will open at `http://127.0.0.1:7860`. If LangSmith is configured, you'll
 
 ---
 
+## 🐳 Self-host with Docker (recommended)
+
+One container: backend + built web frontend, TeX Live, Chromium, fonts. See `Dockerfile` and `docker-compose.yml`:
+
+```bash
+# from the repo root
+cp .env.example .env              # .env is gitignored - fill it in
+# Set values: GROQ_API_KEY (required); APP_AUTH_USERNAME/APP_AUTH_PASSWORD (recommended)
+docker compose up -d               # app on http://localhost:8000 (published on the loopback by default)
+```
+
+Open `http://localhost:8000`. The container runs as a non-root user; `./data` is the data volume (mounted at `/app/data`). The port is published as `127.0.0.1:8000:8000` by default — for a public bind use `"0.0.0.0:8000:8000"` and set `APP_AUTH_USERNAME`/`APP_AUTH_PASSWORD` (the server warns if you forget on a non-local bind). Smoke test plan: `docs/DOCKER_SMOKE_TEST.md`.
+
+## 💾 What is stored and where
+
+Where the app stores things (all under `data/`, which is gitignored):
+
+- **Application history + evidence texts**: `data/profile.sqlite3` (`applications`, `runs` tables).
+- **Recent-run ledger**: `data/artifacts/runs.sqlite3` (per-session status, step-1 chips, done-run result payloads).
+- **Session checkpoints**: `data/checkpoints/checkpoints.sqlite3` (LangGraph `SqliteSaver`).
+- **Generated documents**: `data/artifacts/<session>/` (Optimized_Resume.pdf/docx/tex, Cover_Letter.pdf; stale request dirs swept after 24h).
+- **Uploads**: `data/artifacts/uploads/`.
+- **Traces (opt-in)**: `traces/`, `new-traces/`, `langsmith_export/` (see LangSmith Tracing).
+- `.env` is gitignored.
+- During Step 1/Step 2 the job description and resume are sent to the model provider (Groq by default) — names, emails and phone numbers are sent unredacted as part of the request.
+
+## 🗑️ Backup and delete
+
+- **Backup (plaintext):** `python scripts/backup_restore.py backup` — writes `backups/backup_<timestamp>/` + `manifest.json`, a read-only snapshot of `data/profile.sqlite3`, `data/artifacts/runs.sqlite3` and `data/checkpoints/checkpoints.sqlite3` (skipped when `CHECKPOINTER_DB_PATH=off`).
+- **Backup note:** backups are plaintext copies of private data (resumes contain names/emails/phones, run payloads) — store or transfer them encrypted or with restrictive permissions.
+- **Restore:** stop the app, then `python scripts/backup_restore.py restore <dir> --force` (refuses to overwrite without `--force`).
+- **Delete one application:** History panel (`DELETE /api/v1/applications/{id}`).
+- **Delete everything:** Settings → "Delete all server data" (`DELETE /api/v1/data`; requires auth when `APP_AUTH_*` is set).
+
+---
+
 ## ☁️ Deploy to Hugging Face Spaces
 
 > These steps deploy the **legacy Gradio `app.py`** (the Space currently serves it). The FastAPI + frontend path targets a single-container deploy (uvicorn serving the built frontend) — tracked in the roadmap.
