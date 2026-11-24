@@ -36,6 +36,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt -r requirements-dev.txt
 
+    - name: Print browser availability (Item 4)
+      run: python -c "from agent.html_render import HAVE_BROWSER, BROWSER_PATH; print(f'HAVE_BROWSER={HAVE_BROWSER}'); print(f'BROWSER_PATH={BROWSER_PATH}')"
+
     - name: Run test suite with coverage gate
       run: |
-        pytest tests/ -v --cov=agent --cov=app --cov=server --cov-report=term --cov-fail-under=84
+        pytest tests/ -v --cov=agent --cov=app --cov=server --cov-report=term --cov-fail-under=84 -rs
