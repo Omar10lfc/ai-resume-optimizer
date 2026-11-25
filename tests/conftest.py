@@ -37,3 +37,8 @@ os.environ["LANGCHAIN_TRACING_V2"] = "false"
 # selects. The openai/anthropic construction paths are exercised directly in
 # test_resume_agent.py (the provider matrix opts in explicitly).
 os.environ["LLM_PROVIDER"] = "groq"
+
+# Unit and integration tests use fake/monkeypatched LLMs or mocked HTTP servers;
+# seeding a dummy key prevents import-time config failures on CI runners or
+# clean checkouts without a local .env file.
+os.environ.setdefault("GROQ_API_KEY", "gsk_test_dummy_key_for_tests")
