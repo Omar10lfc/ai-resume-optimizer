@@ -518,11 +518,10 @@ def create_app() -> FastAPI:
         export_key = _REGENERATE_KINDS.get(kind)
         if export_key is None:
             raise HTTPException(HTTP_404_NOT_FOUND, "Unknown artifact kind.")
-        detail = profile_store.get_application(app_id)
-        if detail is None:
+        status, run = profile_store.get_run_for_app(app_id, run_id)
+        if status == "missing_app":
             raise HTTPException(HTTP_404_NOT_FOUND, "Unknown application.")
-        run = next((r for r in detail["runs"] if r["id"] == run_id), None)
-        if run is None:
+        if status == "missing_run" or run is None:
             raise HTTPException(HTTP_404_NOT_FOUND, "Unknown run.")
         # Item 8: per-app rate guard on regenerate. Ownership above is
         # already validated (app + run); the guard limits repeated

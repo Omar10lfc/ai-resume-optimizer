@@ -1,3 +1,4 @@
+import { isExtension } from "./lib/storage";
 import type {
   ApplicationDetail,
   ApplicationSummary,
@@ -44,7 +45,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
 };
 
 export async function getSettings(): Promise<ExtensionSettings> {
-  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+  if (isExtension()) {
     try {
       const data = (await chrome.storage.local.get([
         "backendUrl",
@@ -81,7 +82,7 @@ export async function saveSettings(settings: Partial<ExtensionSettings>): Promis
   const current = await getSettings();
   const updated = { ...current, ...settings };
 
-  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+  if (isExtension()) {
     await chrome.storage.local.set(updated);
   } else {
     try {
@@ -103,7 +104,7 @@ export async function saveSettings(settings: Partial<ExtensionSettings>): Promis
  * the user denies, or when the URL is not http(s) / is malformed. Safe to
  * call in a plain web page (no chrome.permissions -> no-op).
  */
-export async function ensureBackendHostAccess(backendUrl: string): Promise<boolean> {
+async function ensureBackendHostAccess(backendUrl: string): Promise<boolean> {
   if (typeof chrome === "undefined" || !chrome.permissions?.request) return true;
   let url: URL;
   try {
@@ -123,13 +124,7 @@ export async function ensureBackendHostAccess(backendUrl: string): Promise<boole
   }
 }
 
-export async function getBaseUrl(): Promise<string> {
-  const settings = await getSettings();
-  return (settings.backendUrl || "").replace(/\/+$/, "");
-}
-
-export async function getAuthHeaders(): Promise<Record<string, string>> {
-  const settings = await getSettings();
+function buildAuthHeaders(settings: ExtensionSettings): Record<string, string> {
   const headers: Record<string, string> = {};
 
   if (settings.appAuthUser && settings.appAuthPass) {
@@ -141,6 +136,24 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
     headers["X-Groq-Api-Key"] = settings.customGroqKey.trim();
   }
 
+  return headers;
+}
+
+async function getRequestConfig(): Promise<{ baseUrl: string; headers: Record<string, string> }> {
+  const settings = await getSettings();
+  return {
+    baseUrl: (settings.backendUrl || "").replace(/\/+$/, ""),
+    headers: buildAuthHeaders(settings),
+  };
+}
+
+export async function getBaseUrl(): Promise<string> {
+  const { baseUrl } = await getRequestConfig();
+  return baseUrl;
+}
+
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const { headers } = await getRequestConfig();
   return headers;
 }
 
@@ -170,8 +183,7 @@ export async function resolveRunArtifactUrl(
 // BB1: application history (persistent profile store).
 
 export async function fetchApplications(limit = 50): Promise<ApplicationSummary[]> {
-  const baseUrl = await getBaseUrl();
-  const headers = await getAuthHeaders();
+  const { baseUrl, headers } = await getRequestConfig();
   const res = await fetch(`${baseUrl}/api/v1/applications?limit=${limit}`, { headers });
   if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
   const data = await res.json();
@@ -179,21 +191,32 @@ export async function fetchApplications(limit = 50): Promise<ApplicationSummary[
 }
 
 export async function fetchApplication(id: number): Promise<ApplicationDetail> {
-  const baseUrl = await getBaseUrl();
-  const headers = await getAuthHeaders();
+  const { baseUrl, headers } = await getRequestConfig();
   const res = await fetch(`${baseUrl}/api/v1/applications/${id}`, { headers });
   if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
   return (await res.json()) as ApplicationDetail;
 }
 
 export async function deleteApplication(id: number): Promise<void> {
-  const baseUrl = await getBaseUrl();
-  const headers = await getAuthHeaders();
+  const { baseUrl, headers } = await getRequestConfig();
   const res = await fetch(`${baseUrl}/api/v1/applications/${id}`, {
     method: "DELETE",
     headers,
   });
   if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+}
+
+export async function deleteAllServerData(): Promise<{ ok: true } | { ok: false; detail: string }> {
+  const { baseUrl, headers } = await getRequestConfig();
+  const res = await fetch(`${baseUrl}/api/v1/data`, {
+    method: "DELETE",
+    headers,
+  });
+  if (!res.ok) {
+    const detail = ((await res.json().catch(() => ({}))) as { detail?: string }).detail;
+    return { ok: false, detail: detail ?? `Delete failed (HTTP ${res.status}).` };
+  }
+  return { ok: true };
 }
 
 async function consumeSSE<T>(
@@ -282,12 +305,11 @@ export async function runStep1(
   callbacks: StreamCallbacks<{ session: string; missing_skills: string }>
 ) {
   try {
-    const baseUrl = await getBaseUrl();
-    const authHeaders = await getAuthHeaders();
+    const { baseUrl, headers } = await getRequestConfig();
 
     const response = await fetch(`${baseUrl}/api/v1/step1`, {
       method: "POST",
-      headers: authHeaders,
+      headers,
       body: formData,
     });
     await consumeSSE(response, callbacks, "done");
@@ -302,12 +324,11 @@ export async function runStep2(
   callbacks: StreamCallbacks<OptimizationResult>
 ) {
   try {
-    const baseUrl = await getBaseUrl();
-    const authHeaders = await getAuthHeaders();
+    const { baseUrl, headers } = await getRequestConfig();
 
     const response = await fetch(`${baseUrl}/api/v1/step2`, {
       method: "POST",
-      headers: authHeaders,
+      headers,
       body: formData,
     });
     await consumeSSE(response, callbacks, "result");
@@ -319,11 +340,10 @@ export async function runStep2(
 
 export async function checkProviderHealth(): Promise<ProviderHealth> {
   try {
-    const baseUrl = await getBaseUrl();
-    const authHeaders = await getAuthHeaders();
+    const { baseUrl, headers } = await getRequestConfig();
 
     const res = await fetch(`${baseUrl}/api/v1/health`, {
-      headers: authHeaders,
+      headers,
     });
     if (!res.ok) return { ok: false, message: `HTTP ${res.status}` };
     return await res.json();

@@ -52,4 +52,4 @@ jobs:
 
     - name: Run test suite with coverage gate
       run: |
-        pytest tests/ -v --cov=agent --cov=app --cov=server --cov-report=term --cov-fail-under=84 -rs
+        pytest tests/ -v --cov=agent --cov=server --cov-report=term --cov-fail-under=84 -rs

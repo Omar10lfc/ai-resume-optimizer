@@ -4,7 +4,6 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from .config import SCORE_THRESHOLD, MAX_ITERATIONS, CHECKPOINTER_DB_PATH
 from .state import AgentState
-from .tracing import TRACE_CALLBACKS
 from .nodes import (
     loader_node, scanner_node, improver_node, polisher_node, reviewer_node,
     ats_check_node, cover_letter_node, interview_prep_node,
@@ -76,19 +75,10 @@ def _add_optimization_core(g: StateGraph):
     g.add_edge("pdf_exporter", END)
 
 
-# --- GRAPH A: FULL (no interrupt; used by CLI and tests) ---
-workflow = StateGraph(AgentState)
-workflow.add_node("loader", loader_node)
-_add_optimization_core(workflow)
-workflow.set_entry_point("loader")
-workflow.add_edge("loader", "improver")
-full_app = workflow.compile()
-
-
-# --- GRAPH B: INTERACTIVE (checkpointer + human-review interrupt) ---
-# One graph for the Gradio UI. Step 1 runs loader -> scanner and INTERRUPTS
-# before the Improver (first-class human-in-the-loop). Step 2 injects the
-# user's edited notes via update_state and resumes from the checkpoint.
+# --- INTERACTIVE GRAPH (checkpointer + human-review interrupt) ---
+# Step 1 runs loader -> scanner and INTERRUPTS before the Improver
+# (first-class human-in-the-loop). Step 2 injects the user's edited notes via
+# update_state and resumes from the checkpoint.
 # The loader therefore runs exactly once per session (no double PDF parsing),
 # and the whole session survives the DURABLE checkpointer (SQLite by default
 # under data/checkpoints/; MemorySaver with CHECKPOINTER_DB_PATH=off, which
@@ -111,7 +101,8 @@ def _create_checkpointer():
             conn = sqlite3.connect(CHECKPOINTER_DB_PATH, check_same_thread=False)
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("PRAGMA journal_mode = WAL")
-            ensure_db_migrations(CHECKPOINTER_DB_PATH, 1)  # Item 11
+            ensure_db_migrations(conn, 1)  # Item 11
+            conn.commit()
             _safe_print(f"[Checkpointer] Using persistent SQLite storage at: {CHECKPOINTER_DB_PATH}")
             return SqliteSaver(conn)
         except Exception as e:

@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 
 from agent import config as agent_config
-from agent.helpers import ensure_db_migrations
+from server.db import connect_sqlite
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS applications (
@@ -91,19 +91,13 @@ def _migrate_applications(conn: sqlite3.Connection) -> None:
 
 
 def _connect() -> sqlite3.Connection:
-    path = agent_config.PROFILE_DB_PATH
-    Path(path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=5)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    for statement in _SCHEMA.split(";"):
-        if statement.strip():
-            conn.execute(statement)
-    _migrate_applications(conn)
-    ensure_db_migrations(path, 1)  # Item 11: versioned migration table
-    return conn
+    return connect_sqlite(
+        agent_config.PROFILE_DB_PATH,
+        _SCHEMA.split(";"),
+        schema_version=1,
+        migrate_fn=_migrate_applications,
+        foreign_keys=True,
+    )
 
 
 def _hash(text: str) -> str:
@@ -273,6 +267,36 @@ def get_application(app_id: int) -> dict | None:
     except Exception as exc:
         print(f"[Profile] read failed (non-fatal): {exc}")
         return None
+
+
+def get_run_for_app(app_id: int, run_id: int) -> tuple[str, dict | None]:
+    """Fetch one run row (and parsed ``result``) for ``app_id`` without loading sibling runs."""
+    if not agent_config.PROFILE_DB_ENABLED:
+        return "missing_app", None
+    try:
+        conn = _connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM applications WHERE id = ?", (app_id,)).fetchone()
+            if exists is None:
+                return "missing_app", None
+            r = conn.execute(
+                "SELECT id, result_json FROM runs WHERE id = ? AND application_id = ?",
+                (run_id, app_id)).fetchone()
+        finally:
+            conn.close()
+        if r is None:
+            return "missing_run", None
+        data = dict(r)
+        try:
+            data["result"] = (json.loads(data.pop("result_json"))
+                              if data.get("result_json") else None)
+        except (TypeError, ValueError):
+            data["result"] = None
+        return "ok", data
+    except Exception as exc:
+        print(f"[Profile] run read failed (non-fatal): {exc}")
+        return "missing_app", None
 
 
 def delete_application(app_id: int) -> bool:

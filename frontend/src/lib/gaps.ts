@@ -65,7 +65,7 @@ function normalize(label: string): string {
   return label.toLowerCase().trim();
 }
 
-export function classifyGap(label: string): GapGroup {
+function classifyGap(label: string): GapGroup {
   const l = normalize(label);
   if (TOOL_KEYWORDS.some((k) => l.includes(k))) return "tool";
   if (CONCEPT_KEYWORDS.some((k) => l.includes(k))) return "concept";

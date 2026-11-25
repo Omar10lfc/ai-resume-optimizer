@@ -22,12 +22,12 @@ anthropic==2.8.0
 groq==0.37.1
 pydantic==2.14.3
 python-docx==1.2.0
-gradio>=6.32.0           # legacy UI (Nov 15 2026: 6.1.0 -> 6.32.0, also un-breaks the old >=6.16.0 floor)
-fastapi>=0.163           # backend API (Next.js BFF peer); standalone once gradio is retired
+fastapi>=0.163           # backend API (Next.js BFF peer)
 uvicorn[standard]>=0.54  # ASGI server (backend API)
 python-multipart>=0.0.33 # multipart form/file upload parsing (FastAPI)
-httpx>=0.27              # required by Starlette TestClient (test-server suite)
+httpx>=0.27              # OpenAI-compatible probes (agent/llms.py) & Starlette TestClient
 pypdf==7.1.0
+pdfplumber==0.11.10      # PDF link-box extraction (url_fetch) & baseline measurement (latex_render)
 beautifulsoup4==4.15.0
 python-dotenv==1.2.4
 markdown==3.11.3

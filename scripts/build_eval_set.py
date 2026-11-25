@@ -24,8 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent.evals import (EVAL_DATASET_NAME, build_eval_set,  # noqa: E402
-                         replay_evals)
+from agent.evals import EVAL_DATASET_NAME, build_eval_set  # noqa: E402
 
 
 def _load_dotenv() -> None:

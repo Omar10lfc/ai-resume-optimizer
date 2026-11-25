@@ -2,7 +2,7 @@
 import re
 from collections import Counter
 
-from .helpers import _safe_print, _safe_truncate
+from .helpers import _safe_truncate
 
 # ==========================================
 # Stopwords & Low-Signal Terms

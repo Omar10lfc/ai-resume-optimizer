@@ -10,7 +10,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from . import robots_check
 from .config import (ALLOWED_JOB_URL_DOMAINS, MAX_FETCH_BYTES, MAX_PDF_BYTES,
                      MAX_PDF_PAGES, MAX_RESUME_CHARS, FETCH_TIMEOUT_SECONDS)
-from .helpers import _safe_print, _safe_truncate
+from .helpers import _safe_truncate
 
 from pypdf import PdfReader
 

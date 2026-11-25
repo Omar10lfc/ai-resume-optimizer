@@ -52,7 +52,6 @@ CLI: ``scripts/build_eval_set.py``. No LLM calls anywhere - the only API
 traffic is LangSmith reads/writes (dataset + examples), keyed by
 ``LANGCHAIN_API_KEY``.
 """
-import asyncio
 import hashlib
 import re
 from datetime import datetime, timedelta, timezone

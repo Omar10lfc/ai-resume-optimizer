@@ -1,4 +1,4 @@
-import { isExtension } from "./theme";
+import { isExtension } from "./storage";
 
 /**
  * First-run onboarding flag. Lives with the other local-only data
@@ -6,7 +6,7 @@ import { isExtension } from "./theme";
  * "forget my data" also resets the tour.
  */
 
-export const ONBOARD_KEY = "onboardedAt";
+const ONBOARD_KEY = "onboardedAt";
 
 export async function isOnboarded(): Promise<boolean> {
   try {

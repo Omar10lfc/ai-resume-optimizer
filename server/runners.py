@@ -794,61 +794,9 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
         if not final_state:
             final_state = snapshot.values or {}
 
-        # Score + failure feedback on the pinned trace root. Degraded runs become
-        # queryable on the LangSmith dashboard (composite_score low / review_failed
-        # = 1) even though no run inside the trace ever carried error status.
-        # (Only successful full runs reach this point - pipeline errors returned
-        # above, mirroring the original Gradio semantics.)
         log_pipeline_feedback(final_state, resume_run_id)
-
-        # Integrity tripwire: surface scrubbed + unevidenced content BEFORE
-        # the result lands. The client turns this into its warning banner, so
-        # the user sees what was deterministically removed and which numeric
-        # claims still need review (live-run evidence Nov 6 2026: "cut ... by
-        # 40%" with an empty user context; fabricated n8n/Claude Code/MCP
-        # bullets in runs a32f30fc / 868e406d).
-        integrity = final_state.get("guardrail_warnings") or []
-        if integrity:
-            yield {"type": "warning",
-                   "message": "Integrity check: " + "; ".join(integrity)
-                              + ". Verify the resume before applying."}
-
-        # Cover-letter integrity (live run 22e943c6, Nov 11 2026): the letter
-        # gets its own scan + warning - the resume path's tripwire never
-        # watched the letter, which fabricated "70%"/"45%" from nothing.
-        # Its own event (not folded into the resume integrity list) because
-        # the artifact to verify is different - and cover_letter writes the
-        # channel from the concurrent fan-out, so guardrail_warnings
-        # (last-writer-wins) would clobber the resume's warnings.
-        letter_metrics = final_state.get("cover_letter_metrics") or []
-        if letter_metrics:
-            yield {"type": "warning",
-                   "message": "Integrity check (cover letter): unevidenced "
-                              "number(s) " + ", ".join(letter_metrics)
-                              + ". Verify the cover letter before sending."}
-
-        # Same class of claim, tools instead of numbers (run 4afa44cb): the
-        # resume scrubber catches n8n/Claude Code/MCP echoes but the letter
-        # used to ship them. The node removes the sentences; this surfaces
-        # the consequence next to the metric warning.
-        letter_tools = final_state.get("cover_letter_unevidenced_tools") or []
-        if letter_tools:
-            yield {"type": "warning",
-                   "message": "Integrity check (cover letter): removed "
-                               "unevidenced tool name(s) "
-                               + ", ".join(letter_tools)
-                               + ". Verify the cover letter before sending."}
-
-        # PDF text-layer gate: a shipped file that extracts empty/CID text or
-        # prints dates with non-ASCII separators fails at ATS import time.
-        failed_pdf = [c for c in (final_state.get("pdf_checks") or [])
-                      if not c.get("ok")]
-        if failed_pdf:
-            yield {"type": "warning",
-                   "message": "PDF verification: " + "; ".join(
-                       f"{c.get('target', 'file')} {c.get('name', 'check')}"
-                       f" - {c.get('detail', '')}" for c in failed_pdf[:4])
-                              + ". Re-check the download before submitting."}
+        for warning_event in _collect_step2_warnings(final_state):
+            yield warning_event
 
         # Round 14: resume_theme is a run INPUT written via update_state
         # (never a node delta), so final_state does not accumulate it on the
@@ -856,37 +804,68 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
         # BEFORE the payload build.
         final_state["resume_theme"] = theme
         results_payload = _extract_results(final_state)
-        # PB3: opt-in echo of the PARSED original resume. It lives in the
-        # authoritative snapshot (loader output - final_state only carries
-        # this segment's deltas on the step1->step2 resume path). The
-        # profile store filters this key back out of result_json: the
-        # resume text is already stored at application level.
         if include_original:
             results_payload["original_resume"] = str(
                 (snapshot.values or {}).get("resume_text") or "")
         yield {"type": "result", "session": session,
-               # MR5: per-task token accounting rides the result payload (and
-               # lands in the runs ledger for free, since done-run payloads
-               # are persisted wholesale).
                "token_usage": usage.totals(),
                "task_usage": usage.task_totals(),
                **results_payload}
 
-        # BB1: record the completed run into the persistent profile store
-        # (auto-record, zero UI). The PARSED evidence texts live in the
-        # authoritative SNAPSHOT (loader outputs - `final_state` only
-        # accumulates this segment's deltas, so on the step1->step2 resume
-        # path it never held them); the wrapper only sees the input, which
-        # may be a file path. Non-fatal by contract; disabled by
-        # PROFILE_DB_PATH=off.
-        try:
-            snapshot_values = snapshot.values or {}
-            profile_store.record_run(
-                str(snapshot_values.get("job_text") or job_description or ""),
-                str(snapshot_values.get("resume_text") or ""),
-                session, results_payload)
-        except Exception as exc:  # belt & braces: record_run never raises
-            print(f"[Profile] recording skipped (non-fatal): {exc}")
+        _record_step2_profile(
+            snapshot.values or {}, job_description, session, results_payload)
+
+
+def _collect_step2_warnings(final_state: dict) -> list[dict]:
+    """Collect post-run integrity and PDF-verification warning events."""
+    warnings: list[dict] = []
+    integrity = final_state.get("guardrail_warnings") or []
+    if integrity:
+        warnings.append({
+            "type": "warning",
+            "message": "Integrity check: " + "; ".join(integrity)
+                       + ". Verify the resume before applying.",
+        })
+    letter_metrics = final_state.get("cover_letter_metrics") or []
+    if letter_metrics:
+        warnings.append({
+            "type": "warning",
+            "message": "Integrity check (cover letter): unevidenced "
+                       "number(s) " + ", ".join(letter_metrics)
+                       + ". Verify the cover letter before sending.",
+        })
+    letter_tools = final_state.get("cover_letter_unevidenced_tools") or []
+    if letter_tools:
+        warnings.append({
+            "type": "warning",
+            "message": "Integrity check (cover letter): removed "
+                       "unevidenced tool name(s) "
+                       + ", ".join(letter_tools)
+                       + ". Verify the cover letter before sending.",
+        })
+    failed_pdf = [c for c in (final_state.get("pdf_checks") or [])
+                  if not c.get("ok")]
+    if failed_pdf:
+        warnings.append({
+            "type": "warning",
+            "message": "PDF verification: " + "; ".join(
+                f"{c.get('target', 'file')} {c.get('name', 'check')}"
+                f" - {c.get('detail', '')}" for c in failed_pdf[:4])
+                + ". Re-check the download before submitting.",
+        })
+    return warnings
+
+
+def _record_step2_profile(snapshot_values: dict, job_description: str,
+                          session: str, results_payload: dict) -> None:
+    """Persist completed run metadata to the profile store (non-fatal)."""
+    try:
+        profile_store.record_run(
+            str(snapshot_values.get("job_text") or job_description or ""),
+            str(snapshot_values.get("resume_text") or ""),
+            session, results_payload)
+    except Exception as exc:  # belt & braces: record_run never raises
+        print(f"[Profile] recording skipped (non-fatal): {exc}")
 
 
 # MR3 + URL preflight: the module-level public names are the RECORDING

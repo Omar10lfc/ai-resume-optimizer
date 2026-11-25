@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { isExtension } from "./storage";
 
 /**
  * Theme controller.
@@ -16,12 +17,8 @@ import { useCallback, useEffect, useState } from "react";
 
 export type ThemePref = "system" | "light" | "dark";
 
-export const THEME_STORAGE_KEY = "uiTheme";
+const THEME_STORAGE_KEY = "uiTheme";
 const WEB_STORAGE_KEY = "ui_theme";
-
-export function isExtension(): boolean {
-  return typeof chrome !== "undefined" && !!chrome.storage?.local;
-}
 
 function readStoredPrefSync(): ThemePref | null {
   try {

@@ -61,6 +61,10 @@ from pathlib import Path
 from typing import Optional
 
 from .latex_render import (
+    pdf_last_baseline,
+    pdf_page_count,
+)
+from .resume_parser import (
     Entry,
     ResumeData,
     _BOLD_LABEL_RE,
@@ -68,8 +72,7 @@ from .latex_render import (
     _display_url_text,
     _extract_project_links_and_title,
     _strip_inline,
-    pdf_last_baseline,
-    pdf_page_count,
+    mkstemp_pdf_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -454,9 +457,6 @@ _THEME_VARS: dict[str, dict[str, str]] = {
 THEMES = frozenset(_THEME_VARS)
 DEFAULT_THEME = "classic"
 
-# Human labels for the UI picker (id -> label).
-THEME_LABELS = {"classic": "Classic", "serif": "Serif", "modern": "Modern"}
-
 
 def _theme_css(theme: str) -> str:
     v = _THEME_VARS.get(theme, _THEME_VARS[DEFAULT_THEME])
@@ -813,13 +813,6 @@ def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
 _HTML_BOTTOM_STOP = 743.2
 
 
-def _mkstemp_pdf_name(output_dir: Path, prefix: str) -> Path:
-    """Per-render unique probe name from ``mkstemp`` (request-dir scoped)."""
-    fd, name = tempfile.mkstemp(prefix=prefix, suffix=".pdf", dir=str(output_dir))
-    os.close(fd)
-    return Path(name)
-
-
 def render_density_tiers(data: ResumeData, output_dir,
                          filename: str = "Optimized_Resume.pdf",
                          theme: str = DEFAULT_THEME
@@ -844,7 +837,7 @@ def render_density_tiers(data: ResumeData, output_dir,
     for tier in (1, 2, 3):
         page = render_resume_html(data, density=tier, theme=theme)
         probe = html_to_pdf(page, output_dir,
-                            _mkstemp_pdf_name(output_dir, f"__density_tier{tier}_").name)
+                            mkstemp_pdf_name(output_dir, f"__density_tier{tier}_").name)
         probes[tier] = (page, probe)
         if not probe or (pdf_page_count(probe) or 99) != 1:
             continue

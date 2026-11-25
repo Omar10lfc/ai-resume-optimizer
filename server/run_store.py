@@ -30,10 +30,9 @@ and never breaks the pipeline.
 import json
 import sqlite3
 import time
-from pathlib import Path
 
 from agent import config as agent_config
-from agent.helpers import ensure_db_migrations
+from server.db import connect_sqlite
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -53,15 +52,7 @@ CREATE TABLE IF NOT EXISTS runs (
 
 
 def _connect() -> sqlite3.Connection:
-    path = agent_config.RUNS_DB_PATH
-    Path(path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=5)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute(_SCHEMA)
-    ensure_db_migrations(path, 1)  # Item 11: versioned migration table
-    return conn
+    return connect_sqlite(agent_config.RUNS_DB_PATH, (_SCHEMA,), schema_version=1)
 
 
 def _begin_immediate(conn) -> None:

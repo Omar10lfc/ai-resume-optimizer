@@ -519,10 +519,9 @@ def _theme_style(theme: str, density: int = 0) -> str:
 
 
 def test_theme_vocabulary_and_default():
-    from agent.html_render import DEFAULT_THEME, THEME_LABELS, THEMES
+    from agent.html_render import DEFAULT_THEME, THEMES
     assert THEMES == frozenset({"classic", "serif", "modern"})
     assert DEFAULT_THEME == "classic"
-    assert set(THEME_LABELS) == set(THEMES)
 
 
 @pytest.mark.parametrize("theme,needle", [

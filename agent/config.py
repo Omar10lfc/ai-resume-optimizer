@@ -79,10 +79,6 @@ _RESUME_RENDERER_RAW = os.environ.get("RESUME_RENDERER", "auto").strip().lower()
 RESUME_RENDERER = (_RESUME_RENDERER_RAW
                    if _RESUME_RENDERER_RAW in {"auto", "html", "latex"}
                    else "auto")
-# Explicit override for the print engine binary; empty = auto-discovery
-# (PATH, then the standard Chrome/Edge install locations, then a Playwright
-# browser cache).
-RENDER_BROWSER_PATH = os.environ.get("RENDER_BROWSER_PATH", "").strip()
 # Resume look knob (round 14): a pure CSS-variable set over fonts, colors,
 # and heading decoration - NEVER sizes (the density variables stay the only
 # size authority, so the measured tier ladder holds for every theme).

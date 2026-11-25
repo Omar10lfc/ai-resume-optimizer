@@ -168,9 +168,3 @@ export interface ApplicationDetail extends ApplicationSummary {
   resume_text: string;
   runs: ApplicationRun[];
 }
-
-export interface NodeStatus {
-  node: string;
-  label: string;
-  state: "pending" | "running" | "completed";
-}

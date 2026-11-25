@@ -1,4 +1,4 @@
-"""Agent package: public API exports for app.py and tests."""
+"""Agent package: public API exports for server/ and tests."""
 from .state import AgentState, ReviewOutput, SemanticVerdict, SemanticReview, SYSTEM_GUARDRAIL, _untrusted
 from .helpers import (_force_ascii, _strip_emoji_for_pdf, _strip_emoji_from_html, _strip_code_fences, _filter_hallucinated_sections, _sanitize_html_for_pdf, _html_to_pdf,
                       _tame_unicode_bullets, find_unevidenced_metric_claims,
@@ -14,9 +14,10 @@ from .bullet_impact import compute_bullet_impact, grade_bullet
 from .bullet_sources import compute_bullet_sources
 from .url_fetch import _validate_job_url, _is_public_host, _fetch_job_description, _load_resume_pdf, _load_resume_docx, MAX_RESUME_FILE_BYTES
 from .latex_render import (
-    parse_markdown_resume, render_resume_tex, latex_to_pdf, latex_to_docx,
+    render_resume_tex, latex_to_pdf, latex_to_docx,
     HAVE_PANDOC, HAVE_PDFLATEX,
 )
+from .resume_parser import parse_markdown_resume
 from .html_render import (
     render_resume_html, html_to_pdf, render_density_tiers,
     HTML_RENDERER_VERSION, HAVE_BROWSER, BROWSER_PATH,
@@ -43,7 +44,7 @@ from .provider import (TokenUsageTracker, extract_failed_generation,
 from .resume_units import (ImproverOutput, ImproverSection, ResumeUnits,
                            SourceUnit, assemble_resume_units,
                            improver_output_from_markdown, parse_resume_units)
-from .graphs import full_app, agent_app, should_continue
+from .graphs import agent_app, should_continue
 
 __all__ = [
     # State & models
@@ -91,5 +92,5 @@ __all__ = [
     "parse_markdown_resume", "render_resume_tex", "latex_to_pdf", "latex_to_docx",
     "HAVE_PANDOC", "HAVE_PDFLATEX",
     # Graphs
-    "full_app", "agent_app", "should_continue",
+    "agent_app", "should_continue",
 ]

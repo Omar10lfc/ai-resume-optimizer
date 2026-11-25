@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { X, Check, PlugsConnected, ArrowClockwise, Key, Globe, Shield, WarningCircle, Trash } from "@phosphor-icons/react";
-import { getSettings, saveSettings, checkProviderHealth, getBaseUrl, getAuthHeaders, type ExtensionSettings, type ProviderHealth } from "../api";
-import { isExtension } from "../lib/theme";
+import { getSettings, saveSettings, checkProviderHealth, deleteAllServerData, type ExtensionSettings, type ProviderHealth } from "../api";
+import { removeStorageValues } from "../lib/storage";
 
 /**
  * Connection settings. Same storage contract as before (api.ts getSettings /
@@ -96,15 +96,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
     setDeleteAllBusy(true);
     setDeleteAllError(null);
     try {
-      const baseUrl = await getBaseUrl();
-      const authHeaders = await getAuthHeaders();
-      const res = await fetch(`${baseUrl}/api/v1/data`, {
-        method: "DELETE",
-        headers: authHeaders,
-      });
-      if (!res.ok) {
-        const detail = ((await res.json().catch(() => ({}))) as { detail?: string }).detail;
-        setDeleteAllError(detail ?? `Delete failed (HTTP ${res.status}).`);
+      const outcome = await deleteAllServerData();
+      if (!outcome.ok) {
+        setDeleteAllError(outcome.detail);
         return;
       }
       setDeleteAllDone(true);
@@ -121,20 +115,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
       setEraseArmed(true);
       return;
     }
-    try {
-      if (isExtension()) {
-        await chrome.storage.local.remove(["savedResumeText", "pendingScrapedJob", "onboardedAt", "pendingUserNotes"]);
-      } else {
-        localStorage.removeItem("saved_resume_text");
-        localStorage.removeItem("pending_optimizer_notes");
-        localStorage.removeItem("onboardedAt");
-      }
-      setEraseDone(true);
-      setEraseArmed(false);
-      setTimeout(() => setEraseDone(false), 4000);
-    } catch {
-      // ignore
-    }
+    await removeStorageValues(
+      ["savedResumeText", "pendingScrapedJob", "onboardedAt", "pendingUserNotes"],
+      ["saved_resume_text", "pending_optimizer_notes", "onboardedAt"],
+    );
+    setEraseDone(true);
+    setEraseArmed(false);
+    setTimeout(() => setEraseDone(false), 4000);
   };
 
   return (

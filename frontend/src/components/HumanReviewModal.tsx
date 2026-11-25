@@ -8,7 +8,7 @@ import {
   Notepad,
   Trash,
 } from "@phosphor-icons/react";
-import { parseGapSkills, GROUP_ORDER, GROUP_LABELS, type GapGroup } from "../lib/gaps";
+import { parseGapSkills, composeStep2Notes, GROUP_ORDER, GROUP_LABELS, type GapGroup } from "../lib/gaps";
 
 /**
  * Step 1 → step 2 checkpoint UI.
@@ -143,18 +143,7 @@ export const HumanReviewModal: React.FC<HumanReviewModalProps> = ({
   const handleSubmit = () => {
     const kept = chips.filter((c) => !c.removed);
     const removedLabels = chips.filter((c) => c.removed).map((c) => c.label);
-    const parts: string[] = [];
-    if (freeNotes.trim()) parts.push(freeNotes.trim());
-    for (const chip of kept) {
-      const note = (chip.note || "").trim();
-      parts.push(note ? `- ${chip.label}: ${note}` : `- ${chip.label}`);
-    }
-    if (removedLabels.length > 0) {
-      parts.push(
-        `Do NOT feature the following: ${removedLabels.join(", ")}. Do not add them unless the resume already proves them.`
-      );
-    }
-    const composed = parts.join("\n");
+    const { notes: composed } = composeStep2Notes(freeNotes, kept, removedLabels);
     // Sync state (for retries/reload persistence) AND pass the string through
     // directly — the submit must never depend on the not-yet-committed state.
     setUserNotes(composed);

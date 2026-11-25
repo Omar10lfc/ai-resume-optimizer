@@ -29,7 +29,7 @@ import re
 from .ats import _boundary_contains, _extract_keywords, _simple_stem
 from .bullet_impact import grade_bullet
 from .helpers import _safe_truncate
-from .latex_render import _is_link_item, _strip_inline, parse_markdown_resume
+from .resume_parser import _is_link_item, _strip_inline, parse_markdown_resume
 
 _MAX_SUGGESTIONS = 5
 _MAX_EXCERPT_CHARS = 160

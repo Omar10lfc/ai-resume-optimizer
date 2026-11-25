@@ -27,9 +27,9 @@ import difflib
 import re
 
 from .bullet_impact import _EDU_SECTION_RE, _quant_tokens
-from .helpers import (_claim_rounds_to, _evidence_metric_values,
-                      _safe_truncate)
-from .latex_render import _is_link_item, _strip_inline, parse_markdown_resume
+from .helpers import (_claim_rounds_to, _compact_all,
+                      _evidence_metric_values, _safe_truncate)
+from .resume_parser import iter_achievement_bullets
 
 # Payload/readability cap: matched/new rows (they describe the shipped
 # resume) fill first in optimized order, then dropped-source rows in
@@ -51,13 +51,6 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
 
 
-def _compact(text: str) -> str:
-    """Whitespace-stripped lowercase - the metric-token matching space
-    (the integrity scan's own idiom: spaced variants never read as
-    present/absent by accident)."""
-    return re.sub(r"\s+", "", (text or "").lower())
-
-
 def _metric_kept(source_token: str, optimized_text: str,
                  optimized_metrics: list[str]) -> bool:
     """True when a source bullet's metric survives in the optimized bullet:
@@ -65,33 +58,16 @@ def _metric_kept(source_token: str, optimized_text: str,
     token that is a legitimate rounding/truncation of it (the Nov 14
     tolerance: 96.2% -> "96%" and 2.6x -> "3x" are KEPT; 380 ms -> 400 ms
     is a drop)."""
-    if _compact(source_token) in _compact(optimized_text):
+    if _compact_all(source_token) in _compact_all(optimized_text):
         return True
     evidence = _evidence_metric_values(source_token)
     return any(_claim_rounds_to(token, evidence) for token in optimized_metrics)
 
 
 def _achievements(resume_text: str) -> list[tuple[str, str]]:
-    """(section title, bullet text) for every achievement bullet - the
-    exact extraction contract of the round-13 impact audit (the
-    battle-tested markdown parser separates link-only bullets from
-    achievement items; education sections are coursework, not claims)."""
-    try:
-        data = parse_markdown_resume(resume_text or "")
-    except Exception:
-        return []
-    out: list[tuple[str, str]] = []
-    for section in data.sections:
-        title = (section.title or "").strip()
-        if not title or _EDU_SECTION_RE.search(title):
-            continue
-        for entry in section.entries:
-            for item in entry.items:
-                text = _strip_inline(item or "")
-                if not text or _is_link_item(text):
-                    continue
-                out.append((title, text))
-    return out
+    """(section title, bullet text) for every achievement bullet."""
+    return iter_achievement_bullets(
+        resume_text, skip_section_re=_EDU_SECTION_RE)
 
 
 def compute_bullet_sources(original_resume: str, optimized_resume: str,

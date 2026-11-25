@@ -25,6 +25,16 @@ import agent.llms  # noqa: E402
 import agent.tracing  # noqa: E402
 import agent.url_fetch  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage  # noqa: E402
+from langgraph.graph import StateGraph  # noqa: E402
+from agent.graphs import _add_optimization_core  # noqa: E402
+from agent.nodes import loader_node  # noqa: E402
+
+_wf = StateGraph(agent.AgentState)
+_wf.add_node("loader", loader_node)
+_add_optimization_core(_wf)
+_wf.set_entry_point("loader")
+_wf.add_edge("loader", "improver")
+_TEST_FULL_APP = _wf.compile()
 
 
 # ==========================================
@@ -540,7 +550,7 @@ def test_agent_graph_interrupts_for_human_review(fake_llms):
 
 def test_full_graph_end_to_end(fake_llms):
     """The non-interactive graph runs straight through (CLI/test path)."""
-    result = agent.full_app.invoke(_base_inputs())
+    result = _TEST_FULL_APP.invoke(_base_inputs())
     assert result["optimized_resume"]
     assert result["cover_letter"].startswith("Dear")
     assert "Preparation Tips" in result["interview_questions"]
@@ -564,7 +574,7 @@ def test_optimizer_reviewer_failure_skips_retry(fake_llms, monkeypatch):
             return Structured()
 
     monkeypatch.setattr(agent.llms, "llm_strict", BrokenReviewer())
-    result = agent.full_app.invoke(_base_inputs())
+    result = _TEST_FULL_APP.invoke(_base_inputs())
     assert result["review_failed"] is True
     assert result["iteration"] == 1
 
@@ -615,7 +625,7 @@ def _run_with_drafts(drafts, monkeypatch, reviewer_score=60, feedback="Add metri
     monkeypatch.setattr(agent.llms, "llm_creative", seq)
     inputs = _base_inputs()
     inputs["original_resume"] = "Python developer experienced with Docker and Kubernetes."
-    return agent.full_app.invoke(inputs), seq
+    return _TEST_FULL_APP.invoke(inputs), seq
 
 
 def test_iteration_two_can_never_regress_below_draft_one(fake_llms, monkeypatch):
@@ -2649,12 +2659,12 @@ def test_html_to_pdf_headers_only(tmp_path):
     assert Path(result).exists()
 
 def test_html_to_pdf_pisa_failure(tmp_path, monkeypatch):
-    import agent.helpers as h
+    import agent.fallback_pdf as fp
     def fake_pisa_create(html, dest=None):
         class FakeResult:
             err = True
         return FakeResult()
-    monkeypatch.setattr(h.pisa, "CreatePDF", fake_pisa_create)
+    monkeypatch.setattr(fp.pisa, "CreatePDF", fake_pisa_create)
     with pytest.raises(RuntimeError, match="Could not create"):
         agent._html_to_pdf("content", "test.pdf", "Fail", tmp_path)
 
@@ -2868,7 +2878,7 @@ def test_reviewer_retry_recovers_from_transient_failure(fake_llms, monkeypatch):
             return Structured()
 
     monkeypatch.setattr(agent.llms, "llm_strict", FlakyReviewer())
-    result = agent.full_app.invoke(_base_inputs())
+    result = _TEST_FULL_APP.invoke(_base_inputs())
     assert result["review_failed"] is False
     assert result["llm_quality_score"] == 85
     expected = round(agent.ATS_SCORE_WEIGHT * result["ats_percentage"] + agent.LLM_SCORE_WEIGHT * 85)
@@ -2888,7 +2898,7 @@ def test_reviewer_retry_gives_up_after_two_attempts(fake_llms, monkeypatch):
             return Structured()
 
     monkeypatch.setattr(agent.llms, "llm_strict", AlwaysBroken())
-    result = agent.full_app.invoke(_base_inputs())
+    result = _TEST_FULL_APP.invoke(_base_inputs())
     assert result["review_failed"] is True
     assert probe["llm_calls"] == 2  # exactly one retry, never more
     assert result["iteration"] == 1
@@ -2970,7 +2980,7 @@ def test_salvage_parses_score_from_failed_generation(fake_llms, monkeypatch):
     # (the default MAX_ITERATIONS=2 runs the reviewer once per pass and the
     # intent of this test is the salvage shortcut, not the loop length).
     monkeypatch.setattr(agent.graphs, "MAX_ITERATIONS", 1)
-    result = agent.full_app.invoke(_base_inputs())
+    result = _TEST_FULL_APP.invoke(_base_inputs())
     assert result["review_failed"] is False
     assert result["llm_quality_score"] == 80
     # Nov 20 2026: this salvaged prose recommends AI coding assistants the
@@ -3005,7 +3015,7 @@ def test_salvage_skipped_when_generation_unparseable(fake_llms, monkeypatch):
             return Structured()
 
     monkeypatch.setattr(agent.llms, "llm_strict", FoldedReviewer())
-    result = agent.full_app.invoke(_base_inputs())
+    result = _TEST_FULL_APP.invoke(_base_inputs())
     assert result["review_failed"] is True
     assert probe["calls"] == 2
     assert result["llm_quality_score"] == 0
@@ -3402,7 +3412,7 @@ def test_repair_recovers_structured_review_with_sections(fake_llms, monkeypatch)
 
     monkeypatch.setattr(agent.llms, "llm_strict", FoldThenRepair())
     monkeypatch.setattr(agent.graphs, "MAX_ITERATIONS", 1)
-    result = agent.full_app.invoke(_base_inputs())
+    result = _TEST_FULL_APP.invoke(_base_inputs())
     assert result["review_failed"] is False
     assert result["llm_quality_score"] == 85
     assert result["feedback_sections"] == ["projects"]
@@ -3744,7 +3754,7 @@ def test_candidate_name_hint_accepts_and_rejects():
 
 
 def test_loader_registers_resume_name_for_masking(clean_name_register, fake_llms):
-    result = agent.full_app.invoke({**_base_inputs(),
+    result = _TEST_FULL_APP.invoke({**_base_inputs(),
                                     "original_resume": "John Doe\nPython developer."})
     assert result["resume_text"].startswith("John Doe")
     assert "John Doe" in agent.tracing._KNOWN_NAMES
@@ -3753,7 +3763,7 @@ def test_loader_registers_resume_name_for_masking(clean_name_register, fake_llms
 
 
 def test_loader_without_name_registers_nothing(clean_name_register, fake_llms):
-    agent.full_app.invoke(_base_inputs())
+    _TEST_FULL_APP.invoke(_base_inputs())
     assert agent.tracing._KNOWN_NAMES == []
 
 
@@ -3893,7 +3903,7 @@ def test_full_graph_accepts_docx_resume(fake_llms, tmp_path):
     _make_docx(doc, ["Python developer.", "## Skills", "Docker and Kubernetes"])
     inputs = _base_inputs()
     inputs["original_resume"] = str(doc)
-    result = agent.full_app.invoke(inputs)
+    result = _TEST_FULL_APP.invoke(inputs)
     assert "Kubernetes" in result["resume_text"]
     assert result["optimized_resume"]
     assert Path(result["resume_pdf_path"]).exists()
@@ -4542,7 +4552,7 @@ def test_graph_writes_bullet_source_rows(fake_llms, monkeypatch):
     monkeypatch.setattr(agent.llms, "llm_creative", seq)
     inputs = _base_inputs()
     inputs["original_resume"] = original
-    result = agent.full_app.invoke(inputs)
+    result = _TEST_FULL_APP.invoke(inputs)
 
     rows = result.get("bullet_sources")
     # the shipped provenance describes the SHIPPED resume, verbatim the scorer
@@ -4588,7 +4598,7 @@ def test_graph_binds_provenance_for_file_uploads(fake_llms, monkeypatch, tmp_pat
                         lambda path: loaded_original)
     inputs = _base_inputs()
     inputs["original_resume"] = str(upload)
-    result = agent.full_app.invoke(inputs)
+    result = _TEST_FULL_APP.invoke(inputs)
 
     rows = result.get("bullet_sources")
     # the shipped provenance describes the SHIPPED resume against the
@@ -4651,7 +4661,7 @@ def test_graph_binds_provenance_for_raw_caps_uploads(fake_llms, monkeypatch,
                         lambda path: loaded_original)
     inputs = _base_inputs()
     inputs["original_resume"] = str(upload)
-    result = agent.full_app.invoke(inputs)
+    result = _TEST_FULL_APP.invoke(inputs)
 
     rows = result.get("bullet_sources")
     assert rows == agent.compute_bullet_sources(

@@ -1,16 +1,12 @@
-"""Shared utility functions: printing, truncation, text cleaning, PDF export."""
+"""Shared utility functions: logging, truncation, integrity checks, and markdown cleanup."""
 import logging
 import math
 import re
-import sqlite3
-import time
 import unicodedata
 from pathlib import Path
 from typing import Optional
 
-import markdown
-from bs4 import BeautifulSoup
-from xhtml2pdf import pisa
+from .db_utils import db_schema_version, ensure_db_migrations, remove_wal_residue
 
 logger = logging.getLogger(__name__)
 
@@ -18,57 +14,6 @@ logger = logging.getLogger(__name__)
 def _safe_print(msg: str):
     """Log via the standard logger (handles encoding, redirectable to files)."""
     logger.info(msg)
-
-
-def remove_wal_residue(db_path) -> list[Path]:
-    """Best-effort removal of -wal/-shm files of a closed SQLite store
-    (Item 7: complete delete - freed pages in the WAL must not linger).
-    Returns the paths that existed and were unlinked (errors suppressed)."""
-    removed = []
-    for suffix in ("-wal", "-shm"):
-        p = Path(str(db_path) + suffix)
-        if p.exists():
-            try:
-                p.unlink()
-                removed.append(p)
-            except OSError:
-                pass
-    return removed
-
-
-def ensure_db_migrations(db_path, version: int = 1) -> None:
-    """Creates the versioned ``_migrations`` table on a SQLite store if
-    missing and stamps the given schema version (Item 11). Idempotent -
-    concurrent calls are safe (``INSERT OR IGNORE`` on the version
-    primary key)."""
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("CREATE TABLE IF NOT EXISTS _migrations("
-                     " version INTEGER PRIMARY KEY,"
-                     " applied_at TEXT NOT NULL)")
-        conn.execute("INSERT OR IGNORE INTO _migrations(version, applied_at)"
-                     " VALUES (?, ?)",
-                     (version, time.strftime("%Y-%m-%dT%H:%M:%S%z")))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def db_schema_version(db_path) -> int:
-    """Current ``_migrations`` version of a SQLite store (0 when the file or
-    the table is absent)."""
-    if not Path(db_path).exists():
-        return 0
-    conn = sqlite3.connect(str(db_path))
-    try:
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
-        if "_migrations" not in tables:
-            return 0
-        row = conn.execute("SELECT MAX(version) FROM _migrations").fetchone()
-        return int(row[0] or 0)
-    finally:
-        conn.close()
 
 
 def _safe_truncate(text: str, max_chars: int, label: str = "text") -> str:
@@ -639,13 +584,6 @@ def _significant_terms(text: str) -> list[str]:
 def _compact_all(s: str) -> str:
     """Lowercase + strip EVERY whitespace class (incl. U+202F/NBSP)."""
     return re.sub(r"\s+", "", (s or "").lower())
-
-
-def _contains_term(term: str, haystack_compact: str) -> bool:
-    """Containment of `term` inside whitespace-stripped text."""
-    if not term or not haystack_compact:
-        return False
-    return _compact_all(term) in haystack_compact
 
 
 def _term_in_text(term: str, text: str) -> bool:
@@ -1272,15 +1210,10 @@ def preserve_contact_links(
     return "\n".join(lines), restored, removed, normalized
 
 
-# BB1 Phase B: the markdown-link counter shared by the polisher's targeted
+# BB1 Phase B: the markdown-link target counter shared by the polisher's targeted
 # merge gate and the improver's per-unit rewrite gate (a rewrite that drops
 # a project/demo/GitHub URL the source carried is refused deterministically).
 _MD_LINK_RE = re.compile(r"\]\([^)]+\)")
-
-
-def markdown_link_count(text: str) -> int:
-    """Number of markdown links ``[label](url)`` in ``text``."""
-    return len(_MD_LINK_RE.findall(text or ""))
 
 
 def markdown_link_targets(text: str) -> frozenset:
@@ -1862,67 +1795,5 @@ def accumulate_unique(existing: Optional[list], added: Optional[list]) -> list:
     return out
 
 
-def _sanitize_html_for_pdf(html: str) -> str:
-    """Strip dangerous tags and attributes from HTML before passing to xhtml2pdf.
-
-    Mitigates SSRF via file:// URLs and script injection in LLM-generated content.
-    xhtml2pdf follows arbitrary URLs in <img src>, <link href>, etc. — this
-    function neutralizes that by removing non-http(s) resource references.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-
-    # Remove tags that can execute code or load external resources
-    for tag_name in ("script", "style", "iframe", "object", "embed", "applet", "form"):
-        for tag in soup.find_all(tag_name):
-            tag.decompose()
-
-    # Remove event handler attributes and dangerous URL schemes
-    _URL_ATTRS = {"src", "href", "action", "poster", "data", "formaction"}
-    _SAFE_SCHEMES = re.compile(r'^https?://', re.IGNORECASE)
-
-    for tag in soup.find_all(True):
-        # Strip on* event handlers
-        for attr in list(tag.attrs.keys()):
-            if attr.lower().startswith("on"):
-                del tag[attr]
-        # Validate URL attributes — only allow http/https
-        for attr in _URL_ATTRS & set(tag.attrs.keys()):
-            val = tag[attr]
-            if isinstance(val, str) and not _SAFE_SCHEMES.match(val):
-                del tag[attr]
-
-    return str(soup)
-
-
-def _html_to_pdf(markdown_text: str, filename: str, title: str, output_dir: Path) -> str:
-    """Convert Markdown -> HTML -> PDF with CSS Styling."""
-    css_style = """
-    body { font-family: 'Helvetica', sans-serif; font-size: 12px; line-height: 1.4; color: #333; }
-    h1 { font-size: 24px; border-bottom: 2px solid #333; margin-bottom: 10px; text-transform: uppercase; }
-    h2 { font-size: 16px; border-bottom: 1px solid #ccc; margin-top: 20px; text-transform: uppercase; color: #555; }
-    ul { padding-left: 20px; }
-    li { margin-bottom: 5px; }
-    strong { color: #000; }
-    """
-    clean_text = _strip_emoji_for_pdf(markdown_text)
-    html_body = markdown.markdown(clean_text)
-    html_body = _strip_emoji_from_html(html_body)
-    full_html = f"""
-    <html>
-    <head>
-        <style>{css_style}</style>
-    </head>
-    <body>
-        <h1>{title}</h1>
-        {html_body}
-    </body>
-    </html>
-    """
-    full_html = _sanitize_html_for_pdf(full_html)
-    output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    filepath = output_dir / filename
-    with open(filepath, "wb") as pdf_file:
-        result = pisa.CreatePDF(full_html, dest=pdf_file)
-    if result.err:
-        raise RuntimeError(f"Could not create {title} PDF.")
-    return str(filepath)
+# Re-exported for backwards compatibility (implementation lives in agent/fallback_pdf.py).
+from .fallback_pdf import _html_to_pdf, _sanitize_html_for_pdf  # noqa: E402, F401

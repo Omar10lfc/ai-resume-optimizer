@@ -13,53 +13,14 @@ import { ToastStack } from "./components/ToastStack";
 import { useToasts } from "./lib/useToasts";
 import { isOnboarded } from "./lib/onboarding";
 import { parseGapSkills } from "./lib/gaps";
+import { isExtension, readWebValue, removeStorageValues, writeStorageValue } from "./lib/storage";
 import { ReviewSkeleton, ResultsSkeleton } from "./components/Skeleton";
 import { runStep1, runStep2, checkProviderHealth, type ProviderHealth } from "./api";
 import { classifyError, type ErrorInfo } from "./lib/errors";
 import type { PipelineStage, OptimizationResult } from "./types";
 import { FileText, X } from "@phosphor-icons/react";
 
-// Saved-resume restore for the WEB SPA (localStorage). The extension path
-// restores via chrome.storage in the mount effect; this helper no-ops there.
-function readSavedWebResume(): string {
-  try {
-    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-      return ""; // extension flow owns the restore
-    }
-    return localStorage.getItem("saved_resume_text") || "";
-  } catch {
-    return "";
-  }
-}
-
-// Optional optimizer context survives reloads the same way (web path).
-function readSavedWebNotes(): string {
-  try {
-    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-      return "";
-    }
-    return localStorage.getItem("pending_optimizer_notes") || "";
-  } catch {
-    return "";
-  }
-}
-
-// Round 14: the selected resume look persists across reloads the same way
-// (web path). Extension restores own their storage; unknown values fall
-// back server-side, so a stale id is harmless.
-function readSavedTheme(): string {
-  try {
-    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-      return "";
-    }
-    return localStorage.getItem("resume_theme") || "";
-  } catch {
-    return "";
-  }
-}
-
-// Mirrors agent/html_render.THEME_LABELS (the backend owns the truth and
-// re-validates; this only names the picker options).
+// Note: mirrors theme options validated by the backend (agent/html_render.py).
 const THEME_OPTIONS = [
   { id: "classic", label: "Classic" },
   { id: "serif", label: "Serif" },
@@ -98,16 +59,16 @@ export function App() {
 
   // Web SPA restore (localStorage): read once as initial state. The extension
   // equivalent restores via chrome.storage in the mount effect below.
-  const savedWebResume = readSavedWebResume();
+  const savedWebResume = readWebValue("saved_resume_text");
   const [resumeMode, setResumeMode] = useState<"upload" | "paste">(savedWebResume ? "paste" : "upload");
   const [resumeText, setResumeText] = useState<string>(savedWebResume);
   const [resumeFile, setResumeFile] = useState<File | null>(null);
 
   const [missingSkills, setMissingSkills] = useState<string>("");
-  const [userNotes, setUserNotes] = useState<string>(readSavedWebNotes());
+  const [userNotes, setUserNotes] = useState<string>(readWebValue("pending_optimizer_notes"));
   // Round 14: the resume look (classic | serif | modern) - a per-run input
   // to step 2, persisted as a preference.
-  const [resumeTheme, setResumeTheme] = useState<string>(readSavedTheme() || "classic");
+  const [resumeTheme, setResumeTheme] = useState<string>(readWebValue("resume_theme") || "classic");
   // True after the scan produced gap chips; false when the zero-gap
   // straight-through path skips the review dialog entirely.
   const [reviewOpen, setReviewOpen] = useState<boolean>(false);
@@ -142,40 +103,19 @@ export function App() {
   // and by actively clearing the text.
   const notesStoredOnceRef = useRef(false);
   useEffect(() => {
-    const isExtension = typeof chrome !== "undefined" && !!chrome.storage?.local;
-    const persist = () => {
-      try {
-        if (isExtension) {
-          chrome.storage.local.set({ pendingUserNotes: userNotes });
-        } else {
-          localStorage.setItem("pending_optimizer_notes", userNotes);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    const purge = () => {
-      try {
-        if (isExtension) {
-          chrome.storage.local.remove("pendingUserNotes");
-        } else {
-          localStorage.removeItem("pending_optimizer_notes");
-        }
-      } catch {
-        // ignore
-      }
-    };
-
     if (userNotes.trim() !== "") {
       notesStoredOnceRef.current = true;
     } else if (notesStoredOnceRef.current && userNotes === "") {
       notesStoredOnceRef.current = false;
-      purge();
+      void removeStorageValues(["pendingUserNotes"], ["pending_optimizer_notes"]);
       return;
     }
     if (userNotes.trim() === "") return;
 
-    const t = setTimeout(persist, RESUME_SAVE_DEBOUNCE_MS);
+    const t = setTimeout(
+      () => void writeStorageValue("pendingUserNotes", "pending_optimizer_notes", userNotes),
+      RESUME_SAVE_DEBOUNCE_MS,
+    );
     return () => clearTimeout(t);
   }, [userNotes]);
 
@@ -183,12 +123,7 @@ export function App() {
   // string, no debounce). Never purged by Settings · Reset: it is a look
   // preference, not per-application content.
   useEffect(() => {
-    try {
-      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) return;
-      localStorage.setItem("resume_theme", resumeTheme);
-    } catch {
-      // storage unavailable (embedded webview) - session-only default
-    }
+    void writeStorageValue("resumeTheme", "resume_theme", resumeTheme);
   }, [resumeTheme]);
 
   useEffect(() => {
@@ -215,29 +150,35 @@ export function App() {
   useEffect(() => {
     refreshHealth();
 
-    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.get(["savedResumeText", "pendingScrapedJob", "onboardedAt", "pendingUserNotes"], (data: Record<string, any>) => {
-        const current = latestResumeRef.current;
-        if (data.savedResumeText && !current.text && !current.file) {
-          setResumeText(data.savedResumeText);
-          setResumeMode("paste");
-          push("info", "Picked up your saved resume from this browser. Erase it any time in Settings.");
-        }
-        if (data.pendingUserNotes && !(userNotesRef.current || "").trim()) {
-          setUserNotes(data.pendingUserNotes);
-          push("info", "Restored your optimization notes from this browser. Erase them in Settings.");
-        }
-        if (data.pendingScrapedJob) {
-          const scraped = data.pendingScrapedJob;
-          setJobText(scraped.description || "");
-          setJobMode("text");
-          setJobMeta({ title: scraped.title || "", company: scraped.company || "" });
-          chrome.storage.local.remove(["pendingScrapedJob"]);
-        }
-        if (!data.onboardedAt) {
-          setOnboardingOpen(true);
-        }
-      });
+    if (isExtension()) {
+      chrome.storage.local.get(
+        ["savedResumeText", "pendingScrapedJob", "onboardedAt", "pendingUserNotes", "resumeTheme"],
+        (data: Record<string, any>) => {
+          const current = latestResumeRef.current;
+          if (data.savedResumeText && !current.text && !current.file) {
+            setResumeText(data.savedResumeText);
+            setResumeMode("paste");
+            push("info", "Picked up your saved resume from this browser. Erase it any time in Settings.");
+          }
+          if (data.pendingUserNotes && !(userNotesRef.current || "").trim()) {
+            setUserNotes(data.pendingUserNotes);
+            push("info", "Restored your optimization notes from this browser. Erase them in Settings.");
+          }
+          if (typeof data.resumeTheme === "string" && data.resumeTheme) {
+            setResumeTheme(data.resumeTheme);
+          }
+          if (data.pendingScrapedJob) {
+            const scraped = data.pendingScrapedJob;
+            setJobText(scraped.description || "");
+            setJobMode("text");
+            setJobMeta({ title: scraped.title || "", company: scraped.company || "" });
+            chrome.storage.local.remove(["pendingScrapedJob"]);
+          }
+          if (!data.onboardedAt) {
+            setOnboardingOpen(true);
+          }
+        },
+      );
 
       const messageListener = (msg: { type?: string; job?: { title: string; company: string; description: string } }) => {
         if (msg.type === "JOB_DETECTED" && msg.job) {
@@ -254,53 +195,30 @@ export function App() {
     }
 
     // Web SPA: same first-run gate via the flag (extension path handled above)
-    if (!(typeof chrome !== "undefined" && chrome.storage && chrome.storage.local)) {
-      isOnboarded().then((done) => {
-        if (!done) setOnboardingOpen(true);
-      });
-    }
+    isOnboarded().then((done) => {
+      if (!done) setOnboardingOpen(true);
+    });
   }, [push]);
 
   // Auto-save resume text, debounced: chrome.storage.set per keystroke needs
   // avoiding on long documents (each write re-serializes the whole key).
   useEffect(() => {
     const meaningful = resumeText.trim().length > 50;
-    const isExtension = typeof chrome !== "undefined" && !!chrome.storage?.local;
-
-    const persist = (value: string) => {
-      try {
-        if (isExtension) {
-          chrome.storage.local.set({ savedResumeText: value });
-        } else {
-          localStorage.setItem("saved_resume_text", value);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    const purge = () => {
-      try {
-        if (isExtension) {
-          chrome.storage.local.remove("savedResumeText");
-        } else {
-          localStorage.removeItem("saved_resume_text");
-        }
-      } catch {
-        // ignore
-      }
-    };
 
     if (meaningful) {
       savedResumeOnceRef.current = true;
     } else if (savedResumeOnceRef.current && resumeText.trim() === "") {
       savedResumeOnceRef.current = false;
-      purge();
+      void removeStorageValues(["savedResumeText"], ["saved_resume_text"]);
       return; // purged — nothing to save
     }
 
     if (!meaningful) return;
 
-    const t = setTimeout(() => persist(resumeText), RESUME_SAVE_DEBOUNCE_MS);
+    const t = setTimeout(
+      () => void writeStorageValue("savedResumeText", "saved_resume_text", resumeText),
+      RESUME_SAVE_DEBOUNCE_MS,
+    );
     return () => clearTimeout(t);
   }, [resumeText]);
 

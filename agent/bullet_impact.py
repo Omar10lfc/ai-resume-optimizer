@@ -30,7 +30,7 @@ ship an audit describing a resume that is not the one in the download.
 import re
 
 from .helpers import _METRIC_TOKEN_RE, _safe_truncate
-from .latex_render import _is_link_item, _strip_inline, parse_markdown_resume
+from .resume_parser import iter_achievement_bullets
 
 # Payload/readability cap: a 1-page resume carries ~12-20 bullets; 40 is a
 # generous ceiling (the same "first N in document order" contract as the
@@ -46,9 +46,6 @@ _MAX_BULLET_CHARS = 160
 # would be noise (live parser evidence).
 _EDU_SECTION_RE = re.compile(
     r"education|academic|university|college|school", re.IGNORECASE)
-
-# Minimum substance: fewer words than this cannot carry an XYZ statement.
-_MIN_WORDS = 4
 
 # --- Quantification signals -------------------------------------------------
 # 1. The integrity vocabulary (percentages, X-factors, ms/mm, pass-rates).
@@ -226,58 +223,18 @@ def compute_bullet_impact(resume_text: str, max_rows: int = _MAX_ROWS
 
     Returns ``{"bullet", "section", "grade", "verb", "metrics", "reason"}``
     rows in resume order (capped at ``max_rows``). Achievement bullets come
-    from the SAME battle-tested parser the renderers use
-    (:func:`agent.latex_render.parse_markdown_resume`), which already
-    separates link-only bullets (``entry.links``) from achievement bullets
-    (``entry.items``) - so a "- [Live Demo](url)" line never audits as a
-    content-free bullet. Education sections are skipped (coursework lists
-    are not impact statements).
+    from :func:`agent.resume_parser.iter_achievement_bullets`, which skips link-only
+    bullets and education coursework sections.
     """
-    try:
-        data = parse_markdown_resume(resume_text or "")
-    except Exception:
-        return []
     rows: list[dict] = []
-    for section in data.sections:
-        title = (section.title or "").strip()
-        if not title or _EDU_SECTION_RE.search(title):
-            continue
-        for entry in section.entries:
-            for item in entry.items:
-                text = _strip_inline(item or "")
-                if not text or _is_link_item(text):
-                    continue
-                if len(rows) >= max_rows:
-                    return rows
-                verdict = grade_bullet(text)
-                rows.append({
-                    "bullet": _safe_truncate(text, _MAX_BULLET_CHARS,
-                                             "bullet"),
-                    "section": title,
-                    **verdict,
-                })
+    for title, text in iter_achievement_bullets(
+            resume_text, skip_section_re=_EDU_SECTION_RE):
+        if len(rows) >= max_rows:
+            return rows
+        verdict = grade_bullet(text)
+        rows.append({
+            "bullet": _safe_truncate(text, _MAX_BULLET_CHARS, "bullet"),
+            "section": title,
+            **verdict,
+        })
     return rows
-
-
-# ---------------------------------------------------------------------------
-# The parked LLM pass (design seam - NOT wired; documented posture)
-# ---------------------------------------------------------------------------
-# When trace data shows the deterministic audit's blind spots matter, ONE
-# structured call per pass would ride the existing provider ladder exactly
-# like ats_check's semantic verifier:
-#   schema:   BulletReview(BaseModel): verdicts: list[BulletVerdict]
-#             BulletVerdict: index: int, impact: "high"|"medium"|"low",
-#                            reason: str
-#   prompt:   the truncated bullet list in untrusted delimiters + the XYZ
-#             formula; the model may only DOWNGRADE a deterministic "high"
-#             (a model cannot upgrade a duty statement - adoption direction
-#             stays conservative), reasons merge with the deterministic ones.
-#   failure:  the SAME soft direction as the semantic verifier - keep the
-#             deterministic verdicts verbatim, never block the run.
-#   guard:    it would follow the best-of guard like every other per-draft
-#             channel and add ONE ladder call per ATS pass (the 2-call cap
-#             is unaffected - the semantic verifier shares that pass).
-# It stays unwired today: the deterministic audit is free, instant, and its
-# precision on the real resume shapes (strong verb openers, metric vocabulary)
-# covers the audit's job. Zero-cost > slightly-softer reasons until traces
-# say otherwise.
