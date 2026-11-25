@@ -356,7 +356,10 @@ def _simple_rows(lines: list[str]) -> list[tuple[bool, str]]:
         m = _BOLD_LABEL_RE.match(ln)
         if not m:
             cm = re.match(r"^(.*?):\s*(.*)$", ln)
-            if cm and len(cm.group(1)) <= 35:
+            if (cm and len(cm.group(1)) <= 35
+                    and "[" not in cm.group(1)
+                    and not cm.group(2).startswith("//")
+                    and not cm.group(1).lower().endswith("mailto")):
                 m = cm
             else:
                 # A verbatim-shipped section can keep raw bullet lines

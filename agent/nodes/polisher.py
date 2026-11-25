@@ -73,13 +73,17 @@ def _build_section_prompt(state: AgentState, header_line: str, section_body: str
        project link, and metric the current section shows - including any
        claim the USER CONTEXT below supports. Rephrase,
        re-order, or sharpen only what the feedback asks about.
-    2. CONTEXT-AWARE BREVITY: the rest of the resume is below; do not
-       repeat what other sections already state.
-    3. TRUTHFULNESS GATE: the candidate's evidence is the ORIGINAL RESUME
-       plus the USER CONTEXT below only. Never add a tool, employer,
-       project, credential, or number that evidence does not show - if an
-       improvement would need invented content, skip it and keep the
-       original wording for that part.
+    2. CONTEXT-AWARE BREVITY & ONE-PAGE BUDGET: the rest of the resume is
+       below; do not repeat what other sections already state. If rewriting
+       Professional Summary, keep it strictly concise (2-3 sentences, max
+       ~55 words) - never expand it into a catalog of project bullets.
+    3. TRUTHFULNESS & ATTRIBUTION GATE: the candidate's evidence is the
+       ORIGINAL RESUME plus the USER CONTEXT below only. Never add a tool,
+       employer, project, credential, or number that evidence does not show,
+       and NEVER transfer or merge one project's metrics onto a different
+       project or role - keep every achievement paired strictly with the
+       specific project/role that produced it. If an improvement would need
+       invented or conflated content, skip it and keep the original wording.
     4. Keep the draft's markdown conventions (bullets start with "- ",
        links live inline in the text, no code fences, no new sections).
 

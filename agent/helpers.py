@@ -1571,6 +1571,33 @@ def _join_plus_fragments(lines: list) -> list:
     return out
 
 
+def _join_wrapped_skill_rows(lines: list) -> list:
+    """Merge PDF line-wrapped continuations inside Skills sections back onto
+    their preceding 'Label: item1, item2,' row so orphan items like
+    'Neural Networks' do not become standalone rows."""
+    out = []
+    section = None
+    for line in lines:
+        sec = _prepass_section_of(line)
+        if sec:
+            section = sec
+            out.append(line)
+            continue
+        s = line.strip()
+        if (out and section in {"skills", "competencies", "technologies"}
+                and s and len(s) <= 80
+                and not _PREPASS_BULLET_RE.match(s)
+                and not s.startswith(("*", "#", "["))
+                and ":" not in s and "|" not in s and "[" not in s):
+            prev = out[-1].rstrip()
+            if (prev and _prepass_section_of(prev) is None
+                    and ":" in prev and prev.endswith(",")):
+                out[-1] = f"{prev} {s}"
+                continue
+        out.append(line)
+    return out
+
+
 _MD_LINK_LEAD_RE = re.compile(r"^\s*\[([^\[\]]+)\]\(([^)]*)\)\s*(.*)$")
 # A line holding exactly ONE link construct and nothing else (the "GitHub"
 # row under a project title) - absorbed into the reshaped title above it.
@@ -1650,12 +1677,12 @@ def _reshape_entry_title(line: str) -> str:
                     f"{''.join(extra_links)}{tail}")
         return line
 
-    if "[" in s or "**" in s:
+    if s.startswith("[") or "**" in s:
         return line
 
     # C: comma org/date ('Title, ORG <date>')
     cm = _first_date_match(s)
-    if cm is not None:
+    if cm is not None and "[" not in s:
         before = s[:cm[0]].rstrip()
         if "," in before:
             title, org = before.rsplit(",", 1)
@@ -1665,14 +1692,18 @@ def _reshape_entry_title(line: str) -> str:
                     and title[-1] not in ".!?:":
                 return f"**{title}** | {org} | {date}"
 
-    # B: plain title + mid-line date + pipe fields after it
+    # B: plain title + mid-line date + pipe fields after it (including
+    # trailing [Live Demo](url) links preserved by PDF extraction)
     if "|" in s:
+        link_spans = [(m.start(), m.end()) for m in _MD_LINK_FULL_RE.finditer(s)]
         for cm in _PREPASS_DATE_ANY_RE.finditer(s):
+            if any(a <= cm.start() < b for a, b in link_spans):
+                continue
             if cm.start() and not s[cm.start() - 1].isspace():
                 continue
             title = s[:cm.start()].strip()
             fields_after = s[cm.start():].strip()
-            if not title or not fields_after:
+            if not title or not fields_after or "[" in title:
                 continue
             if title[-1] in ".!?:" or not 8 <= len(title) <= 90:
                 continue
@@ -1680,7 +1711,19 @@ def _reshape_entry_title(line: str) -> str:
             date = date_and_rest[0].strip()
             rest = [p.strip() for p in date_and_rest[1:] if p.strip()]
             if date and rest:
-                return f"**{title}** | {' | '.join(rest)} | {date}"
+                links = []
+                plain_fields = []
+                for field in rest:
+                    found_links = _MD_LINK_FULL_RE.findall(field)
+                    remainder = _MD_LINK_FULL_RE.sub("", field).strip(" |-–—")
+                    for lbl, tgt in found_links:
+                        if lbl.strip() and tgt.strip():
+                            links.append(f"[{lbl.strip()}]({tgt.strip()})")
+                    if remainder:
+                        plain_fields.append(remainder)
+                link_part = (" " + " ".join(links)) if links else ""
+                tail_part = (" | " + " | ".join(plain_fields)) if plain_fields else ""
+                return f"**{title}**{link_part}{tail_part} | {date}"
     return line
 
 
@@ -1729,6 +1772,7 @@ def normalize_markdown_links(text: str) -> str:
     lines = _merge_education_lines(lines)
     lines = _join_dehyphenated(lines)
     lines = _join_plus_fragments(lines)
+    lines = _join_wrapped_skill_rows(lines)
     out: list[str] = []
     seen: set = set()
     seen_labels: set = set()

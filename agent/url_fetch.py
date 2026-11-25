@@ -306,6 +306,109 @@ def _join_visitor_fragments(fragments: list[tuple[str, float, float, float]]) ->
     return "".join(out)
 
 
+def _extract_plumber_page_with_links(plumber_page) -> str:
+    """Extract page text using per-character geometry for exact hyperlink matching.
+
+    Unlike pypdf's visitor_text (whose tm[4] can stay anchored at the line
+    origin across multiple text runs on a line, causing right-aligned links
+    like 'Live Demo' to miss their annotation boxes and left-aligned links to
+    bleed across entire rows), pdfplumber exposes every glyph's bounding box.
+    """
+    chars = getattr(plumber_page, "chars", None) or []
+    if not chars:
+        return ""
+
+    links = getattr(plumber_page, "hyperlinks", None) or []
+    link_boxes: list[tuple[float, float, float, float, float, str]] = []
+    for h in links:
+        uri = (h.get("uri") or "").strip()
+        if not uri:
+            continue
+        x0, top = float(h["x0"]), float(h["top"])
+        x1, bot = float(h["x1"]), float(h["bottom"])
+        area = max(0.0, (x1 - x0) * (bot - top))
+        link_boxes.append((area, x0, top, x1, bot, uri))
+    # Tightest bounding box wins when two link annotations sit close together.
+    link_boxes.sort(key=lambda item: item[0])
+
+    tagged: list[tuple[dict, str | None]] = []
+    for c in chars:
+        ch = c.get("text", "")
+        if not ch:
+            continue
+        cx = (float(c["x0"]) + float(c["x1"])) / 2.0
+        cy = (float(c["top"]) + float(c["bottom"])) / 2.0
+        matched_uri = None
+        for _, x0, top, x1, bot, uri in link_boxes:
+            if (x0 - 0.5 <= cx <= x1 + 0.5) and (top - 1.5 <= cy <= bot + 1.5):
+                matched_uri = uri
+                break
+        tagged.append((c, matched_uri))
+
+    if not tagged:
+        return ""
+
+    tagged.sort(key=lambda item: (round(float(item[0]["top"]), 1), float(item[0]["x0"])))
+    lines: list[list[tuple[dict, str | None]]] = []
+    cur_line: list[tuple[dict, str | None]] = []
+    cur_top: float | None = None
+    cur_size = 10.0
+    for c, uri in tagged:
+        top = float(c["top"])
+        size = float(c.get("size") or 10.0)
+        if cur_line and cur_top is not None and abs(top - cur_top) > 0.5 * max(size, cur_size):
+            lines.append(cur_line)
+            cur_line = [(c, uri)]
+            cur_top = top
+            cur_size = size
+        else:
+            cur_line.append((c, uri))
+            if cur_top is None:
+                cur_top = top
+                cur_size = size
+    if cur_line:
+        lines.append(cur_line)
+
+    out_lines: list[str] = []
+    for line in lines:
+        line.sort(key=lambda item: float(item[0]["x0"]))
+        runs: list[list] = []
+        prev_x1: float | None = None
+        prev_size = 10.0
+        for c, uri in line:
+            ch = c["text"]
+            x0 = float(c["x0"])
+            x1 = float(c["x1"])
+            size = float(c.get("size") or 10.0)
+            need_space = (
+                prev_x1 is not None
+                and not ch.isspace()
+                and (x0 - prev_x1) > 0.16 * max(size, prev_size)
+            )
+            if runs and runs[-1][0] == uri:
+                if need_space and not runs[-1][1].endswith(" "):
+                    runs[-1][1] += " "
+                runs[-1][1] += ch
+            else:
+                if need_space and runs and not runs[-1][1].endswith(" "):
+                    runs[-1][1] += " "
+                runs.append([uri, ch])
+            prev_x1 = x1
+            prev_size = size
+
+        parts: list[str] = []
+        for uri, txt in runs:
+            clean = txt.strip()
+            if uri and clean and not clean.startswith(("http://", "https://", "mailto:")):
+                lead = txt[:len(txt) - len(txt.lstrip())]
+                trail = txt[len(txt.rstrip()):]
+                parts.append(f"{lead}[{clean}]({uri}){trail}")
+            else:
+                parts.append(txt)
+        out_lines.append("".join(parts).rstrip())
+    return "\n".join(out_lines)
+
+
 def _load_resume_pdf(file_path: str) -> str:
     path = Path(file_path)
     if path.stat().st_size > MAX_PDF_BYTES:
@@ -318,11 +421,36 @@ def _load_resume_pdf(file_path: str) -> str:
         raise ValueError("Encrypted PDFs are not supported.")
     if len(reader.pages) > MAX_PDF_PAGES:
         raise ValueError(f"Resume PDF must have {MAX_PDF_PAGES} pages or fewer.")
+
+    plumber_pages = None
+    plumber_ctx = None
+    try:
+        import pdfplumber
+        plumber_ctx = pdfplumber.open(str(path))
+        plumber_pages = plumber_ctx.pages
+    except Exception:
+        plumber_pages = None
+
     page_texts = []
-    for page in reader.pages:
-        txt = _extract_page_text_with_links(page)
-        if txt.strip():
-            page_texts.append(txt)
+    try:
+        for idx, page in enumerate(reader.pages):
+            txt = ""
+            if plumber_pages is not None and idx < len(plumber_pages):
+                try:
+                    txt = _extract_plumber_page_with_links(plumber_pages[idx])
+                except Exception:
+                    txt = ""
+            if not txt.strip():
+                txt = _extract_page_text_with_links(page)
+            if txt.strip():
+                page_texts.append(txt)
+    finally:
+        if plumber_ctx is not None:
+            try:
+                plumber_ctx.close()
+            except Exception:
+                pass
+
     text = "\n".join(page_texts)
     return _safe_truncate(text, MAX_RESUME_CHARS, "Resume")
 

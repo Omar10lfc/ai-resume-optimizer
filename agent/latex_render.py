@@ -211,12 +211,15 @@ def _is_plain_label_line(s: str) -> bool:
     """True for a non-bold 'label: value' leaf line (e.g. a skill row like
     'Machine Learning & Deep Learning: PyTorch, ...'). These read better as
     simple lines than being split into subheading columns by commas/colons."""
-    if not s or '|' in s or '**' in s:
+    if not s or '|' in s or '**' in s or s.lstrip().startswith('['):
         return False
     if _DATE_RANGE_RE.search(s):
         return False
     colon = s.find(':')
     if colon < 2 or colon > 50:
+        return False
+    # Never mistake a URL scheme ('https://...', 'mailto:...') for a skill label.
+    if s[colon:colon + 3] == '://' or s[:colon].lower().endswith('mailto'):
         return False
     label = s[:colon]
     value = s[colon + 1:].strip()
@@ -1462,9 +1465,13 @@ def _render_section(section: Section, compact: bool = False) -> str:
                              _render_text_with_links(value) + r"}")
                 is_label_row = True
             else:
-                # Generic label:value → bold label
+                # Generic label:value → bold label (never split inside a markdown
+                # link or URL scheme like 'https://...' / 'mailto:...')
                 cm = re.match(r'^(.*?):\s*(.*)$', ln)
-                if cm and len(cm.group(1)) <= 35:
+                if (cm and len(cm.group(1)) <= 35
+                        and '[' not in cm.group(1)
+                        and not cm.group(2).startswith('//')
+                        and not cm.group(1).lower().endswith('mailto')):
                     item_text = (r"\textbf{" + _latex_escape(cm.group(1)) + r"}{: " +
                                  _render_text_with_links(cm.group(2)) + r"}")
                     is_label_row = True

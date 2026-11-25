@@ -42,8 +42,11 @@ def cover_letter_node(state: AgentState):
        with "I".
     2. BODY - DIRECT MATCH: connect the candidate's strongest TRUE experience
        to the role's top requirement: [their need] + [candidate's specific
-       experience] + [quantified result]. Reference real projects, tools, and
-       metrics from the resume - every claim must exist in the resume.
+       experience] + [quantified result]. Reference real projects, tools,
+       employers, and metrics from the resume - every claim must exist in
+       the resume, and every role/metric must be attributed to the exact
+       employer or project shown (never turn a track/course label like
+       "(IBM Data Science Track)" at DEPI into employment at IBM).
     3. BODY - VALUE + GAPS: add one more relevant strength. If the resume has
        an obvious gap for this role, address it briefly and positively with a
        related strength or transferable skill - never apologize, never fabricate.
