@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GROQ_API_KEY: gsk_test_dummy_key_for_ci
+      RENDER_NO_SANDBOX: "1"
     strategy:
       matrix:
         python-version: [ "3.11", "3.12" ]

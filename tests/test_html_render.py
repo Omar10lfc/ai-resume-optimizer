@@ -866,6 +866,7 @@ def print_engine_fakes(monkeypatch):
         calls.append(list(args))
         return _FakeProc(returncode=0)
 
+    monkeypatch.delenv("RENDER_NO_SANDBOX", raising=False)
     monkeypatch.setattr(hr, "BROWSER_PATH", "fake-chrome")
     monkeypatch.setattr(hr, "HAVE_BROWSER", True)
     monkeypatch.setattr(hr.subprocess, "run", fake_run)
