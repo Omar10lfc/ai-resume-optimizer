@@ -1003,6 +1003,22 @@ def test_lock_down_print_source_inserts_into_head():
     assert locked.endswith("</head><body></body></html>")
 
 
+def test_lock_down_print_source_strips_meta_refresh():
+    import agent.html_render as hr
+
+    page = (
+        "<html><head></head><body>"
+        "<meta http-equiv='refresh' content='0;url=https://example.invalid/redirected'>"
+        "<meta content='0;url=https://evil.invalid' HTTP-EQUIV=\"REFRESH\">"
+        "<h1>Ok</h1></body></html>"
+    )
+    locked = hr._lock_down_print_source(page)
+    assert "refresh" not in locked.lower()
+    assert "example.invalid" not in locked
+    assert "evil.invalid" not in locked
+    assert "<h1>Ok</h1>" in locked
+
+
 def test_find_browser_warns_on_missing_override_and_falls_through(
         monkeypatch, tmp_path, caplog):
     import agent.html_render as hr

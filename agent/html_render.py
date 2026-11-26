@@ -685,19 +685,29 @@ def _run_print(args: list[str], output_dir: Path, timeout: int):
             pass
 
 
+# Chromium's CSP does not block <meta http-equiv="refresh">; an instant 0s
+# refresh navigates away from the file:// source (failing DNS resolution and
+# aborting --print-to-pdf with rc=0 on Linux Chrome). Strip meta-refresh tags
+# whenever locking down print HTML.
+_META_REFRESH_RE = re.compile(
+    r"<meta\b[^>]*\bhttp-equiv\s*=\s*(?:[\"']\s*refresh\s*[\"']|refresh\b)[^>]*>",
+    flags=re.IGNORECASE,
+)
+
+
 # Chromium has no portable CLI switch that disables JavaScript (Edge's Blink
 # preference exits 0 without printing), so the print source carries a strict
 # CSP instead. It is injected when the input page has none: inline styles are
 # needed, everything else (scripts, remote fetches, frames, plugins) is denied.
 def _lock_down_print_source(html_content: str) -> str:
-    """Injects the print CSP at the top of the document head when absent."""
-    if "content-security-policy" in html_content.lower():
-        return html_content
-    marker = re.search(r"<head(?:\s[^>]*)?>", html_content, flags=re.IGNORECASE)
+    """Strips meta-refresh redirects and injects the print CSP when absent."""
+    locked = _META_REFRESH_RE.sub("", html_content)
+    if "content-security-policy" in locked.lower():
+        return locked
+    marker = re.search(r"<head(?:\s[^>]*)?>", locked, flags=re.IGNORECASE)
     if marker is None:
-        return f"<head>{_CSP_META}</head>{html_content}"
-    return (html_content[:marker.end()] + _CSP_META
-            + html_content[marker.end():])
+        return f"<head>{_CSP_META}</head>{locked}"
+    return (locked[:marker.end()] + _CSP_META + locked[marker.end():])
 
 
 def html_to_pdf(html_content: str, output_dir, filename: str = "Resume.pdf",
