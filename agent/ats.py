@@ -276,7 +276,7 @@ _SHORT_TECH_TERMS = {
     "ai", "ml", "nlp", "cv", "dl", "aws", "gcp", "sql", "api",
     "r", "go", "c#", "c++", "js", "ts", "ui", "ux", "rag", "llm",
     "etl", "s3", "ec2", "rds", "sqs", "sns", "ecs", "eks",
-    "node", "node.js",
+    "node", "node.js", "jq", "yq", "tf",
 }
 
 # Version-qualified terms: "python3.11" -> "python", "node20" -> "node", "react18" -> "react"
@@ -398,8 +398,10 @@ _TIER2_CONCEPTS = {
 
 
 def _classify_keyword_tier(keyword: str) -> int:
+    from .tool_claims import matching_tools
+
     kw = keyword.lower()
-    if kw in _TIER1_TOOLS:
+    if kw in _TIER1_TOOLS or _is_alnum_tool_token(kw) or bool(matching_tools(kw)):
         return 3
     if kw in _TIER2_CONCEPTS:
         return 2
@@ -432,10 +434,11 @@ def _keyword_found_in_text(keyword: str, text_lower: str) -> tuple[bool, str]:
     for syn in synonyms:
         if _boundary_contains(syn, text_lower):
             return True, "synonym"
-    if ' ' not in keyword and '/' not in keyword and '-' not in keyword:
+    if (' ' not in keyword and '/' not in keyword and '-' not in keyword
+            and not any(c.isdigit() for c in keyword)):
         kw_stem = _simple_stem(keyword)
         if len(kw_stem) >= 3:
-            words_in_text = re.findall(r'[a-zA-Z#+/.:_-]{2,}', text_lower)
+            words_in_text = re.findall(r'[a-zA-Z0-9#+/.:_-]{2,}', text_lower)
             for word in words_in_text:
                 # Sentence punctuation rides along in the token class above
                 # ("workflows."), so normalize the same way _extract_keywords
@@ -566,8 +569,13 @@ def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
     for phrase in found_compounds:
         compound_words.update(re.findall(r'[a-z]+', phrase))
 
-    tokens = re.findall(r'[a-zA-Z#+/.:-]{2,}', text_lower)
-    tokens = [t.strip('.-/:') for t in tokens if t.strip('.-/:')]
+    tokens = re.findall(r'[a-zA-Z0-9#+/.:-]{2,}', text_lower)
+    tokens = [
+        t.strip('.-/:') for t in tokens
+        if t.strip('.-/:')
+        and any(c.isalpha() for c in t.strip('.-/:'))
+        and not _NON_TOOL_ALNUM_RE.match(t.strip('.-/:'))
+    ]
     tokens = [t for t in tokens if not t.startswith("http") and "://" not in t and not t.startswith("www.")]
 
     # Detect version-qualified terms (python3.11, node20, react18) and map to base form
@@ -594,15 +602,20 @@ def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
         and _normalize_phrase_key(t) not in seen_phrases
         and ("-" not in t or t in _SHORT_TECH_TERMS
              or _normalize_phrase_key(t) in _compound_keys)
-        and (len(t) >= 3 or t in _SHORT_TECH_TERMS)
+        and (len(t) >= 3 or t in _SHORT_TECH_TERMS or _is_alnum_tool_token(t))
         and (t not in _LOW_SIGNAL_TERMS or freq_ok(tokens, t))
     ]
 
     freq = Counter(meaningful)
 
-    tier1_singles = [kw for kw, _ in freq.most_common() if kw in _TIER1_TOOLS]
-    tier2_singles = [kw for kw, _ in freq.most_common() if kw in _TIER2_CONCEPTS and kw not in _TIER1_TOOLS]
-    other_singles = [kw for kw, _ in freq.most_common() if kw not in _TIER1_TOOLS and kw not in _TIER2_CONCEPTS]
+    from .tool_claims import matching_tools
+
+    def _is_tool_token(kw: str) -> bool:
+        return kw in _TIER1_TOOLS or _is_alnum_tool_token(kw) or bool(matching_tools(kw))
+
+    tier1_singles = [kw for kw, _ in freq.most_common() if _is_tool_token(kw)]
+    tier2_singles = [kw for kw, _ in freq.most_common() if kw in _TIER2_CONCEPTS and not _is_tool_token(kw)]
+    other_singles = [kw for kw, _ in freq.most_common() if not _is_tool_token(kw) and kw not in _TIER2_CONCEPTS]
 
     raw_candidates = found_compounds + found_special + versioned_keywords + tier1_singles + tier2_singles + other_singles
 
@@ -648,6 +661,21 @@ def _flatten_link_targets(text: str) -> str:
     return _MD_LINK_TARGET_RE.sub(r'\1', text)
 
 
+_NON_TOOL_ALNUM_RE = re.compile(
+    r'^(?:\d+(?:st|nd|rd|th|x|h|hr|hrs|k|m|b|yr|yrs|wk|wks|mo|mos|am|pm)|q[1-4]|h[12])$'
+)
+
+
+def _is_alnum_tool_token(token: str) -> bool:
+    """True for specific alphanumeric tool/tech tokens (e.g. n8n, s3, k3s, v8, oauth2)."""
+    return (
+        len(token) >= 2
+        and any(c.isalpha() for c in token)
+        and any(c.isdigit() for c in token)
+        and not _NON_TOOL_ALNUM_RE.match(token)
+    )
+
+
 def compute_ats_match(job_text: str, resume_text: str,
                       semantic_matches: set[str] | None = None) -> dict:
     semantic_matches = semantic_matches or set()
@@ -666,8 +694,8 @@ def compute_ats_match(job_text: str, resume_text: str,
 
     matched_stems = set()
     for kw in job_keywords:
-        if len(re.findall(r'[a-z]+', kw)) > 1:
-            for word in re.findall(r'[a-z]+', kw):
+        if len(re.findall(r'[a-z0-9]+', kw)) > 1:
+            for word in re.findall(r'[a-z0-9]+', kw):
                 matched_stems.add(_simple_stem(word))
 
     # Deal-breakers (see _DEAL_BREAKER_PATTERNS): terms the posting names and
@@ -678,7 +706,7 @@ def compute_ats_match(job_text: str, resume_text: str,
     seen_stems = set()
 
     for kw in job_keywords:
-        if len(re.findall(r'[a-z]+', kw)) == 1:
+        if len(re.findall(r'[a-z0-9]+', kw)) == 1:
             stem = _simple_stem(kw)
             if stem in seen_stems:
                 continue

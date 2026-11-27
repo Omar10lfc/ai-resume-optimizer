@@ -69,7 +69,12 @@ def ats_check_node(state: AgentState):
     # snapshots the winner's table, so a regresssed polish pass keeps the
     # table that describes the resume that actually ships.
     requirement_table = compute_requirement_match_table(
-        state['job_text'], state['optimized_resume'], semantic)
+        state['job_text'],
+        state['optimized_resume'],
+        semantic,
+        human_notes=state.get('human_notes', ''),
+        declined_requests=state.get('declined_requests') or (),
+    )
 
     # Round 13 (roadmap 12): the Google XYZ bullet-impact audit for THIS
     # draft - deterministic, zero LLM calls (the Fit-table precedent).

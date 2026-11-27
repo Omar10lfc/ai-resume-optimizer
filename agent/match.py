@@ -106,20 +106,116 @@ def _split_requirement_candidates(job_text: str) -> list[tuple[str, bool]]:
     return candidates
 
 
+_DECLINED_FRAMING_WORDS = frozenset({
+    "do", "not", "feature", "never", "use", "using", "mention", "include",
+    "avoid", "exclude", "declined", "decline", "add", "or", "and", "the",
+    "with", "for", "from", "to", "in", "on", "of", "no", "tool", "tools",
+    "skill", "skills", "experience", "request", "requested",
+})
+
+
+def _extract_declined_tools(declined_requests) -> set[str]:
+    """Normalize declined tool/skill names from declined_requests entries."""
+    from .ats import _STOPWORDS
+    from .tool_claims import matching_tools
+
+    declined: set[str] = set()
+    for item in (declined_requests or ()):
+        text = str(item or "").strip()
+        if not text:
+            continue
+        declined |= {t.lower() for t in matching_tools(text)}
+        for tok in re.findall(r"[a-zA-Z0-9#+/.:-]{2,}", text.lower()):
+            cleaned = tok.strip(".-/:")
+            if (
+                cleaned
+                and cleaned not in _DECLINED_FRAMING_WORDS
+                and cleaned not in _STOPWORDS
+                and any(c.isalpha() for c in cleaned)
+            ):
+                declined.add(cleaned)
+    return declined
+
+
+def _extract_req_named_tools(requirement: str) -> list[str]:
+    """Extract specific named tools (canonical, alphanumeric, Tier-1, short-tech)
+    mentioned directly inside a single requirement line.
+    """
+    from .ats import _SHORT_TECH_TERMS, _is_alnum_tool_token
+    from .tool_claims import matching_tools
+
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(term: str) -> None:
+        t = (term or "").strip(".-/:").lower()
+        if t and t not in seen:
+            seen.add(t)
+            found.append(t)
+
+    # Maintain stable appearance order from requirement tokens first, then canonical.
+    for raw in re.findall(r"[a-zA-Z0-9#+/.:-]{2,}", requirement.lower()):
+        tok = raw.strip(".-/:")
+        if not tok or not any(c.isalpha() for c in tok):
+            continue
+        if (
+            _is_alnum_tool_token(tok)
+            or tok in _SHORT_TECH_TERMS
+            or _classify_keyword_tier(tok) == 3
+            or "#" in tok
+            or "+" in tok
+        ):
+            _add(tok)
+
+    for canon in sorted(matching_tools(requirement)):
+        _add(canon)
+
+    return found
+
+
 def _classify_row(requirement: str, evidence: list[str], resume_lower: str,
-                  semantic_keys: set[str]) -> dict:
+                  semantic_keys: set[str], *,
+                  declined_tools: set[str] = frozenset(),
+                  named_tools: set[str] = frozenset(),
+                  canonical_evidence: set[str] = frozenset()) -> dict:
     """Classifies one requirement against the resume with human reasons.
 
     found/missing are the requirement's OWN key terms (the JD-vocabulary
-    members the line names), not a model's opinion: each is checked against
-    the resume with the exact/synonym/stem machinery of the ATS engine, plus
-    the semantic verifier's keyword reclassification set.
+    members the line names plus any specific named tools in the line), not a
+    model's opinion: named tools require exact or alias presence in the
+    resume/notes (never generic neighbor words or stem guessing) and declined
+    tools can never be marked covered.
     """
+    from .ats import _SYNONYMS, _boundary_contains, _is_alnum_tool_token
+    from .tool_claims import matching_tools
+
     found: list[str] = []
     missing: list[str] = []
     for keyword in evidence:
-        hit, _method = _keyword_found_in_text(keyword, resume_lower)
-        if hit or keyword.lower() in semantic_keys:
+        kw_l = keyword.lower()
+        kw_canon = {t.lower() for t in matching_tools(keyword)}
+        if kw_l in declined_tools or (kw_canon & declined_tools):
+            missing.append(keyword)
+            continue
+
+        is_tool = (
+            kw_l in named_tools
+            or bool(kw_canon)
+            or _classify_keyword_tier(keyword) == 3
+            or _is_alnum_tool_token(kw_l)
+        )
+        if is_tool:
+            exact_hit = _boundary_contains(kw_l, resume_lower)
+            alias_hit = any(
+                _boundary_contains(alias.lower(), resume_lower)
+                for alias in _SYNONYMS.get(kw_l, [])
+            )
+            canon_hit = bool(kw_canon & canonical_evidence)
+            hit = exact_hit or alias_hit or canon_hit
+        else:
+            hit, _method = _keyword_found_in_text(keyword, resume_lower)
+
+        if hit or kw_l in semantic_keys:
             found.append(keyword)
         else:
             missing.append(keyword)
@@ -138,31 +234,32 @@ def _classify_row(requirement: str, evidence: list[str], resume_lower: str,
 
 
 def compute_requirement_match_table(job_text: str, resume_text: str,
-                                    semantic_matches=None) -> list[dict]:
+                                    semantic_matches=None,
+                                    human_notes: str = "",
+                                    declined_requests=None) -> list[dict]:
     """Deterministic per-requirement fit rows for one JD against one resume.
 
     Returns a list of ``{"requirement", "status", "evidence", "missing",
     "reason"}`` dicts in JD order (capped at the first _MAX_REQUIREMENTS
     qualifying lines), where ``status`` is "covered" / "partial" / "gap".
-
-    - Vocabulary: the JD's own ATS keyword list, so a term can only appear in
-      evidence/missing if the extractor scored it as a JD keyword at all.
-    - Requirement qualification: bullets/numbered lines qualify with any
-      real evidence term; prose sentences need at least one Tool/Concept tier
-      term, so marketing prose never becomes a row.
-    - Evidence filtering: role-filler terms (engineer, developer,
-      infrastructure, generic "data"...) are excluded from evidence/missing
-      lists via _NON_EVIDENCE_TERMS; the ATS score is unaffected.
-    - Matching semantics: same as the ATS score (flattened link targets,
-      lowercased resume) plus ``semantic_matches`` (the semantic verifier's
-      reclassified keywords) so "expressed in different wording" counts.
     """
+    from .ats import _boundary_contains
+    from .tool_claims import matching_tools
+
     vocabulary = _extract_keywords(job_text or "", top_n=20)
     semantic_keys = {(key or "").lower() for key in (semantic_matches or []) if key}
-    resume_lower = _flatten_link_targets(
-        (resume_text or "").replace('\r', ' ').replace('\n', ' ')
+    declined_tools = _extract_declined_tools(declined_requests)
+
+    combined_parts = [resume_text or ""]
+    if human_notes and str(human_notes).strip():
+        combined_parts.append(str(human_notes))
+    combined_raw = "\n".join(combined_parts)
+    evidence_clean = _flatten_link_targets(
+        combined_raw.replace('\r', ' ').replace('\n', ' ')
         .replace('\t', ' ').replace('\\r', ' ').replace('\\n', ' ')
-        .replace('\\t', ' ')).lower()
+        .replace('\\t', ' '))
+    resume_lower = evidence_clean.lower()
+    canonical_evidence = {t.lower() for t in matching_tools(evidence_clean)}
 
     rows: list[dict] = []
     seen: set[str] = set()
@@ -176,25 +273,62 @@ def compute_requirement_match_table(job_text: str, resume_text: str,
         if not key or key in seen:
             continue
 
+        req_lower = requirement.lower()
         hits = [
             keyword
             for keyword in vocabulary
-            if _keyword_found_in_text(keyword, requirement.lower())[0]
+            if _keyword_found_in_text(keyword, req_lower)[0]
         ]
+        # Augment hits with specific named tools in this requirement so top_n
+        # truncation or short/alphanumeric names never let generic neighbor
+        # words mark an absent or declined tool as 'covered'.
+        req_named = _extract_req_named_tools(requirement)
+        for decl in sorted(declined_tools):
+            if _boundary_contains(decl, req_lower) and decl not in req_named:
+                req_named.append(decl)
+
+        named_set = set(req_named)
+        existing_canon = set()
+        for kw in hits:
+            existing_canon.add(kw.lower())
+            existing_canon |= {t.lower() for t in matching_tools(kw)}
+
+        for tool in req_named:
+            tool_canon = {t.lower() for t in matching_tools(tool)}
+            already_covered = (
+                tool in existing_canon
+                or bool(tool_canon & existing_canon)
+                or any(tool in kw.lower() or kw.lower() in tool for kw in hits)
+            )
+            if not already_covered:
+                hits.append(tool)
+                existing_canon.add(tool)
+                existing_canon |= tool_canon
+
         # Role-filler terms never carry evidence: they describe the ROLE a
         # posting hires for, not something a resume carries proof of (probe
         # evidence, Nov 10: they otherwise dominate reasons as noise).
         evidence = [kw for kw in hits if kw.lower() not in _NON_EVIDENCE_TERMS]
         # Qualification: structured lines (bullets/numbered items) qualify
         # with any real evidence; prose sentences must keep at least one
-        # Tool/Concept term (tier >= 2) after filtering, so opening/marketing
-        # prose ("TechCorp builds data platforms.") never becomes a row.
+        # Tool/Concept term (tier >= 2) or specific named tool after filtering.
         if is_structured:
             qualifies = bool(evidence)
         else:
-            qualifies = any(_classify_keyword_tier(kw) >= 2 for kw in evidence)
+            qualifies = any(
+                _classify_keyword_tier(kw) >= 2 or kw.lower() in named_set
+                for kw in evidence
+            )
         if not qualifies:
             continue
         seen.add(key)
-        rows.append(_classify_row(requirement, evidence, resume_lower, semantic_keys))
+        rows.append(_classify_row(
+            requirement,
+            evidence,
+            resume_lower,
+            semantic_keys,
+            declined_tools=declined_tools,
+            named_tools=named_set,
+            canonical_evidence=canonical_evidence,
+        ))
     return rows
