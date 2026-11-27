@@ -166,6 +166,7 @@ SCORE_THRESHOLD = int(os.environ.get("SCORE_THRESHOLD", 80))
 MAX_ITERATIONS = int(os.environ.get("MAX_ITERATIONS", 2))
 ATS_SCORE_WEIGHT = float(os.environ.get("ATS_SCORE_WEIGHT", 0.6))
 LLM_SCORE_WEIGHT = float(os.environ.get("LLM_SCORE_WEIGHT", 0.4))
+POLISHER_REASONING_EFFORT = os.environ.get("POLISHER_REASONING_EFFORT", "low").strip().lower()
 
 # --- URL import (opt-in) ---
 ALLOWED_JOB_URL_DOMAINS = {

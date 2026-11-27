@@ -19,6 +19,10 @@ Two modes:
   whose headers do not match the vocabulary). Best-of guard in ats_check
   still caps regressions.
 """
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
+
+from ..ats import compute_ats_match
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
 from ..helpers import (_safe_print, _strip_code_fences, _safe_truncate,
@@ -52,7 +56,9 @@ def _rewrite_kept_links(old_body: str, new_body: str) -> bool:
 
 
 def _build_section_prompt(state: AgentState, header_line: str, section_body: str,
-                          rest_of_draft: str, feedback: str) -> str:
+                          rest_of_draft: str, feedback: str,
+                          matched_keywords: list[str] | None = None) -> str:
+    kw_hint = (", ".join(matched_keywords[:12]) if matched_keywords else "(none)")
     return f"""
     You are an expert Resume Writer making a SURGICAL REVISION.
 
@@ -67,6 +73,9 @@ def _build_section_prompt(state: AgentState, header_line: str, section_body: str
 
     REVIEWER FEEDBACK TO ADDRESS:
     "{feedback}"
+
+    MATCHED ATS KEYWORDS TO PRESERVE IN THIS SECTION:
+    {kw_hint}
 
     RULES:
     1. Change as little as possible: keep every TRUE claim, tool, employer,
@@ -164,14 +173,39 @@ def polisher_node(state: AgentState):
     rest = "\n\n".join(f"{h}\n{b}" for c, h, b in blocks
                        if c not in {t[0] for t in targets})
 
-    rewrites: dict[str, str] = {}
-    for canon, header_line, section_body in targets:
-        answer = _llms.llm_creative.invoke([
+    job_text = state.get("job_text") or ""
+
+    def _rewrite_one(target: tuple[str, str, str]) -> tuple[str, str, str, str]:
+        canon, header_line, section_body = target
+        matched_kws: list[str] = []
+        if job_text.strip():
+            sec_match = compute_ats_match(job_text, f"{header_line}\n{section_body}")
+            matched_kws = [
+                r["keyword"] for r in (sec_match.get("keywords") or [])
+                if r.get("found")
+            ]
+        model = _llms.polisher_model() if hasattr(_llms, "polisher_model") else _llms.llm_creative
+        answer = model.invoke([
             SystemMessage(content=SYSTEM_GUARDRAIL),
             HumanMessage(content=_build_section_prompt(
-                state, header_line, section_body, rest, feedback)),
+                state, header_line, section_body, rest, feedback,
+                matched_keywords=matched_kws)),
         ])
-        body = _extract_section_body(str(answer.content), header_line)
+        return canon, header_line, section_body, str(answer.content)
+
+    rewrites: dict[str, str] = {}
+    if len(targets) == 1:
+        raw_results = [_rewrite_one(targets[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(targets), _MAX_TARGETS_PER_PASS)) as pool:
+            futures = [
+                pool.submit(contextvars.copy_context().run, _rewrite_one, target)
+                for target in targets
+            ]
+            raw_results = [future.result() for future in futures]
+
+    for canon, header_line, section_body, raw_content in raw_results:
+        body = _extract_section_body(raw_content, header_line)
         if body is None:
             _safe_print("   [Polish] No usable rewrite returned for this section.")  # Item 10: section name not logged
         elif not _rewrite_kept_links(section_body, body):

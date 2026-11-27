@@ -18,7 +18,7 @@ from langchain.chat_models import init_chat_model
 
 from .config import (_EMERGENCY_MODEL, _FALLBACK_MODEL, _PRIMARY_MODEL,
                      LLM_BASE_URL, LLM_MAX_TOKENS, LLM_PROVIDER,
-                     LLM_TIMEOUT_SECONDS)
+                     LLM_TIMEOUT_SECONDS, POLISHER_REASONING_EFFORT)
 
 logger = logging.getLogger(__name__)
 
@@ -428,7 +428,7 @@ class _KeyScopedLLM:
 
 # --- LLM profiles (strict: scoring | creative: writing | fast: parallel docs) ---
 
-# Three LLM profiles:
+# Three primary LLM profiles (+ lazy reasoning-tuned polisher proxy):
 #   strict: scoring/analysis (primary, temp=0, low reasoning)
 #   creative: resume writing (primary, temp=0.3, full reasoning)
 #   fast: cover letter & interview prep (faster model, temp=0.3, low reasoning)
@@ -440,5 +440,32 @@ _DEFAULT_CHAINS = (
 llm_strict = _KeyScopedLLM(0, _DEFAULT_CHAINS[0])
 llm_creative = _KeyScopedLLM(1, _DEFAULT_CHAINS[1])
 llm_fast = _KeyScopedLLM(2, _DEFAULT_CHAINS[2])
+
+_POLISHER_DEFAULT_BY_EFFORT: dict[str, object] = {}
+_POLISHER_KEY_CACHE: dict[tuple[str, str], object] = {}
+
+
+def polisher_model():
+    """Returns a POLISHER_REASONING_EFFORT-configured chain in production,
+    or monkeypatched llm_creative in unit tests."""
+    if not isinstance(llm_creative, _KeyScopedLLM):
+        return llm_creative
+    effort = (POLISHER_REASONING_EFFORT or "").strip().lower()
+    if not effort:
+        return llm_creative
+    key = _ACTIVE_GROQ_KEY
+    if key:
+        ck = (key, effort)
+        chain = _POLISHER_KEY_CACHE.get(ck)
+        if chain is None:
+            _POLISHER_KEY_CACHE.clear()
+            chain = _create_llm(temperature=0.3, reasoning_effort=effort, api_key=key)
+            _POLISHER_KEY_CACHE[ck] = chain
+        return chain
+    chain = _POLISHER_DEFAULT_BY_EFFORT.get(effort)
+    if chain is None:
+        chain = _create_llm(temperature=0.3, reasoning_effort=effort)
+        _POLISHER_DEFAULT_BY_EFFORT[effort] = chain
+    return chain
 
 logger.info(f"[Models] Primary: {_PRIMARY_MODEL} | Fast: {_FALLBACK_MODEL} | Emergency: {_EMERGENCY_MODEL}")
