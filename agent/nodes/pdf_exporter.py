@@ -309,6 +309,8 @@ def export_documents(resume_text: str, cover_text: str, request_dir: Path,
     containment outcome and the engine stamp). Shared by the pipeline node
     and the PB2 history re-download endpoint (which passes no theme).
     """
+    from ..helpers import strip_placeholder_text
+    resume_text, _ = strip_placeholder_text(resume_text or "")
     resume_out = _export_resume(resume_text, request_dir, theme=theme)
 
     # If BOTH engines failed to produce a PDF, fall back to the xhtml2pdf

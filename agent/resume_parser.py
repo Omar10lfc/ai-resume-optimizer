@@ -781,7 +781,10 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
 
 def parse_markdown_resume(markdown_text: str) -> ResumeData:
     """Parse the LLM's markdown resume into a structured ResumeData."""
-    lines = [ln.rstrip() for ln in (markdown_text or "").splitlines()]
+    from .helpers import strip_placeholder_text
+
+    cleaned_md, _ = strip_placeholder_text(markdown_text or "")
+    lines = [ln.rstrip() for ln in cleaned_md.splitlines()]
 
     contact, remaining = _extract_contact(lines)
     if not contact.name and not contact.details:

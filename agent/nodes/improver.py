@@ -16,7 +16,7 @@ from ..helpers import (_safe_print, _filter_hallucinated_sections,
                        find_dropped_source_metrics, find_unused_context_terms,
                        scrub_unsupported_content, extract_declined_requests,
                        accumulate_unique, preserve_contact_links,
-                       normalize_markdown_links)
+                       normalize_markdown_links, strip_placeholder_text)
 from ..provider import invoke_structured_with_repair, extract_failed_generation
 from ..resume_units import (ImproverOutput, RESUME_UNIT_ID,
                             assemble_resume_units,
@@ -102,6 +102,9 @@ def _build_improver_prompt(state: AgentState, units) -> str:
     - Projects: **Project Name** [Live Demo](URL) [GitHub](URL) | Technologies Used | Date Range on the title line (keep names concise, 2-4 words; descriptions go in bullets). NEVER put links as standalone bullet points (do NOT write "- [GitHub](URL)" as a bullet item).
     - Education: **University Name** | Location | Degree Name | Graduation Date Range.
     - Certifications: Certification Name - Issuing Organization (Year).
+    - NEVER emit placeholder text ("Location not specified", "not specified",
+      "N/A", "TBD", "unknown", "[...]") for missing optional fields (Location,
+      URL, Date Range, Year, etc.). Omit any absent field slot cleanly.
 
     INSTRUCTIONS:
     1. RULES FOR THE MISSING-SKILLS LIST (treat it as RESEARCH TOPICS, never
@@ -238,10 +241,15 @@ def _patch_stack(state: AgentState, draft: str) -> tuple[
     # and a restored link must never land after one.
     final_text, restored_links, removed_placeholders, normalized_links = \
         preserve_contact_links(final_text, state.get('resume_text') or '')
+    final_text, stripped_placeholders = strip_placeholder_text(final_text)
+    if stripped_placeholders:
+        _safe_print(f"   [Placeholder] Stripped {len(stripped_placeholders)} placeholder token(s)")
     guardrail += [f"restored dropped contact link: {t}"
                   for t in restored_links]
     guardrail += [f"removed placeholder token from the contact line: {t}"
                   for t in removed_placeholders]
+    guardrail += [f"removed placeholder text: {t}"
+                  for t in stripped_placeholders]
     guardrail += [f"normalized contact-line link label to the URL: {t}"
                   for t in normalized_links]
 

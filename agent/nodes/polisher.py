@@ -86,6 +86,9 @@ def _build_section_prompt(state: AgentState, header_line: str, section_body: str
        invented or conflated content, skip it and keep the original wording.
     4. Keep the draft's markdown conventions (bullets start with "- ",
        links live inline in the text, no code fences, no new sections).
+    5. NEVER emit placeholder text ("Location not specified", "not specified",
+       "N/A", "TBD", "unknown", "[...]") for missing optional fields like Location
+       or Date Range; omit any absent field slot cleanly.
 
     REST OF THE RESUME (context only - never rewrite or echo it):
     {rest_of_draft}

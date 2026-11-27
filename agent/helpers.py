@@ -1030,11 +1030,155 @@ def _header_region_lines(text: str, limit: int = 8) -> list[str]:
 
 
 def _contact_placeholder_tokens() -> list[str]:
-    """Placeholder tokens a writer pass can emit in a contact line when a
-    field has no value (run bf0f7941, Nov 12 2026: the draft shipped
-    "...github.com/Omar10lfc | N/A | ..." and the link restoration then
-    appended right after the fake token). Pipe-delimited tokens only."""
-    return ["n/a", "na", "n.a.", "tbd", "none", "null"]
+    """Placeholder tokens a writer pass can emit in a contact or metadata line
+    when a field has no value (e.g. "... | N/A | ..." or "Location not specified").
+    Pipe-delimited tokens only."""
+    return [
+        "n/a", "na", "n.a.", "tbd", "tba", "none", "null",
+        "not specified", "unspecified", "location not specified",
+        "city not specified", "not available", "not applicable",
+        "not provided", "none provided", "to be determined", "to be decided",
+        "unknown", "unknown location", "location unknown", "[...]", "...",
+    ]
+
+
+_URL_PROTECT_RE = re.compile(r"(\[[^\]]*\]\([^)]*\)|https?://\S+)", re.IGNORECASE)
+
+_PLACEHOLDER_CORE_PATTERN = (
+    r"(?:(?:location|city|address|state|country|date|dates|year|company|"
+    r"employer|organization|institution|university|degree|role|title|url|link)"
+    r"\s+(?:not\s+specified|unknown)"
+    r"|location\s+not\s+specified"
+    r"|not\s+specified"
+    r"|unspecified"
+    r"|not\s+available"
+    r"|not\s+applicable"
+    r"|not\s+provided"
+    r"|none\s+provided"
+    r"|to\s+be\s+determined"
+    r"|to\s+be\s+decided"
+    r"|(?<![a-z0-9/])n\s*/\s*a(?![a-z0-9/])"
+    r"|n\.a\."
+    r"|tbd|tba"
+    r"|unknown(?:\s+location)?)"
+)
+
+_PIPE_SEGMENT_PLACEHOLDER_RE = re.compile(
+    rf"^(?:{_PLACEHOLDER_CORE_PATTERN}|na|none|null|\[\s*(?:\.\.\.|…)\s*\]|\.\.\.|…)$",
+    re.IGNORECASE,
+)
+_BRACKET_PLACEHOLDER_RE = re.compile(
+    rf"\[\s*(?:{_PLACEHOLDER_CORE_PATTERN}|na|none|null|\.\.\.|…)\s*\](?!\()",
+    re.IGNORECASE,
+)
+_PAREN_PLACEHOLDER_RE = re.compile(
+    rf"\(\s*(?:{_PLACEHOLDER_CORE_PATTERN}|na|none|null|\[\s*(?:\.\.\.|…)\s*\]|\.\.\.|…)\s*\)",
+    re.IGNORECASE,
+)
+_INLINE_PLACEHOLDER_RE = re.compile(
+    rf"(?<!\w)(?:{_PLACEHOLDER_CORE_PATTERN})(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _is_placeholder_segment(seg: str) -> bool:
+    """True when a pipe-separated field is solely a placeholder marker."""
+    plain = re.sub(r"[*_`~]", "", (seg or "")).strip()
+    return bool(plain) and bool(_PIPE_SEGMENT_PLACEHOLDER_RE.fullmatch(plain))
+
+
+def strip_placeholder_text(text: str) -> tuple[str, list[str]]:
+    """Deterministically strip placeholder phrases ('Location not specified',
+    'not specified', 'N/A', 'TBD', 'unknown', '[...]') across resume lines
+    while preserving markdown link targets and legitimate content.
+
+    Returns ``(cleaned_text, removed_phrases)``. Idempotent and no-op when
+    no placeholder is present.
+    """
+    if not text:
+        return text, []
+
+    removed: list[str] = []
+    out_lines: list[str] = []
+
+    def _clean_segment_preserving_links(raw_text: str, *, pipe_mode: bool = False) -> str:
+        # Temporarily stash URLs and [label](url) links; inside [label](url),
+        # never alter the URL target and keep normal labels intact.
+        protected: list[str] = []
+
+        def _stash(m: re.Match) -> str:
+            protected.append(m.group(0))
+            return f"\x00URL{len(protected) - 1}\x00"
+
+        work = _URL_PROTECT_RE.sub(_stash, raw_text)
+
+        def _record(m: re.Match) -> str:
+            tok = m.group(0).strip()
+            if tok:
+                removed.append(tok)
+            return ""
+
+        work = _BRACKET_PLACEHOLDER_RE.sub(_record, work)
+        work = _PAREN_PLACEHOLDER_RE.sub(_record, work)
+        work = _INLINE_PLACEHOLDER_RE.sub(_record, work)
+
+        # Clean empty bold/italic wrappers left around a stripped placeholder.
+        work = re.sub(r"\*{2}\s*\*{2}|(?<!\w)_\s*_(?!\w)", "", work)
+        # Clean stray leading/trailing separator punctuation left by removal.
+        work = re.sub(r"\s{2,}", " ", work)
+        if not pipe_mode:
+            work = re.sub(r"\s+([,.;:])", r"\1", work)
+            work = re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", work)
+            work = re.sub(r"(?:\s*[-–—:,]\s*)+$", "", work.strip()) if work != raw_text else work
+        else:
+            work = work.strip()
+
+        def _unstash(m: re.Match) -> str:
+            return protected[int(m.group(1))]
+
+        return re.sub(r"\x00URL(\d+)\x00", _unstash, work)
+
+    for line in text.split("\n"):
+        if "|" in line:
+            parts = [p.strip() for p in line.split("|")]
+            kept_parts: list[str] = []
+            line_changed = False
+            for part in parts:
+                if not part:
+                    line_changed = True
+                    continue
+                if _is_placeholder_segment(part):
+                    removed.append(re.sub(r"[*_`~]", "", part).strip())
+                    line_changed = True
+                    continue
+                cleaned_part = _clean_segment_preserving_links(part, pipe_mode=True)
+                if cleaned_part != part:
+                    line_changed = True
+                if cleaned_part and not _is_placeholder_segment(cleaned_part):
+                    kept_parts.append(cleaned_part)
+                elif part:
+                    line_changed = True
+            if line_changed:
+                if kept_parts:
+                    out_lines.append(" | ".join(kept_parts))
+                continue
+            out_lines.append(line)
+            continue
+
+        # Bullet / plain line: protect leading bullet or heading prefix.
+        m_prefix = re.match(r"^(\s*(?:[-*•]\s+|#{1,6}\s+))(.*)$", line)
+        prefix, body = (m_prefix.group(1), m_prefix.group(2)) if m_prefix else ("", line)
+        before_count = len(removed)
+        cleaned_body = _clean_segment_preserving_links(body, pipe_mode=False).strip()
+        if len(removed) > before_count:
+            if not cleaned_body:
+                continue  # Entire line was a placeholder item; drop line.
+            out_lines.append(f"{prefix}{cleaned_body}" if prefix else cleaned_body)
+        else:
+            out_lines.append(line)
+
+    cleaned_text = re.sub(r"\n\s*\n(?:\s*\n)+", "\n\n", "\n".join(out_lines))
+    return cleaned_text, removed
 
 
 # A full-part markdown link in the contact line ("[Portfolio](https://...)").
