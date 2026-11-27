@@ -340,7 +340,9 @@ def _stream_step1(job_description: str, resume_source: str,
             yield {"type": "error", "message": f"Scan failed: {e}"}
             return
 
+        gap_triage = (snapshot.values or {}).get("gap_triage") or []
         yield {"type": "done", "session": session, "missing_skills": missing,
+               "gap_triage": gap_triage,
                "token_usage": usage.totals(),
                "task_usage": usage.task_totals(),
                "status": "Analysis complete - review & edit the gaps below, then run Step 2."}
@@ -369,6 +371,26 @@ def _extract_results(final_state: dict) -> dict:
 
     score_val = final_state.get("score", 0)
     ats_pct = final_state.get("ats_percentage", 0)
+    gap_triage = final_state.get("gap_triage") or []
+    unfilled_gaps = [
+        g.get("skill", "")
+        for g in gap_triage
+        if isinstance(g, dict) and g.get("status") == "needs_user_input" and g.get("skill")
+    ]
+    declined = [str(d).strip() for d in (final_state.get("declined_requests") or []) if str(d).strip()]
+    req_matches = final_state.get("requirement_matches") or []
+    req_gaps = sum(1 for r in req_matches if isinstance(r, dict) and r.get("status") == "gap")
+    blocker_keys = {u.strip().lower() for u in unfilled_gaps if u.strip()} | {d.lower() for d in declined}
+    if blocker_keys or req_gaps > 0:
+        caps: list[int] = []
+        if req_matches and req_gaps > 0:
+            caps.append(round(100 * (len(req_matches) - req_gaps) / len(req_matches)))
+        if blocker_keys:
+            caps.append(max(round(ats_pct), 100 - 10 * len(blocker_keys)))
+        floor_pct = min(95, round(ats_pct))
+        ceiling = min(95, max(floor_pct, min(caps)))
+    else:
+        ceiling = 100
     score_class = ("good" if score_val >= agent_config.SCORE_THRESHOLD
                    else "warn" if score_val >= 60 else "bad")
     return {
@@ -381,6 +403,13 @@ def _extract_results(final_state: dict) -> dict:
         "interview_questions": final_state.get("interview_questions")
         or "No interview questions generated.",
         "ats_percentage": ats_pct,
+        "llm_quality_score": int(final_state.get("llm_quality_score") or 0),
+        "polish_decision": final_state.get("polish_decision") or "",
+        "best_of_decision": final_state.get("best_of_decision") or "",
+        "gap_triage": gap_triage,
+        "unfilled_gaps": unfilled_gaps,
+        "ats_ceiling": ceiling,
+        "prompt_prevention_failures": final_state.get("prompt_prevention_failures") or [],
         "artifacts": artifacts,
         # QW3: the integrity channels the results UI renders as a dedicated
         # view (the SSE "integrity check" warning stays as the live banner);
@@ -405,9 +434,11 @@ def _extract_results(final_state: dict) -> dict:
         # instruction-shaped lines removed from the job posting before the
         # pipeline read it. Advisory rows rendered by the Integrity tab.
         "job_posting_findings": final_state.get("job_posting_findings") or [],
-        # 1-page containment: computed since BB2 but never displayed; the
-        # result card now surfaces the same warning the server log prints.
+        # Page-target auto-detection & user override outcome
         "page_overflow_warning": final_state.get("page_overflow_warning") or "",
+        "target_pages": int(final_state.get("target_pages") or 1),
+        "input_pages": int(final_state.get("input_pages") or 0),
+        "page_target_expanded": bool(final_state.get("page_target_expanded")),
         # PDF text-layer gate (pdf_exporter): what an ATS parser reads back.
         "pdf_checks": final_state.get("pdf_checks") or [],
         # Relevance-weighted trim suggestions (pdf_exporter): the cheapest
@@ -578,7 +609,8 @@ def _resolve_theme(resume_theme: str) -> str:
 def _stream_step2(job_description: str, resume_source: str, notes: str,
                   session: str | None, groq_api_key: str | None = None,
                   include_original: bool = False,
-                  resume_theme: str = "") -> Iterator[dict]:
+                  resume_theme: str = "",
+                  target_pages: int = 0) -> Iterator[dict]:
     """Step 2: resumes the interrupted session (or starts fresh).
 
     groq_api_key (optional) honors a client-supplied Groq key - see stream_step1.
@@ -730,6 +762,7 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
             # run shipped score 0 with "No resume generated." An explicit
             # as_node is immune to the inference; the notes keys come AFTER
             # the spread so they win over the reset's empty strings.
+            page_override = {"target_pages": int(target_pages)} if target_pages in (1, 2) else {}
             if rewound:
                 agent_app.update_state(config, {
                     **_recovery_reset(),
@@ -739,12 +772,14 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
                     # deliberately NOT in _recovery_reset (an invocation
                     # input, so a rewind keeps the user's choice).
                     "resume_theme": theme,
+                    **page_override,
                 }, as_node="scanner")
             else:
                 agent_app.update_state(config, {
                     "human_notes": evidence_lines,
                     "missing_skills": gap_lines,
                     "resume_theme": theme,
+                    **page_override,
                 })
             _trace_notes_injection(session, evidence_lines, gap_lines)
 
@@ -770,29 +805,51 @@ def _stream_step2(job_description: str, resume_source: str, notes: str,
             yield {"type": "error", "message": f"Optimization failed: {e}"}
             return
 
-        # Reducer channels (prompt_versions) merge across concurrent node
-        # writes - the in-loop delta accumulation above is last-writer-wins,
-        # so those keys must be pulled from the authoritative final snapshot
-        # or the parallel cover_letter / interview_prep stamps would clobber
-        # each other (and the reviewer/improver entries).
+        # Reducer channels (prompt_versions, prompt_prevention_failures, ...) and
+        # Step 1 outputs (gap_triage, missing_skills, input_pages, target_pages,
+        # job_posting_findings) must be pulled from the authoritative snapshot so
+        # Step 1 state and concurrent fan-out reducers reach _extract_results.
         snapshot = agent_app.get_state(config)
-        merged_versions = (snapshot.values or {}).get("prompt_versions")
-        if merged_versions:
-            final_state["prompt_versions"] = merged_versions
+        snapshot_vals = snapshot.values or {}
+        for snap_key in (
+            "prompt_versions",
+            "prompt_prevention_failures",
+            "gap_triage",
+            "missing_skills",
+            "resume_text",
+            "job_text",
+            "input_pages",
+            "target_pages",
+            "scrub_removals",
+            "unevidenced_metrics",
+            "guardrail_warnings",
+        ):
+            snap_val = snapshot_vals.get(snap_key)
+            if snap_val is not None and (
+                snap_key not in final_state
+                or snap_key in (
+                    "prompt_versions",
+                    "prompt_prevention_failures",
+                    "gap_triage",
+                    "scrub_removals",
+                    "unevidenced_metrics",
+                    "guardrail_warnings",
+                )
+            ):
+                final_state[snap_key] = snap_val
 
         # Posting findings are a LOADER output (step 1), never a delta of this
         # segment, so on the step1 -> step2 resume path they exist only in the
         # authoritative snapshot. Seed the payload from there and warn once
         # more for runs that skipped step 1 entirely.
-        posting_findings = (snapshot.values or {}).get(
-            "job_posting_findings") or []
+        posting_findings = snapshot_vals.get("job_posting_findings") or []
         if posting_findings:
             final_state["job_posting_findings"] = posting_findings
             yield {"type": "warning",
                    "message": _posting_warning(posting_findings)}
 
         if not final_state:
-            final_state = snapshot.values or {}
+            final_state = snapshot_vals
 
         log_pipeline_feedback(final_state, resume_run_id)
         for warning_event in _collect_step2_warnings(final_state):

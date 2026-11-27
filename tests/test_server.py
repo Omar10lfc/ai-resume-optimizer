@@ -2041,3 +2041,67 @@ def test_delete_all_data_requires_auth_when_enabled(client, monkeypatch, tmp_pat
     assert client.delete("/api/v1/data").status_code == 401
     assert client.delete("/api/v1/data",
                          auth=("user", "pass")).status_code == 200
+
+
+def test_step1_state_keys_and_gap_triage_survive_into_step2_payload(
+        client, fake_llms, clean_name_register):
+    """Issue 1 regression: Step 1 snapshot keys (gap_triage, input_pages,
+    target_pages, prompt_versions) must survive into Step 2's result payload."""
+    r1 = client.post("/api/v1/step1",
+                     data={"job_description": JD, "resume_text": RESUME_TEXT})
+    assert r1.status_code == 200
+    done_ev = parse_sse(r1.text)[-1][1]
+    session = done_ev["session"]
+    assert len(done_ev["gap_triage"]) == 2
+
+    r2 = client.post(
+        "/api/v1/step2",
+        data={
+            "job_description": JD,
+            "resume_text": RESUME_TEXT,
+            "notes": "- Kubernetes\nDo NOT feature: Terraform.",
+            "session": session,
+        },
+        params={"include_diff": "original"},
+    )
+    assert r2.status_code == 200
+    payload = parse_sse(r2.text)[-1][1]
+    assert len(payload["gap_triage"]) == 2
+    assert set(payload["unfilled_gaps"]) >= {"Kubernetes", "Terraform"}
+    assert payload["ats_ceiling"] < 100
+    assert payload["target_pages"] >= 1
+    assert "input_pages" in payload
+    assert payload["original_resume"] == RESUME_TEXT
+    assert "scanner" in payload["prompt_versions"]
+
+
+def test_ats_ceiling_drops_below_100_for_needs_user_input_and_declined_tools():
+    """Issue 1: ats_ceiling < 100 whenever needs_user_input gaps or declined_requests exist."""
+    base = {
+        "optimized_resume": "Jane Roe\nPython",
+        "score": 62,
+        "ats_percentage": 62.5,
+        "requirement_matches": [
+            {"status": "partial", "requirement": "APIs and webhooks", "missing": ["webhooks"]},
+        ],
+    }
+    res_needs = runners._extract_results({
+        **base,
+        "gap_triage": [{"skill": "Workflow platform", "status": "needs_user_input", "reason": "missing"}],
+    })
+    assert res_needs["ats_ceiling"] < 100
+
+    res_declined = runners._extract_results({
+        **base,
+        "declined_requests": ["Direct experience with tool X"],
+    })
+    assert res_declined["ats_ceiling"] < 100
+
+    res_clean = runners._extract_results({
+        "optimized_resume": "Jane Roe\nPython",
+        "score": 90,
+        "ats_percentage": 100.0,
+        "gap_triage": [{"skill": "Python", "status": "rephrasable", "reason": "in resume"}],
+        "requirement_matches": [{"status": "covered", "requirement": "Python", "missing": []}],
+    })
+    assert res_clean["ats_ceiling"] == 100
