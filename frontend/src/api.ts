@@ -2,6 +2,7 @@ import { isExtension } from "./lib/storage";
 import type {
   ApplicationDetail,
   ApplicationSummary,
+  GapTriageItem,
   OptimizationResult,
 } from "./types";
 interface StreamCallbacks<T> {
@@ -302,7 +303,7 @@ async function consumeSSE<T>(
 
 export async function runStep1(
   formData: FormData,
-  callbacks: StreamCallbacks<{ session: string; missing_skills: string }>
+  callbacks: StreamCallbacks<{ session: string; missing_skills: string; gap_triage?: GapTriageItem[] }>
 ) {
   try {
     const { baseUrl, headers } = await getRequestConfig();

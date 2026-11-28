@@ -17,7 +17,7 @@ import { isExtension, readWebValue, removeStorageValues, writeStorageValue } fro
 import { ReviewSkeleton, ResultsSkeleton } from "./components/Skeleton";
 import { runStep1, runStep2, checkProviderHealth, type ProviderHealth } from "./api";
 import { classifyError, type ErrorInfo } from "./lib/errors";
-import type { PipelineStage, OptimizationResult } from "./types";
+import type { PipelineStage, OptimizationResult, GapTriageItem } from "./types";
 import { FileText, X } from "@phosphor-icons/react";
 
 // Note: mirrors theme options validated by the backend (agent/html_render.py).
@@ -69,9 +69,11 @@ export function App() {
   // Round 14: the resume look (classic | serif | modern) - a per-run input
   // to step 2, persisted as a preference.
   const [resumeTheme, setResumeTheme] = useState<string>(readWebValue("resume_theme") || "classic");
+  const [targetPages, setTargetPages] = useState<number>(0);
   // True after the scan produced gap chips; false when the zero-gap
   // straight-through path skips the review dialog entirely.
   const [reviewOpen, setReviewOpen] = useState<boolean>(false);
+  const [gapTriage, setGapTriage] = useState<GapTriageItem[]>([]);
 
   const [result, setResult] = useState<OptimizationResult | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
@@ -138,9 +140,9 @@ export function App() {
       setUrlImport(
         res.url_import
           ? {
-              enabled: res.url_import.enabled,
-              allowedDomains: res.url_import.allowed_domains ?? [],
-            }
+            enabled: res.url_import.enabled,
+            allowedDomains: res.url_import.allowed_domains ?? [],
+          }
           : null,
       );
     });
@@ -284,6 +286,7 @@ export function App() {
       onDone: (data) => {
         setSession(data.session);
         setMissingSkills(data.missing_skills);
+        setGapTriage(data.gap_triage ?? []);
         const gapCount = parseGapSkills(data.missing_skills).length;
         const scannerOutput = data.missing_skills.trim().length > 0;
         if (gapCount === 0 && !scannerOutput) {
@@ -342,6 +345,7 @@ export function App() {
     // Round 14: the selected resume look (the server validates against the
     // THEMES vocabulary and falls back to the env knob / default).
     fd.append("resume_theme", resumeTheme);
+    fd.append("target_pages", String(targetPages));
 
     runStep2(fd, {
       onStatus: handleStreamStatus,
@@ -458,8 +462,8 @@ export function App() {
                   {jobMeta?.title && jobMeta?.company
                     ? `${jobMeta.title} · ${jobMeta.company}`
                     : jobMode === "url"
-                    ? jobUrl || "URL provided"
-                    : `${jobText.trim().split(/\s+/).filter(Boolean).length} word job description`}
+                      ? jobUrl || "URL provided"
+                      : `${jobText.trim().split(/\s+/).filter(Boolean).length} word job description`}
                 </span>
               </span>
               <span className="text-ink-3 font-mono">{resumeMode === "upload" && resumeFile ? resumeFile.name : `${resumeText.length} chars`}</span>
@@ -528,21 +532,39 @@ export function App() {
                   1-page density ladder holds for every theme). Applies to
                   the HTML-rendered PDF; the LaTeX fallback prints the
                   classic look. Shown in the results Print preview tab. */}
-              <div className="flex items-center gap-2 mt-2.5">
-                <label htmlFor="resume-theme" className="text-2xs font-semibold text-ink shrink-0">
-                  Resume look
-                </label>
-                <select
-                  id="resume-theme"
-                  value={resumeTheme}
-                  onChange={(e) => setResumeTheme(e.target.value)}
-                  disabled={stage === "step1_running" || stage === "step2_running"}
-                  className="input !w-auto text-2xs py-1 pr-6"
-                >
-                  {THEME_OPTIONS.map((t) => (
-                    <option key={t.id} value={t.id}>{t.label}</option>
-                  ))}
-                </select>
+              <div className="flex flex-wrap items-center gap-3 mt-2.5">
+                <div className="flex items-center gap-2">
+                  <label htmlFor="resume-theme" className="text-2xs font-semibold text-ink shrink-0">
+                    Resume look
+                  </label>
+                  <select
+                    id="resume-theme"
+                    value={resumeTheme}
+                    onChange={(e) => setResumeTheme(e.target.value)}
+                    disabled={stage === "step1_running" || stage === "step2_running"}
+                    className="input !w-auto text-2xs py-1 pr-6"
+                  >
+                    {THEME_OPTIONS.map((t) => (
+                      <option key={t.id} value={t.id}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label htmlFor="page-target" className="text-2xs font-semibold text-ink shrink-0">
+                    Page limit
+                  </label>
+                  <select
+                    id="page-target"
+                    value={targetPages}
+                    onChange={(e) => setTargetPages(Number(e.target.value))}
+                    disabled={stage === "step1_running" || stage === "step2_running"}
+                    className="input !w-auto text-2xs py-1 pr-6"
+                  >
+                    <option value={0}>Auto (match input)</option>
+                    <option value={1}>1 page</option>
+                    <option value={2}>2 pages</option>
+                  </select>
+                </div>
                 <span className="text-2xs text-ink-3 truncate">
                   Applied to the PDF render
                 </span>
@@ -558,6 +580,7 @@ export function App() {
             missingSkills={missingSkills}
             userNotes={userNotes}
             setUserNotes={setUserNotes}
+            gapTriage={gapTriage}
             onSubmit={(notes) => handleOptimizeStep2(notes)}
             isProcessing={stage === "step2_running"}
           />
@@ -571,6 +594,16 @@ export function App() {
               result={result}
               originalResume={result.original_resume
                 ?? (resumeMode === "paste" ? resumeText : undefined)}
+              isRerunning={isProcessing}
+              onConfirmGapNote={(gap, note) => {
+                const trimmed = note.trim();
+                if (!trimmed) return;
+                const appended = [userNotesRef.current, `- ${gap}: ${trimmed}`]
+                  .filter(Boolean)
+                  .join("\n");
+                setUserNotes(appended);
+                handleOptimizeStep2(appended);
+              }}
             />
           </div>
         )}

@@ -66,6 +66,13 @@ export interface TrimSuggestion {
   reason: string;
 }
 
+/** Step 5: conservative classification of scanned job gaps. */
+export interface GapTriageItem {
+  skill: string;
+  status: "rephrasable" | "needs_user_input";
+  reason: string;
+}
+
 export interface OptimizationResult {
   session: string;
   optimized_resume: string;
@@ -74,6 +81,13 @@ export interface OptimizationResult {
   ats_result: string;
   feedback: string;
   ats_percentage: number;
+  llm_quality_score?: number;
+  polish_decision?: string;
+  best_of_decision?: string;
+  gap_triage?: GapTriageItem[];
+  unfilled_gaps?: string[];
+  ats_ceiling?: number;
+  prompt_prevention_failures?: { stage: string; terms: string[] }[];
   score: number;
   score_class: "good" | "warn" | "bad";
   weights: {
@@ -99,6 +113,9 @@ export interface OptimizationResult {
   /** 1-page containment: set when the resume still exceeds one page after
    *  every compaction tier. */
   page_overflow_warning?: string;
+  target_pages?: number;
+  input_pages?: number;
+  page_target_expanded?: boolean;
   /** PDF text-layer gate: what an ATS parser reads back from the shipped
    *  resume + cover letter (empty pages, CID damage, ASCII dates, literals). */
   pdf_checks?: PdfCheck[];

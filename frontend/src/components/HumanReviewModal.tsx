@@ -9,6 +9,7 @@ import {
   Trash,
 } from "@phosphor-icons/react";
 import { parseGapSkills, composeStep2Notes, GROUP_ORDER, GROUP_LABELS, type GapGroup } from "../lib/gaps";
+import type { GapTriageItem } from "../types";
 
 /**
  * Step 1 → step 2 checkpoint UI.
@@ -32,13 +33,7 @@ interface HumanReviewModalProps {
   missingSkills: string;
   userNotes: string;
   setUserNotes: (val: string) => void;
-  /**
-   * Receives the COMPOSED notes string. Passing it as an argument (instead of
-   * letting App read `userNotes` state) is deliberate: setUserNotes here is
-   * async, so reading state in the same tick submits the stale pre-edit value
-   * — live-run evidence, Nov 5 2026 trace 520188c7: the composed gap list was
-   * silently dropped and step 2 ran with empty notes.
-   */
+  gapTriage?: GapTriageItem[];
   onSubmit: (notes: string) => void;
   isProcessing: boolean;
 }
@@ -55,9 +50,17 @@ export const HumanReviewModal: React.FC<HumanReviewModalProps> = ({
   missingSkills,
   userNotes,
   setUserNotes,
+  gapTriage,
   onSubmit,
   isProcessing,
 }) => {
+  const triageBySkill = useMemo(() => {
+    const map = new Map<string, GapTriageItem>();
+    for (const g of gapTriage ?? []) {
+      map.set((g.skill || "").trim().toLowerCase(), g);
+    }
+    return map;
+  }, [gapTriage]);
   const [chips, setChips] = useState<EditorChip[]>(() =>
     parseGapSkills(missingSkills).map((g) => ({ ...g, removed: false }))
   );
@@ -244,9 +247,25 @@ export const HumanReviewModal: React.FC<HumanReviewModalProps> = ({
                               setEditingValue(chip.label);
                             }}
                             className="flex-1 min-w-0 text-left text-xs text-ink px-1 py-0.5 leading-snug line-clamp-2 [overflow-wrap:anywhere]"
-                            title={`${chip.label} — Enter renames · N opens note · Delete removes`}
+                            title={
+                              triageBySkill.get(chip.label.trim().toLowerCase())?.reason ||
+                              `${chip.label} — Enter renames · N opens note · Delete removes`
+                            }
                           >
-                            {chip.label}
+                            <span>{chip.label}</span>
+                            {triageBySkill.get(chip.label.trim().toLowerCase()) && (
+                              <span
+                                className={`ml-1.5 inline-block px-1.5 py-[1px] rounded text-[10px] font-medium align-middle ${
+                                  triageBySkill.get(chip.label.trim().toLowerCase())!.status === "rephrasable"
+                                    ? "bg-ok-tint text-ok"
+                                    : "bg-warn-tint text-warn"
+                                }`}
+                              >
+                                {triageBySkill.get(chip.label.trim().toLowerCase())!.status === "rephrasable"
+                                  ? "In resume"
+                                  : "Needs note"}
+                              </span>
+                            )}
                           </button>
                         )}
                         <button

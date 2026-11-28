@@ -33,6 +33,8 @@ interface ResultsDashboardProps {
   /** Powers the before/after diff view: paste mode passes the client-held
    *  text, uploads rely on the server echo (PB3 include_diff=original). */
   originalResume?: string;
+  onConfirmGapNote?: (gap: string, note: string) => void;
+  isRerunning?: boolean;
 }
 
 const TABS: Array<{ id: TabId; label: string; icon: React.ElementType }> = [
@@ -59,7 +61,8 @@ const PDF_CHECK_LABELS: Record<string, string> = {
   required_text: "Required text",
 };
 
-const ARTIFACT_META: Record<string, { label: string; icon: React.ElementType; className: string }> = {  "resume-pdf": { label: "Resume PDF", icon: FilePdf, className: "text-danger" },
+const ARTIFACT_META: Record<string, { label: string; icon: React.ElementType; className: string }> = {
+  "resume-pdf": { label: "Resume PDF", icon: FilePdf, className: "text-danger" },
   "cover-pdf": { label: "Cover letter PDF", icon: FilePdf, className: "text-danger" },
   "resume-docx": { label: "Resume DOCX", icon: FileDoc, className: "text-info" },
   "resume-tex": { label: "LaTeX source", icon: FileCode, className: "text-ok" },
@@ -88,7 +91,9 @@ function useCopyFeedback(): { copied: string | null; copy: (text: string, label:
   return { copied, copy };
 }
 
-export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, originalResume }) => {
+export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, originalResume, onConfirmGapNote, isRerunning }) => {
+  const [confirmingGap, setConfirmingGap] = useState<string | null>(null);
+  const [gapNoteInput, setGapNoteInput] = useState("");
   const [activeTab, setActiveTab] = useState<TabId>("resume");
   // Round 14: Resume tab view mode - the persisted adopted page html (the
   // preview IS the printed document) only exists on HTML-renderer runs, so
@@ -129,13 +134,13 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
   const usageRows = Object.entries(taskUsage);
   const usageTotals = usageRows.length
     ? usageRows.reduce(
-        (acc, [, s]) => ({
-          prompt_tokens: acc.prompt_tokens + s.prompt_tokens,
-          completion_tokens: acc.completion_tokens + s.completion_tokens,
-          total_tokens: acc.total_tokens + s.total_tokens,
-          llm_calls: acc.llm_calls + s.llm_calls,
-        }),
-        { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, llm_calls: 0 })
+      (acc, [, s]) => ({
+        prompt_tokens: acc.prompt_tokens + s.prompt_tokens,
+        completion_tokens: acc.completion_tokens + s.completion_tokens,
+        total_tokens: acc.total_tokens + s.total_tokens,
+        llm_calls: acc.llm_calls + s.llm_calls,
+      }),
+      { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, llm_calls: 0 })
     : null;
   const effectiveTabs: Array<{ id: TabId; label: string; icon: React.ElementType }> = [
     ...TABS,
@@ -215,46 +220,46 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
 
   const fitCounts = fitRows.length
     ? [
-        fitRows.filter((r) => r.status === "covered").length,
-        fitRows.filter((r) => r.status === "partial").length,
-        fitRows.filter((r) => r.status === "gap").length,
-      ]
+      fitRows.filter((r) => r.status === "covered").length,
+      fitRows.filter((r) => r.status === "partial").length,
+      fitRows.filter((r) => r.status === "gap").length,
+    ]
     : null;
   const fitCopy = fitRows.length
     ? `Requirement fit (${fitCounts![0]}/${fitRows.length} fully covered):\n` +
-      fitRows.map((r) => `[${r.status.toUpperCase()}] ${r.requirement} — ${r.reason}`).join("\n")
+    fitRows.map((r) => `[${r.status.toUpperCase()}] ${r.requirement} — ${r.reason}`).join("\n")
     : "";
   const impactCounts = impactRows.length
     ? [
-        impactRows.filter((r) => r.grade === "high").length,
-        impactRows.filter((r) => r.grade === "medium").length,
-        impactRows.filter((r) => r.grade === "low").length,
-      ]
+      impactRows.filter((r) => r.grade === "high").length,
+      impactRows.filter((r) => r.grade === "medium").length,
+      impactRows.filter((r) => r.grade === "low").length,
+    ]
     : null;
   const impactCopy = impactRows.length
     ? `Bullet impact (${impactCounts![0]} high / ${impactCounts![1]} medium / ${impactCounts![2]} low of ${impactRows.length} bullets):\n` +
-      impactRows.map((r) => `[${r.grade.toUpperCase()}] ${r.bullet} — ${r.reason}`).join("\n")
+    impactRows.map((r) => `[${r.grade.toUpperCase()}] ${r.bullet} — ${r.reason}`).join("\n")
     : "";
   const sourceCounts = sourceRows.length
     ? [
-        sourceRows.filter((r) => r.status === "unchanged").length,
-        sourceRows.filter((r) => r.status === "reworded").length,
-        sourceRows.filter((r) => r.status === "new").length,
-        sourceRows.filter((r) => r.status === "dropped").length,
-      ]
+      sourceRows.filter((r) => r.status === "unchanged").length,
+      sourceRows.filter((r) => r.status === "reworded").length,
+      sourceRows.filter((r) => r.status === "new").length,
+      sourceRows.filter((r) => r.status === "dropped").length,
+    ]
     : null;
   const sourceCopy = sourceRows.length
     ? `Bullet sources (${sourceCounts![0]} unchanged / ${sourceCounts![1]} reworded / ${sourceCounts![2]} new / ${sourceCounts![3]} dropped):\n` +
-      sourceRows.map((r) =>
-        r.status === "dropped"
-          ? `[DROPPED] ${r.source} — ${r.reason}`
-          : `[${r.status.toUpperCase()}] ${r.bullet}${r.source ? ` ← ${r.source}` : ""}${r.dropped.length ? ` (dropped: ${r.dropped.join(", ")})` : ""} — ${r.reason}`
-      ).join("\n")
+    sourceRows.map((r) =>
+      r.status === "dropped"
+        ? `[DROPPED] ${r.source} — ${r.reason}`
+        : `[${r.status.toUpperCase()}] ${r.bullet}${r.source ? ` ← ${r.source}` : ""}${r.dropped.length ? ` (dropped: ${r.dropped.join(", ")})` : ""} — ${r.reason}`
+    ).join("\n")
     : "";
   const usageCopy = usageRows.length
     ? `Per-task token usage (${usageTotals!.llm_calls} LLM calls, ${usageTotals!.total_tokens} tokens):\n` +
-      usageRows.map(([task, s]) =>
-        `${task}: ${s.llm_calls} ${s.llm_calls === 1 ? "call" : "calls"}, ${s.prompt_tokens} in / ${s.completion_tokens} out`).join("\n")
+    usageRows.map(([task, s]) =>
+      `${task}: ${s.llm_calls} ${s.llm_calls === 1 ? "call" : "calls"}, ${s.prompt_tokens} in / ${s.completion_tokens} out`).join("\n")
     : "";
 
   const renderCopyRow = (label: string, text: string) => (
@@ -287,6 +292,7 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
           score={result.score}
           scoreClass={result.score_class}
           atsPercentage={result.ats_percentage}
+          llmQualityScore={result.llm_quality_score}
           weights={result.weights}
         />
       </div>
@@ -323,9 +329,17 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
         </div>
       </div>
 
+      {/* Page target expansion notice when user-provided human notes added content */}
+      {result.page_target_expanded && (
+        <div className="mb-4 px-3 py-2.5 rounded-md2 bg-raised border border-line text-2xs text-ink-2 flex items-start gap-2" role="status">
+          <Lightbulb weight="bold" className="w-3.5 h-3.5 shrink-0 mt-[1px] text-accent" />
+          <span>Added content moved this to 2 pages.</span>
+        </div>
+      )}
+
       {/* One-page containment: computed since BB2, now surfaced instead of
           living only in the server log. Advisory - the files still download. */}
-      {result.page_overflow_warning && (
+      {result.page_overflow_warning && result.page_overflow_warning !== "Added content moved this to 2 pages." && (
         <div className="mb-4 px-3 py-2.5 rounded-md2 bg-warn-tint border border-warn/25 text-2xs text-warn" role="status">
           <div className="flex items-start gap-2">
             <Warning weight="bold" className="w-3.5 h-3.5 shrink-0 mt-[1px]" />
@@ -366,11 +380,10 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
             aria-controls={`panel-${tab.id}`}
             tabIndex={activeTab === tab.id ? 0 : -1}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-sm2 text-2xs font-semibold transition-all shrink-0 ${
-              activeTab === tab.id
-                ? "bg-raised text-accent shadow-card"
-                : "text-ink-3 hover:text-ink"
-            }`}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-sm2 text-2xs font-semibold transition-all shrink-0 ${activeTab === tab.id
+              ? "bg-raised text-accent shadow-card"
+              : "text-ink-3 hover:text-ink"
+              }`}
           >
             <tab.icon weight="bold" className="w-3.5 h-3.5" />
             <span>{tab.label}</span>
@@ -398,9 +411,8 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                       type="button"
                       onClick={() => setViewMode("text")}
                       aria-pressed={viewMode === "text"}
-                      className={`px-2 py-0.5 rounded-sm text-2xs font-semibold transition-colors ${
-                        !showingPreview ? "bg-surface text-accent shadow-card" : "text-ink-3 hover:text-ink"
-                      }`}
+                      className={`px-2 py-0.5 rounded-sm text-2xs font-semibold transition-colors ${!showingPreview ? "bg-surface text-accent shadow-card" : "text-ink-3 hover:text-ink"
+                        }`}
                     >
                       Text
                     </button>
@@ -408,9 +420,8 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                       type="button"
                       onClick={() => setViewMode("preview")}
                       aria-pressed={viewMode === "preview"}
-                      className={`px-2 py-0.5 rounded-sm text-2xs font-semibold transition-colors ${
-                        showingPreview ? "bg-surface text-accent shadow-card" : "text-ink-3 hover:text-ink"
-                      }`}
+                      className={`px-2 py-0.5 rounded-sm text-2xs font-semibold transition-colors ${showingPreview ? "bg-surface text-accent shadow-card" : "text-ink-3 hover:text-ink"
+                        }`}
                     >
                       Preview
                     </button>
@@ -497,6 +508,68 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
               Each requirement the posting states, judged in code against the shipped resume.
               Read it next to the ATS percentage: a high keyword score missing whole requirements shows up here as gap rows.
             </p>
+            {(result.unfilled_gaps?.length ?? 0) > 0 && (
+              <div className="mb-3 p-3 rounded-md2 bg-surface border border-warn/30">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                  <span className="text-2xs font-semibold text-warn">
+                    Needs your input ({result.unfilled_gaps!.length})
+                  </span>
+                  <span className="text-2xs font-mono text-ink-2">
+                    Honest ATS ceiling with current evidence: ~{result.ats_ceiling ?? Math.round(result.ats_percentage)}% (current {Math.round(result.ats_percentage)}%)
+                  </span>
+                </div>
+                <p className="text-2xs text-ink-3 mb-2">
+                  The optimizer left these out because they are absent from your resume and notes. Add real context if you have used any of them:
+                </p>
+                <ul className="space-y-1.5">
+                  {result.unfilled_gaps!.map((gap, gi) => (
+                    <li key={`ug-${gi}`} className="flex flex-col gap-1.5 text-2xs">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="font-mono text-ink">{gap}</span>
+                        {onConfirmGapNote && (
+                          <button
+                            type="button"
+                            disabled={isRerunning}
+                            onClick={() => {
+                              setConfirmingGap(confirmingGap === gap ? null : gap);
+                              setGapNoteInput("");
+                            }}
+                            className="btn btn-secondary btn-sm text-2xs"
+                          >
+                            I have this experience, add a note
+                          </button>
+                        )}
+                      </div>
+                      {confirmingGap === gap && onConfirmGapNote && (
+                        <div className="flex items-center gap-2 mt-1">
+                          <input
+                            value={gapNoteInput}
+                            onChange={(e) => setGapNoteInput(e.target.value)}
+                            placeholder={`Where or how did you use ${gap}?`}
+                            className="input flex-1 text-2xs py-1"
+                            aria-label={`Evidence note for ${gap}`}
+                          />
+                          <button
+                            type="button"
+                            disabled={isRerunning || !gapNoteInput.trim()}
+                            onClick={() => {
+                              const noteText = gapNoteInput.trim();
+                              if (!noteText) return;
+                              setConfirmingGap(null);
+                              setGapNoteInput("");
+                              onConfirmGapNote(gap, noteText);
+                            }}
+                            className="btn btn-primary btn-sm text-2xs"
+                          >
+                            Add &amp; re-run
+                          </button>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {fitCounts && (
               <div className="flex items-center gap-2 mb-3">
                 <span className="px-2 py-0.5 rounded-sm2 bg-ok-tint border border-ok/25 text-2xs text-ok font-semibold">{fitCounts[0]} covered</span>
@@ -510,13 +583,12 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                   <div className="flex items-start gap-2">
                     <span
                       aria-label={row.status}
-                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-sm2 border text-2xs font-semibold uppercase tracking-wide shrink-0 ${
-                        row.status === "covered"
-                          ? "bg-ok-tint border-ok/25 text-ok"
-                          : row.status === "partial"
-                            ? "bg-warn-tint border-warn/25 text-warn"
-                            : "bg-danger-tint border-danger/25 text-danger"
-                      }`}
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-sm2 border text-2xs font-semibold uppercase tracking-wide shrink-0 ${row.status === "covered"
+                        ? "bg-ok-tint border-ok/25 text-ok"
+                        : row.status === "partial"
+                          ? "bg-warn-tint border-warn/25 text-warn"
+                          : "bg-danger-tint border-danger/25 text-danger"
+                        }`}
                     >
                       {row.status === "covered"
                         ? <Check weight="bold" className="w-3 h-3" />
@@ -568,13 +640,12 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                   <div className="flex items-start gap-2">
                     <span
                       aria-label={row.grade}
-                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-sm2 border text-2xs font-semibold uppercase tracking-wide shrink-0 ${
-                        row.grade === "high"
-                          ? "bg-ok-tint border-ok/25 text-ok"
-                          : row.grade === "medium"
-                            ? "bg-warn-tint border-warn/25 text-warn"
-                            : "bg-danger-tint border-danger/25 text-danger"
-                      }`}
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-sm2 border text-2xs font-semibold uppercase tracking-wide shrink-0 ${row.grade === "high"
+                        ? "bg-ok-tint border-ok/25 text-ok"
+                        : row.grade === "medium"
+                          ? "bg-warn-tint border-warn/25 text-warn"
+                          : "bg-danger-tint border-danger/25 text-danger"
+                        }`}
                     >
                       {row.grade === "high"
                         ? <Check weight="bold" className="w-3 h-3" />
@@ -634,15 +705,14 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                   <div className="flex items-start gap-2">
                     <span
                       aria-label={row.status}
-                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-sm2 border text-2xs font-semibold uppercase tracking-wide shrink-0 ${
-                        row.status === "unchanged"
-                          ? "bg-ok-tint border-ok/25 text-ok"
-                          : row.status === "reworded"
-                            ? "bg-warn-tint border-warn/25 text-warn"
-                            : row.status === "new"
-                              ? "bg-inset border-line text-ink-2"
-                              : "bg-danger-tint border-danger/25 text-danger"
-                      }`}
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-sm2 border text-2xs font-semibold uppercase tracking-wide shrink-0 ${row.status === "unchanged"
+                        ? "bg-ok-tint border-ok/25 text-ok"
+                        : row.status === "reworded"
+                          ? "bg-warn-tint border-warn/25 text-warn"
+                          : row.status === "new"
+                            ? "bg-inset border-line text-ink-2"
+                            : "bg-danger-tint border-danger/25 text-danger"
+                        }`}
                     >
                       {row.status === "unchanged"
                         ? <Check weight="bold" className="w-3 h-3" />
@@ -814,6 +884,20 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, orig
                     <span key={`clt-${i}`} className="px-2 py-0.5 rounded-sm2 bg-warn-tint border border-warn/25 text-2xs text-warn font-mono">{item}</span>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {(result.prompt_prevention_failures?.length ?? 0) > 0 && (
+              <div className="mb-4">
+                <h4 className="text-2xs font-semibold text-ink mb-1.5">Prompt prevention safety-net events</h4>
+                <p className="text-2xs text-ink-3 mb-1.5">Upfront denied-tool rules were bypassed by a model response and caught post-hoc by the deterministic stripper:</p>
+                <ul className="space-y-1">
+                  {result.prompt_prevention_failures!.map((f, i) => (
+                    <li key={`ppf-${i}`} className="text-2xs text-warn font-mono">
+                      {f.stage}: {(f.terms ?? []).join(", ")}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 

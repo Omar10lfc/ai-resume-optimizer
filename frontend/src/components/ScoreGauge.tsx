@@ -16,6 +16,7 @@ interface ScoreGaugeProps {
   score: number;
   scoreClass: "good" | "warn" | "bad";
   atsPercentage: number;
+  llmQualityScore?: number;
   weights: { ats: number; llm: number };
 }
 
@@ -41,8 +42,10 @@ const CLASS_COLORS: Record<ScoreGaugeProps["scoreClass"], { varName: string; lab
   bad: { varName: "var(--danger)", label: "Needs review" },
 };
 
-export const ScoreGauge: React.FC<ScoreGaugeProps> = ({ score, scoreClass, atsPercentage, weights }) => {
-  const quality = qualityFrom(score, atsPercentage, weights);
+export const ScoreGauge: React.FC<ScoreGaugeProps> = ({ score, scoreClass, atsPercentage, llmQualityScore, weights }) => {
+  const quality = llmQualityScore != null && Number.isFinite(llmQualityScore)
+    ? Math.min(100, Math.max(0, Math.round(llmQualityScore)))
+    : qualityFrom(score, atsPercentage, weights);
   const clamped = Math.min(100, Math.max(0, Math.round(score)));
   const ringColor = CLASS_COLORS[scoreClass].varName;
   // Dash arcs: fill for score, notch at the pass threshold (80).
