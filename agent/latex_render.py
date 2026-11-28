@@ -346,21 +346,19 @@ def _render_section(section: Section, compact: bool = False) -> str:
                     date_text = _latex_escape(date_field)
                     title_bold = r"\textbf{" + _latex_escape(clean_title) + r"}"
 
-                    # Estimate single-line width
+                    # Estimate single-line width (bold glyphs are ~1.15x normal width)
                     title_plain_len = len(clean_title)
+                    title_weight = (title_plain_len * 115 + 99) // 100
                     links_plain_len = sum(len(lbl) + 3 for lbl, _ in extracted_links)
                     tech_plain_len = len(clean_tech)
                     date_plain_len = len(date_field)
                     total_len = title_plain_len + links_plain_len + tech_plain_len + date_plain_len
-                    # Left-side-only width (Nov 16 2026, run d946bb5f): the
-                    # restored same-URL labels ("Live Demo", "(Graduation
-                    # Project)", "GitHub" - all one featured URL) give a
-                    # link-heavy title with NO tech text, so the old
-                    # `or not tech_text` clause shipped a ~124-char single
-                    # line that pushed the right-aligned date off the sheet.
+                    # Weighted Row 1 check accounts for bold width and date column so
+                    # an 80-char bold title + date cannot squeeze links off the sheet edge.
                     left_len = title_plain_len + links_plain_len
+                    row1_weighted = title_weight + links_plain_len + date_plain_len
 
-                    if total_len <= 85 or (not tech_text and left_len <= 85):
+                    if (total_len <= 85 or (not tech_text and left_len <= 85)) and row1_weighted <= 108:
                         # Fits on a single line via \resumeProjectHeading
                         # (a link-only title has an empty clean_title - the
                         # label rides the link - so no empty \textbf{}
@@ -377,25 +375,24 @@ def _render_section(section: Section, compact: bool = False) -> str:
                         parts.append(r"\resumeProjectHeading{" + left_line + r"}{" + date_text + r"}")
                         last_header_kind = "ph"
                     else:
-                        # Multi-line: Title + links on Row 1, tech stack on Row 2.
-                        # With no tech text but a too-long link list, the
-                        # surplus links move to Row 2 (Nov 16 2026: the
-                        # user's original resume shows "GitHub" under the
-                        # project, not on a 124-char row 1).
+                        # Multi-line: Title (+ fitting links) on Row 1; surplus
+                        # links and/or tech stack move to Row 2 so Row 1 never
+                        # pushes the right-aligned date off the physical page.
                         row1_links = formatted_links
                         row2_links: list = []
-                        if not tech_text and len(formatted_links) > 1:
-                            budget = 85 - title_plain_len
+                        row1_budget = 108 - title_weight - date_plain_len
+                        if formatted_links and (not tech_text or (links_plain_len > row1_budget and len(formatted_links) > 1)):
                             used = 0
                             cut = 0
                             for idx2, (lbl, _u) in enumerate(extracted_links):
                                 w = len(lbl) + 3
-                                if used + w <= budget:
+                                if used + w <= row1_budget:
                                     used += w
                                     cut = idx2 + 1
                                 else:
                                     break
-                            cut = max(cut, 1)
+                            if not clean_title:
+                                cut = max(cut, 1)
                             row1_links = formatted_links[:cut]
                             row2_links = formatted_links[cut:]
                         row1_items = []
@@ -404,6 +401,11 @@ def _render_section(section: Section, compact: bool = False) -> str:
                         if row1_links:
                             row1_items.append(r"\textnormal{" + " $|$ ".join(row1_links) + r"}")
                         row1_left = " $|$ ".join(row1_items)
+                        if not row1_links and title_weight + date_plain_len > 114:
+                            row1_left = (
+                                r"\parbox[t]{\dimexpr\textwidth-0.15in-1.6in\relax}"
+                                r"{\raggedright " + row1_left + r"}"
+                            )
                         tech_row = tech_text
                         if row2_links:
                             links_line = " $|$ ".join(row2_links)
@@ -496,7 +498,7 @@ def _render_section(section: Section, compact: bool = False) -> str:
             if m:
                 # **Label**: value → bold label, formatted value
                 label = _strip_inline(m.group(1))
-                value = m.group(2)
+                value = re.sub(r',(?!\d)(?=[A-Za-z])', ', ', m.group(2))
                 item_text = (r"\textbf{" + _latex_escape(label) + r"}{: " +
                              _render_text_with_links(value) + r"}")
                 is_label_row = True
@@ -508,8 +510,9 @@ def _render_section(section: Section, compact: bool = False) -> str:
                         and '[' not in cm.group(1)
                         and not cm.group(2).startswith('//')
                         and not cm.group(1).lower().endswith('mailto')):
+                    val = re.sub(r',(?!\d)(?=[A-Za-z])', ', ', cm.group(2))
                     item_text = (r"\textbf{" + _latex_escape(cm.group(1)) + r"}{: " +
-                                 _render_text_with_links(cm.group(2)) + r"}")
+                                 _render_text_with_links(val) + r"}")
                     is_label_row = True
                 else:
                     # A simple line can still carry a raw list marker when a
@@ -517,8 +520,10 @@ def _render_section(section: Section, compact: bool = False) -> str:
                     # cert links ride "- [label](url)" lines). Strip the
                     # marker so it does not print inside the \underline
                     # label (bf58e700 follow-up, Nov 15 2026).
-                    item_text = _render_text_with_links(
-                        re.sub(r'^\s*[-*•]\s+', '', ln))
+                    clean_ln = re.sub(r'^\s*[-*•]\s+', '', ln)
+                    if '://' not in clean_ln and '](' not in clean_ln:
+                        clean_ln = re.sub(r',(?!\d)(?=[A-Za-z])', ', ', clean_ln)
+                    item_text = _render_text_with_links(clean_ln)
                     is_label_row = False
             items.append(item_text)
             hang_flags.append(is_label_row)
@@ -742,22 +747,22 @@ _COMPACT_OVERRIDES_TEMPLATE = r"""
 \renewcommand{\resumeItem}[1]{\item\small\looseness=-1{{#1 \vspace{-2pt}}}}
 \renewcommand{\resumeSubheading}[4]{
   \vspace{-1pt}\item
-    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}[t]{l@{\extracolsep{\fill}}r}
+    \begin{tabularx}{\dimexpr\textwidth-0.15in\relax}[t]{@{}>{\raggedright\arraybackslash}X r@{}}
       \textbf{#1} & #2 \\
       \textit{\small#3} & \textit{\small #4} \\
-    \end{tabular*}\vspace{-3.1pt}
+    \end{tabularx}\vspace{-3.1pt}
 }
 \renewcommand{\resumeSubSubheading}[2]{
     \item
-    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}{l@{\extracolsep{\fill}}r}
+    \begin{tabularx}{\dimexpr\textwidth-0.15in\relax}[t]{@{}>{\raggedright\arraybackslash}X r@{}}
       \textit{\small#1} & \textit{\small #2} \\
-    \end{tabular*}\vspace{-3.1pt}
+    \end{tabularx}\vspace{-3.1pt}
 }
 \renewcommand{\resumeProjectHeading}[2]{
     \item
-    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}{l@{\extracolsep{\fill}}r}
+    \begin{tabularx}{\dimexpr\textwidth-0.15in\relax}[t]{@{}>{\raggedright\arraybackslash}X r@{}}
       \small#1 & #2 \\
-    \end{tabular*}\vspace{-3.1pt}
+    \end{tabularx}\vspace{-3.1pt}
 }
 % Entry-boundary repair (live request 539f7c1d, Nov 8 2026): after the
 % itemize's own -2pt item tails, a negative end-of-list spacer collapsed
@@ -819,38 +824,43 @@ def pdf_last_baseline(pdf_path) -> Optional[float]:
 
 
 def render_compact_tiers(data: ResumeData, output_dir,
-                         filename: str = "Optimized_Resume.pdf") -> Optional[dict]:
-    """Auto-compact tier pass for the >1-page containment (pdf_exporter).
+                         filename: str = "Optimized_Resume.pdf",
+                         target_pages: int = 1) -> Optional[dict]:
+    """Auto-compact tier pass for multi-page containment (pdf_exporter).
 
-    Compiles the airy tier-1 first and adopts it only when the render stays
-    one page AND the last baseline stops above _COMPACT_BOTTOM_STOP; only
-    then does it pay the +18pt/page air cost. Otherwise the balanced tier-2
-    renders and is adopted whenever it yields one page; the floor tier-3
-    (the former tight values) is the last resort for resumes even the
-    balanced tier cannot hold on one page. A one-page airy render that
-    crosses the stop is kept as a last-resort fallback - one deep-margin
-    page beats a two-page resume.
-
-    Tiers compile to probe filenames first and the winner is copied onto
-    ``filename``: a losing tier must never leave its (overflowing) PDF
-    behind under the shipped name.
+    Compiles airy tier-1 first and adopts it when pages <= target_pages AND
+    geometry bounds pass (plus _COMPACT_BOTTOM_STOP on 1-page targets); else
+    evaluates balanced tier-2 and floor tier-3, preferring a geometry-clean fit.
 
     Returns {"pdf_path", "tex", "tier", "pages"} for the adopted render, or
-    None when no tier produced a one-page PDF (the caller keeps the base
-    render and surfaces the overflow warning).
+    None when no tier kept pages <= target_pages.
     """
+    from .pdf_verify import check_pdf_geometry
+
+    target_pages = max(1, min(2, int(target_pages or 1)))
     output_dir = Path(output_dir)
-    probes: dict[int, tuple[str, Optional[str]]] = {}
+    probes: dict[int, tuple[str, Optional[str], int, bool]] = {}
     fallback_tier = None
     chosen_tier = None
     for tier in (1, 2, 3):
         tex = render_resume_tex(data, compact=True, compact_tier=tier)
         probe = latex_to_pdf(tex, output_dir,
                              _mkstemp_pdf_name(output_dir, f"__compact_tier{tier}_").name)
-        probes[tier] = (tex, probe)
-        if not probe or (pdf_page_count(probe) or 99) != 1:
+        pages = (pdf_page_count(probe) or 99) if probe else 99
+        geom_res = check_pdf_geometry(probe) if probe else {"ok": False, "detail": ""}
+        geom_ok = bool(
+            probe and (
+                geom_res["ok"]
+                or str(geom_res.get("detail") or "").startswith("geometry measurement failed")
+            )
+        )
+        probes[tier] = (tex, probe, pages, geom_ok)
+        if not probe or pages > target_pages:
             continue
-        if tier == 1:
+        if not geom_ok:
+            fallback_tier = fallback_tier or tier
+            continue
+        if tier == 1 and target_pages == 1:
             last = pdf_last_baseline(probe)
             if last is not None and last > _COMPACT_BOTTOM_STOP:
                 fallback_tier = fallback_tier or tier
@@ -859,18 +869,18 @@ def render_compact_tiers(data: ResumeData, output_dir,
         break
     winner = chosen_tier if chosen_tier is not None else fallback_tier
     if winner is None:
-        for _, probe in probes.values():
+        for _, probe, _, _ in probes.values():
             if probe:
                 Path(probe).unlink(missing_ok=True)
         return None
-    tex, probe = probes[winner]
+    tex, probe, pages, _ = probes[winner]
     dest = output_dir / filename
     shutil.copyfile(probe, dest)
-    for tier_probe in (p for _, p in probes.values() if p):
+    for tier_probe in (p for _, p, _, _ in probes.values() if p):
         probe_path = Path(tier_probe)
         if probe_path != dest:
             probe_path.unlink(missing_ok=True)
-    return {"pdf_path": str(dest), "tex": tex, "tier": winner, "pages": 1}
+    return {"pdf_path": str(dest), "tex": tex, "tier": winner, "pages": pages}
 
 
 def render_resume_tex(data: ResumeData, compact: bool = False,

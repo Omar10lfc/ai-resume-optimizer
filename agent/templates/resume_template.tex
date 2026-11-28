@@ -30,7 +30,7 @@
 % window. \emergencystretch gives borderline bullets/rows a stretch band so
 % near-full lines do not strand a lonely word. Both are spacing-only - they
 % never change any character in the text layer.
-\usepackage[expansion=true,factor=2000]{microtype}
+\usepackage[expansion=true,factor=2000,protrusion=false]{microtype}
 \setlength{\emergencystretch}{1em}
 \input{glyphtounicode}
 
@@ -150,24 +150,24 @@
 %    the title->stack gap stays 2.8pt.
 \newcommand{\resumeSubheading}[4]{
   \vspace{-1pt}\item
-    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}[t]{l@{\extracolsep{\fill}}r}
+    \begin{tabularx}{\dimexpr\textwidth-0.15in\relax}[t]{@{}>{\raggedright\arraybackslash}X r@{}}
       \textbf{#1} & #2 \\
       \textit{\small#3} & \textit{\small #4} \\
-    \end{tabular*}\vspace{-5.8pt}
+    \end{tabularx}\vspace{-5.8pt}
 }
 
 \newcommand{\resumeSubSubheading}[2]{
     \item
-    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}{l@{\extracolsep{\fill}}r}
+    \begin{tabularx}{\dimexpr\textwidth-0.15in\relax}[t]{@{}>{\raggedright\arraybackslash}X r@{}}
       \textit{\small#1} & \textit{\small #2} \\
-    \end{tabular*}\vspace{-5.8pt}
+    \end{tabularx}\vspace{-5.8pt}
 }
 
 \newcommand{\resumeProjectHeading}[2]{
     \item
-    \begin{tabular*}{\dimexpr\textwidth-0.15in\relax}{l@{\extracolsep{\fill}}r}
+    \begin{tabularx}{\dimexpr\textwidth-0.15in\relax}[t]{@{}>{\raggedright\arraybackslash}X r@{}}
       \small#1 & #2 \\
-    \end{tabular*}\vspace{-5.8pt}
+    \end{tabularx}\vspace{-5.8pt}
 }
 
 \newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}

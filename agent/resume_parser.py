@@ -648,6 +648,21 @@ def _parse_entry_block(lines: list[str]) -> tuple[Optional[Entry], int]:
             continue
         if _is_orphan_continuation(stripped, min_len=25):
             break  # a mid-sentence fragment - never a header field
+        if header_lines and not _STANDALONE_DATE_RE.match(stripped):
+            prev = header_lines[-1]
+            # Stop before a fresh entry header when the preceding line already
+            # completed one with a date AND either we already have >=2 header
+            # lines (stacked Education) or the incoming line has explicit column
+            # structure (`|` / comma-split org), never splitting a bare sub-line
+            # like "Live Demo" underneath "Title | stack | dates".
+            has_trailing_month_year = bool(
+                re.search(r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{4}\s*$',
+                          prev, re.IGNORECASE)
+            )
+            prev_dated = bool(_DATE_RANGE_RE.search(prev) or _STANDALONE_DATE_RE.match(prev) or has_trailing_month_year)
+            new_entry_shape = ('|' in stripped or _should_split_on_comma(stripped))
+            if (prev_dated and (len(header_lines) >= 2 or new_entry_shape)) or (len(header_lines) >= 2 and new_entry_shape):
+                break
         header_lines.append(_strip_inline(stripped))
         idx += 1
 
@@ -969,7 +984,8 @@ def _extract_project_links_and_title(
     for field in other_fields:
         for m in md_re.finditer(field):
             add_link(m.group(1), m.group(2))
-        for m in url_re.finditer(field):
+        plain_field = md_re.sub('', field)
+        for m in url_re.finditer(plain_field):
             u = m.group(0)
             lbl = "GitHub" if "github.com" in u.lower() else "Live Demo"
             add_link(lbl, u)

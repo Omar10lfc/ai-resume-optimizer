@@ -525,7 +525,7 @@ def test_theme_vocabulary_and_default():
 
 
 @pytest.mark.parametrize("theme,needle", [
-    ("classic", '--font-body:"Segoe UI"'),
+    ("classic", '--font-body:"Latin Modern Roman"'),
     ("serif", "--font-body:Charter, Georgia"),
     ("modern", "--font-body:system-ui"),
 ])
@@ -534,13 +534,12 @@ def test_theme_body_font_applied(theme, needle):
 
 
 def test_classic_reproduces_the_round12_look():
-    """Classic parity: the round-12 literals now ride the variable set -
-    the default look is unchanged byte-for-byte in effect."""
+    """Classic LaTeX parity: Latin Modern fonts, small-caps rules, black ink."""
     style = _theme_style("classic")
-    for needle in ("--ink:#111", "--date:#333", "--muted:#444",
+    for needle in ("--ink:#000", "--date:#000", "--muted:#222",
                    "--name-tracking:0.3pt", "--name-color:inherit",
-                   "--h2-case:uppercase", "--h2-tracking:0.6pt",
-                   "--h2-rule:0.8pt solid #444", "--h2-color:inherit"):
+                   "--h2-variant:small-caps", "--h2-tracking:0.3pt",
+                   "--h2-rule:0.5pt solid #000", "--h2-color:inherit"):
         assert needle in style, needle
 
 
@@ -559,8 +558,8 @@ def test_theme_never_touches_sizes():
 
 def test_unknown_theme_falls_back_to_classic():
     style = _theme_style("hacker-green")
-    assert '--font-body:"Segoe UI"' in style
-    assert "--h2-rule:0.8pt solid #444" in style
+    assert '--font-body:"Latin Modern Roman"' in style
+    assert "--h2-rule:0.5pt solid #000" in style
 
 
 def test_theme_composes_with_density():

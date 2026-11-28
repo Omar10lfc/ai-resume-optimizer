@@ -355,6 +355,7 @@ def test_rendered_tex_carries_no_typographic_date_dash():
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_compiled_resume_text_layer_passes_and_dates_are_ascii(tmp_path):
     md = (
         "# Jake Ryan\n"
@@ -379,6 +380,7 @@ def test_compiled_resume_text_layer_passes_and_dates_are_ascii(tmp_path):
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_compiled_en_dash_is_detected(tmp_path):
     # `--` in LaTeX source is the en dash ATS imports choke on. The renderer
     # no longer emits it for dates; this proves the verifier would catch it.
@@ -493,3 +495,136 @@ def test_export_documents_passes_job_text_to_verification(monkeypatch, tmp_path)
 
     assert seen["job_text"] == "We require Python"
     assert got["pdf_checks"] == []
+
+
+# ==========================================
+# Geometric bounds & accent-folded literals
+# ==========================================
+
+def test_normalize_text_preserves_accents_by_default_and_folds_when_requested():
+    assert normalize_text("Jos\u00e9 \u00c1lvarez-Mu\u00f1oz") == "jos\u00e9 \u00e1lvarez-mu\u00f1oz"
+    assert normalize_text("Jos\u00e9 \u00c1lvarez-Mu\u00f1oz", fold_accents=True) == "jose alvarez-munoz"
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
+def test_non_ascii_name_passes_required_text_in_latex_pdf(tmp_path):
+    md = (
+        "# Jos\u00e9 \u00c1lvarez-Mu\u00f1oz\n"
+        "jose.alvarez@example.ch\n\n"
+        "## Experience\n"
+        "Engineer | M\u00fcller-Stra\u00dfe GmbH | Jan 2022 - Present\n"
+        "- Built Python pipelines.\n"
+    )
+    pdf = latex_to_pdf(render_resume_tex(parse_markdown_resume(md)), tmp_path, "intl.pdf")
+    assert pdf is not None
+    res = verify_pdf(pdf, expected_pages=1, required_literals=["Jos\u00e9 \u00c1lvarez-Mu\u00f1oz", "jose.alvarez@example.ch"])
+    checks = _by_name(res)
+    assert checks["required_text"]["ok"] is True
+    assert checks["geometry"]["ok"] is True
+    assert res["ok"] is True
+
+
+@pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
+def test_geometry_catches_horizontal_and_bottom_overflow(tmp_path):
+    # Right-margin overflow past 612pt physical sheet edge
+    tex_right = (
+        "\\documentclass[letterpaper,10pt]{article}"
+        "\\begin{document}"
+        "\\noindent\\makebox[720pt][l]{Start \\hfill OverflowedRightEdgeWord}"
+        "\\end{document}"
+    )
+    pdf_r = latex_to_pdf(tex_right, tmp_path, "ovf_r.pdf")
+    assert pdf_r is not None
+    checks_r = _by_name(verify_pdf(pdf_r, expected_pages=1))
+    assert checks_r["geometry"]["ok"] is False
+    assert "edge" in checks_r["geometry"]["detail"] or "margin" in checks_r["geometry"]["detail"]
+
+    # Bottom physical clip overflow past 792pt
+    tex_bot = (
+        "\\documentclass[letterpaper,10pt]{article}"
+        "\\begin{document}"
+        "\\vspace*{690pt} BottomClippedLine"
+        "\\end{document}"
+    )
+    pdf_b = latex_to_pdf(tex_bot, tmp_path, "ovf_b.pdf")
+    assert pdf_b is not None
+    checks_b = _by_name(verify_pdf(pdf_b, expected_pages=1))
+    assert checks_b["geometry"]["ok"] is False
+    assert "bottom clip" in checks_b["geometry"]["detail"]
+
+
+def test_export_documents_retries_then_falls_back_to_html_on_geometry_failure(monkeypatch, tmp_path):
+    latex_pdf = tmp_path / "latex.pdf"
+    compact_pdf = tmp_path / "compact.pdf"
+    html_pdf = tmp_path / "html.pdf"
+    cover_pdf = tmp_path / "cover.pdf"
+    for p in (latex_pdf, compact_pdf, html_pdf, cover_pdf):
+        p.write_bytes(b"%PDF-1.4")
+
+    monkeypatch.setattr(_exporter, "_export_resume", lambda *a, **k: {
+        "resume_pdf_path": str(latex_pdf),
+        "resume_pages": 1,
+        "resume_compacted": False,
+        "render_engine": "latex@1",
+    })
+    monkeypatch.setattr(_exporter._latex, "render_compact_tiers", lambda *a, **k: {
+        "pdf_path": str(compact_pdf),
+        "tex": "% compact",
+        "tier": 1,
+        "pages": 1,
+    })
+    monkeypatch.setattr(_exporter._latex, "latex_to_docx", lambda *a, **k: None)
+    monkeypatch.setattr(_exporter._html, "HAVE_BROWSER", True)
+    import agent.config as _cfg
+    monkeypatch.setattr(_cfg, "RESUME_RENDERER", "auto")
+    monkeypatch.setattr(_exporter, "_export_resume_html", lambda *a, **k: {
+        "resume_pdf_path": str(html_pdf),
+        "resume_pages": 1,
+        "resume_compacted": False,
+        "render_engine": "html-chromium@1",
+    })
+    monkeypatch.setattr(_exporter, "_html_to_pdf", lambda *a, **k: str(cover_pdf))
+    monkeypatch.setattr(_exporter, "_resume_required_literals", lambda *a, **k: [])
+
+    def fake_verify(path, expected_pages=1, required_literals=()):
+        name = Path(path).name
+        if name in ("latex.pdf", "compact.pdf"):
+            return {"pages": 1, "ok": False, "checks": [
+                {"name": "geometry", "ok": False, "detail": "p1 off right sheet edge (734.9>612pt)"}]}
+        return {"pages": 1, "ok": True, "checks": [
+            {"name": "geometry", "ok": True, "detail": "ok"}]}
+
+    monkeypatch.setattr(_exporter, "verify_pdf", fake_verify)
+
+    got = _exporter.export_documents("# A\na@b.com\n## Skills\nPython\n", "Dear,\n", tmp_path)
+    assert got["render_engine"] == "html-chromium@1"
+    names = [c["name"] for c in got["pdf_checks"]]
+    assert "render_retry" in names
+    assert "engine_fallback" in names
+
+
+def test_export_documents_blocks_and_unlinks_when_both_engines_fail_geometry(monkeypatch, tmp_path):
+    latex_pdf = tmp_path / "bad.pdf"
+    cover_pdf = tmp_path / "cover.pdf"
+    latex_pdf.write_bytes(b"%PDF-1.4")
+    cover_pdf.write_bytes(b"%PDF-1.4")
+
+    monkeypatch.setattr(_exporter, "_export_resume", lambda *a, **k: {
+        "resume_pdf_path": str(latex_pdf),
+        "resume_pages": 1,
+        "resume_compacted": True,
+        "render_engine": "latex@1",
+    })
+    monkeypatch.setattr(_exporter._html, "HAVE_BROWSER", False)
+    monkeypatch.setattr(_exporter, "_html_to_pdf", lambda *a, **k: str(cover_pdf))
+    monkeypatch.setattr(_exporter, "_resume_required_literals", lambda *a, **k: [])
+    monkeypatch.setattr(_exporter, "verify_pdf", lambda path, **k: {
+        "pages": 1, "ok": False, "checks": [
+            {"name": "geometry", "ok": False, "detail": "p1 off right sheet edge"}]
+    } if Path(path).name == "bad.pdf" else {"pages": 1, "ok": True, "checks": []})
+
+    with pytest.raises(_exporter.PdfGeometryError, match="failed geometric layout bounds"):
+        _exporter.export_documents("# A\na@b.com\n", "Dear,\n", tmp_path)
+    assert not latex_pdf.exists()

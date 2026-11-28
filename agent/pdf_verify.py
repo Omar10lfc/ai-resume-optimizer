@@ -22,6 +22,7 @@ repository (Copyright (c) 2026 Mads Lorentzen); see NOTICE.
 """
 from __future__ import annotations
 
+from pathlib import Path
 import re
 import unicodedata
 
@@ -153,10 +154,101 @@ _FOLD = str.maketrans({
 _WS_RE = re.compile(r"\s+")
 
 
-def normalize_text(text: str) -> str:
+_ACCENT_TRANSLIT = str.maketrans({
+    "\u00df": "ss", "\u00e6": "ae", "\u00c6": "ae",
+    "\u00f8": "o", "\u00d8": "o", "\u0142": "l", "\u0141": "l",
+    "\u0111": "d", "\u0110": "d", "\u0153": "oe", "\u0152": "oe",
+})
+
+
+def _fold_ascii_accents(text: str) -> str:
+    """Strip combining diacritics for accent-tolerant comparison against ASCII PDFs."""
+    t = (text or "").translate(_ACCENT_TRANSLIT)
+    decomposed = unicodedata.normalize("NFD", t)
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+
+
+def normalize_text(text: str, *, fold_accents: bool = False) -> str:
     """Fold a string for comparison only - never for the ASCII-date scan."""
     text = unicodedata.normalize("NFC", text or "").translate(_FOLD)
+    if fold_accents:
+        text = _fold_ascii_accents(text)
     return _WS_RE.sub(" ", text).strip().casefold()
+
+
+def check_pdf_geometry(path: str, *, margin_slack_pt: float = 2.0,
+                       sheet_edge_slack_pt: float = 12.0,
+                       bottom_clip_pt: float = 6.0) -> dict:
+    """Verify word bounding boxes stay within page margins, physical edges,
+    and do not horizontally overlap on the same printed row."""
+    file_path = Path(str(path))
+    if not file_path.is_file():
+        return {"ok": True, "detail": "geometry skipped (no file)", "violations": []}
+    try:
+        import pdfplumber
+    except ImportError:
+        return {"ok": True, "detail": "geometry skipped (pdfplumber unavailable)", "violations": []}
+
+    violations: list[str] = []
+    try:
+        with pdfplumber.open(str(file_path)) as doc:
+            for pidx, page in enumerate(doc.pages, 1):
+                w_pt = float(page.width)
+                h_pt = float(page.height)
+                words = page.extract_words(x_tolerance=2, y_tolerance=2) or []
+                if not words:
+                    continue
+
+                rules = [
+                    r for r in ((page.lines or []) + (page.rects or []))
+                    if abs(float(r["top"]) - float(r["bottom"])) < 1.5
+                    and (float(r["x1"]) - float(r["x0"])) > w_pt * 0.45
+                ]
+                rule_limit = (max(max(float(r["x1"]) for r in rules), w_pt - 28.8) + margin_slack_pt
+                              if rules else w_pt - 18.0)
+                right_limit = min(w_pt - sheet_edge_slack_pt, rule_limit)
+                bottom_limit = h_pt - bottom_clip_pt
+
+                for w in words:
+                    x1 = float(w["x1"])
+                    bot = float(w["bottom"])
+                    txt = str(w.get("text") or "")[:30]
+                    if x1 > w_pt + 0.5:
+                        violations.append(
+                            f"p{pidx} off right sheet edge ({x1:.1f}>{w_pt:.0f}pt): {txt!r}")
+                    elif x1 > right_limit:
+                        violations.append(
+                            f"p{pidx} past right margin ({x1:.1f}>{right_limit:.1f}pt): {txt!r}")
+                    if bot > bottom_limit:
+                        violations.append(
+                            f"p{pidx} bottom clip ({bot:.1f}>{bottom_limit:.1f}pt): {txt!r}")
+
+                # Detect symmetric bounding-box collisions on vertical-overlapping words
+                sorted_words = sorted(words, key=lambda w: float(w["top"]))
+                for i in range(len(sorted_words)):
+                    a = sorted_words[i]
+                    a_top, a_bot = float(a["top"]), float(a["bottom"])
+                    a_x0, a_x1 = float(a["x0"]), float(a["x1"])
+                    for j in range(i + 1, len(sorted_words)):
+                        b = sorted_words[j]
+                        b_top, b_bot = float(b["top"]), float(b["bottom"])
+                        if b_top >= a_bot - 2.0:
+                            break
+                        y_ov = min(a_bot, b_bot) - max(a_top, b_top)
+                        x_ov = min(a_x1, float(b["x1"])) - max(a_x0, float(b["x0"]))
+                        if y_ov > 2.5 and x_ov > 2.0:
+                            violations.append(
+                                f"p{pidx} text collision: {a['text']!r} ({a_x0:.1f}-{a_x1:.1f}) overlaps {b['text']!r} ({float(b['x0']):.1f}-{float(b['x1']):.1f})")
+    except Exception as exc:
+        return {"ok": False, "detail": f"geometry measurement failed: {exc}", "violations": [str(exc)]}
+
+    if violations:
+        return {
+            "ok": False,
+            "detail": "; ".join(violations[:4]) + (f" (+{len(violations) - 4} more)" if len(violations) > 4 else ""),
+            "violations": violations,
+        }
+    return {"ok": True, "detail": "all glyphs within page margins and non-overlapping", "violations": []}
 
 
 def _check(name: str, ok: bool, detail: str) -> dict:
@@ -219,11 +311,20 @@ def verify_pdf(path: str, expected_pages: int | None = 1,
     literals = [str(lit).strip() for lit in required_literals or () if str(lit).strip()]
     if literals:
         haystack = normalize_text(raw)
-        missing = [lit for lit in literals if normalize_text(lit) not in haystack]
+        folded_haystack = normalize_text(raw, fold_accents=True)
+        missing = [
+            lit for lit in literals
+            if normalize_text(lit) not in haystack
+            and normalize_text(lit, fold_accents=True) not in folded_haystack
+        ]
         checks.append(_check(
             "required_text", not missing,
             "required text present" if not missing
             else "missing from the text layer: " + ", ".join(missing[:6])))
+
+    if raw.strip():
+        geom = check_pdf_geometry(path)
+        checks.append(_check("geometry", geom["ok"], geom["detail"]))
 
     return {"pages": pages,
             "ok": all(check["ok"] for check in checks),

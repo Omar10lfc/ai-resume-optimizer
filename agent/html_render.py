@@ -49,6 +49,8 @@ against the SAME fixture family the LaTeX path is validated with.
 """
 from __future__ import annotations
 
+import base64
+from functools import lru_cache
 import html as _html_mod
 import logging
 import os
@@ -425,14 +427,69 @@ def _density_css(density: int) -> str:
 # size authority, so the measured tier ladder and its pdfplumber-verified
 # floors hold for every theme (the ladder re-measures per render anyway).
 # "classic" reproduces the round-12 look byte-for-byte in effect.
+_LM_FONT_FILES = (
+    ("Latin Modern Roman", 400, "normal", "lmroman10-regular.otf"),
+    ("Latin Modern Roman", 700, "normal", "lmroman10-bold.otf"),
+    ("Latin Modern Roman", 400, "italic", "lmroman10-italic.otf"),
+    ("Latin Modern Roman", 700, "italic", "lmroman10-bolditalic.otf"),
+    ("Latin Modern Caps", 400, "normal", "lmromancaps10-regular.otf"),
+)
+
+
+def _find_latin_modern_dir() -> Optional[Path]:
+    """Locate local Latin Modern OTF fonts (MiKTeX / TeX Live / bundled) offline."""
+    candidates: list[Path] = [
+        Path(__file__).resolve().parent / "templates" / "fonts",
+        Path(os.environ.get("LOCALAPPDATA", ""), "Programs", "MiKTeX", "fonts", "opentype", "public", "lm"),
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"), "MiKTeX", "fonts", "opentype", "public", "lm"),
+        Path("/usr/share/texmf/fonts/opentype/public/lm"),
+        Path("/usr/share/fonts/opentype/lm"),
+    ]
+    kpse = shutil.which("kpsewhich")
+    if kpse:
+        try:
+            proc = subprocess.run([kpse, "lmroman10-regular.otf"], capture_output=True, text=True, timeout=3)
+            out = (proc.stdout or "").strip()
+            if out:
+                candidates.insert(1, Path(out).parent)
+        except Exception:
+            pass
+    for d in candidates:
+        if d.is_dir() and (d / "lmroman10-regular.otf").is_file():
+            return d
+    return None
+
+
+@lru_cache(maxsize=1)
+def _latin_modern_font_css() -> str:
+    """Build @font-face data URIs for Latin Modern Roman (classic parity, zero network)."""
+    lm_dir = _find_latin_modern_dir()
+    if not lm_dir:
+        return ""
+    rules: list[str] = []
+    for family, weight, style, fname in _LM_FONT_FILES:
+        fpath = lm_dir / fname
+        if not fpath.is_file():
+            continue
+        b64 = base64.b64encode(fpath.read_bytes()).decode("ascii")
+        rules.append(
+            f"@font-face{{font-family:'{family}';font-weight:{weight};"
+            f"font-style:{style};src:url('data:font/opentype;base64,{b64}') format('opentype');}}"
+        )
+    return "\n  ".join(rules)
+
+
 _THEME_VARS: dict[str, dict[str, str]] = {
     "classic": {
-        "font-body": '"Segoe UI", "Helvetica Neue", Arial, "DejaVu Sans", sans-serif',
-        "font-head": '"Segoe UI", "Helvetica Neue", Arial, "DejaVu Sans", sans-serif',
-        "ink": "#111", "date": "#333", "muted": "#444",
+        "font-body": '"Latin Modern Roman", "Latin Modern", "Computer Modern", Georgia, serif',
+        "font-head": '"Latin Modern Caps", "Latin Modern Roman", Georgia, serif',
+        "ink": "#000", "date": "#000", "muted": "#222",
         "name-tracking": "0.3pt", "name-color": "inherit",
-        "h2-case": "uppercase", "h2-tracking": "0.6pt",
-        "h2-rule": "0.8pt solid #444", "h2-color": "inherit",
+        "h1-variant": "small-caps",
+        "h2-case": "none", "h2-variant": "small-caps", "h2-tracking": "0.3pt",
+        "h2-rule": "0.5pt solid #000", "h2-color": "inherit",
+        "link-deco": "underline",
+        "bullet-align": "justify",
     },
     "serif": {
         # Editorial contrast: serif body, sans bold headings, no rule.
@@ -440,8 +497,11 @@ _THEME_VARS: dict[str, dict[str, str]] = {
         "font-head": '"Segoe UI", "Helvetica Neue", Arial, sans-serif',
         "ink": "#1a1a1a", "date": "#3a3a3a", "muted": "#555",
         "name-tracking": "0.5pt", "name-color": "inherit",
-        "h2-case": "none", "h2-tracking": "0.2pt",
+        "h1-variant": "normal",
+        "h2-case": "none", "h2-variant": "normal", "h2-tracking": "0.2pt",
         "h2-rule": "none", "h2-color": "inherit",
+        "link-deco": "none",
+        "bullet-align": "left",
     },
     "modern": {
         # System sans throughout; the name and headings carry the only hue.
@@ -449,8 +509,11 @@ _THEME_VARS: dict[str, dict[str, str]] = {
         "font-head": 'system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif',
         "ink": "#14181d", "date": "#3f4a56", "muted": "#52606d",
         "name-tracking": "1.2pt", "name-color": "#155e75",
-        "h2-case": "none", "h2-tracking": "0.4pt",
+        "h1-variant": "normal",
+        "h2-case": "none", "h2-variant": "normal", "h2-tracking": "0.4pt",
         "h2-rule": "none", "h2-color": "#155e75",
+        "link-deco": "none",
+        "bullet-align": "left",
     },
 }
 
@@ -465,7 +528,7 @@ def _theme_css(theme: str) -> str:
 
 
 _PAGE_CSS = """
-  @page { size: letter; margin: 36pt 40pt 36pt 40pt; }
+  @page { size: letter; margin: 22pt 32pt 36pt 32pt; }
   * { box-sizing: border-box; }
   body {
     margin: 0; color: var(--ink);
@@ -476,16 +539,18 @@ _PAGE_CSS = """
   header { text-align: center; margin: 0 0 2pt; }
   h1 {
     font-family: var(--font-head); font-size: var(--namefs);
+    font-variant: var(--h1-variant);
     margin: 0; letter-spacing: var(--name-tracking);
     color: var(--name-color);
   }
   .contact { font-size: var(--contactfs); }
-  .contact a { color: inherit; }
+  .contact a, .eh a { color: inherit; text-decoration: var(--link-deco); }
   section { margin-top: var(--secgap); }
   h2 {
     font-family: var(--font-head);
     font-size: var(--h2fs); margin: 0 0 2.5pt;
-    text-transform: var(--h2-case); letter-spacing: var(--h2-tracking);
+    text-transform: var(--h2-case); font-variant: var(--h2-variant);
+    letter-spacing: var(--h2-tracking);
     color: var(--h2-color);
     border-bottom: var(--h2-rule); padding-bottom: 1.5pt;
   }
@@ -497,10 +562,10 @@ _PAGE_CSS = """
   .eh .right { white-space: nowrap; flex-shrink: 0; color: var(--date);
                font-size: calc(var(--fs) - 0.5pt); }
   .sub-row { display: flex; justify-content: space-between;
-             align-items: baseline; gap: 12pt; color: #222; }
+             align-items: baseline; gap: 12pt; color: var(--ink); }
   .sub-row .right { white-space: nowrap; flex-shrink: 0; }
   .psep, .loc { color: var(--muted); }
-  ul.bullets { margin: 2pt 0 0 0; padding-left: 14pt; }
+  ul.bullets { margin: 2pt 0 0 0; padding-left: 14pt; text-align: var(--bullet-align); }
   ul.bullets li { margin-bottom: var(--itemgap); }
   ul.bullets li:last-child { margin-bottom: 0; }
   .rows { font-size: var(--rowsfs); }
@@ -528,6 +593,7 @@ def render_resume_html(data: ResumeData, density: int = 0,
         density = 0
     if theme not in _THEME_VARS:
         theme = DEFAULT_THEME
+    font_css = _latin_modern_font_css() if theme == "classic" else ""
     out: list[str] = [
         "<!DOCTYPE html>",
         '<html lang="en"><head>',
@@ -535,6 +601,7 @@ def render_resume_html(data: ResumeData, density: int = 0,
         _CSP_META,
         "<title>Resume</title>",
         "<style>",
+        *([font_css] if font_css else []),
         _density_css(density),
         _theme_css(theme),
         _PAGE_CSS,
@@ -825,33 +892,41 @@ _HTML_BOTTOM_STOP = 743.2
 
 def render_density_tiers(data: ResumeData, output_dir,
                          filename: str = "Optimized_Resume.pdf",
-                         theme: str = DEFAULT_THEME
+                         theme: str = DEFAULT_THEME,
+                         target_pages: int = 1
                          ) -> Optional[dict]:
     """The measured loop: probe-renders tiers 1-3 and adopts the first that
-    fits ONE page (tier 1 additionally gated by ``_HTML_BOTTOM_STOP``),
-    mirroring the LaTeX tier contract - winner copied onto ``filename``,
-    losing probes unlinked, one-page-crossing-the-stop tier kept as a
-    last-resort fallback, None when no tier fits one page (the caller keeps
-    the base render and surfaces the overflow warning).
-
-    ``theme`` is forwarded to every probe render (unknown -> default), so
-    the measured adoption is per-theme: a serif face reflows differently
-    than the classic sans and each gets its own measurement.
+    fits ``target_pages`` AND passes geometry bounds (tier 1 additionally gated
+    by ``_HTML_BOTTOM_STOP`` on 1-page targets).
 
     Returns {"pdf_path", "html", "density", "pages"} for the adopted render.
     """
+    from .pdf_verify import check_pdf_geometry
+
+    target_pages = max(1, min(2, int(target_pages or 1)))
     output_dir = Path(output_dir)
-    probes: dict[int, tuple[str, Optional[str]]] = {}
+    probes: dict[int, tuple[str, Optional[str], int, bool]] = {}
     fallback_tier = None
     chosen_tier = None
     for tier in (1, 2, 3):
         page = render_resume_html(data, density=tier, theme=theme)
         probe = html_to_pdf(page, output_dir,
                             mkstemp_pdf_name(output_dir, f"__density_tier{tier}_").name)
-        probes[tier] = (page, probe)
-        if not probe or (pdf_page_count(probe) or 99) != 1:
+        pages = (pdf_page_count(probe) or 99) if probe else 99
+        geom_res = check_pdf_geometry(probe) if probe else {"ok": False, "detail": ""}
+        geom_ok = bool(
+            probe and (
+                geom_res["ok"]
+                or str(geom_res.get("detail") or "").startswith("geometry measurement failed")
+            )
+        )
+        probes[tier] = (page, probe, pages, geom_ok)
+        if not probe or pages > target_pages:
             continue
-        if tier == 1:
+        if not geom_ok:
+            fallback_tier = fallback_tier or tier
+            continue
+        if tier == 1 and target_pages == 1:
             last = pdf_last_baseline(probe)
             if last is not None and last > _HTML_BOTTOM_STOP:
                 fallback_tier = fallback_tier or tier
@@ -860,16 +935,16 @@ def render_density_tiers(data: ResumeData, output_dir,
         break
     winner = chosen_tier if chosen_tier is not None else fallback_tier
     if winner is None:
-        for _, probe in probes.values():
+        for _, probe, _, _ in probes.values():
             if probe:
                 Path(probe).unlink(missing_ok=True)
         return None
-    page_html, probe = probes[winner]
+    page_html, probe, pages, _ = probes[winner]
     dest = output_dir / filename
     shutil.copyfile(probe, dest)
-    for tier_probe in (p for _, p in probes.values() if p):
+    for tier_probe in (p for _, p, _, _ in probes.values() if p):
         probe_path = Path(tier_probe)
         if probe_path != dest:
             probe_path.unlink(missing_ok=True)
     return {"pdf_path": str(dest), "html": page_html, "density": winner,
-            "pages": 1}
+            "pages": pages}

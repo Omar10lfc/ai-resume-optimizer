@@ -376,6 +376,7 @@ def test_render_skips_empty_sections():
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_latex_to_pdf_compiles_with_empty_section(tmp_path):
     """Regression: a section with no entries and no bullets used to emit an
     empty \\begin{itemize}, making pdflatex fail with 'missing \\item'. Now the
@@ -408,6 +409,7 @@ def test_latex_escape_maps_arrow_mojibake_to_ascii():
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_latex_to_pdf_compiles_with_unicode_glyphs(tmp_path):
     """Regression: a resume containing U+202F narrow no-break space and •
     separators (common in scraped/LLM contact lines) used to make pdflatex
@@ -429,6 +431,7 @@ def test_latex_to_pdf_compiles_with_unicode_glyphs(tmp_path):
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_full_resume_compiles(tmp_path):
     """A realistic multi-section resume (matching how the LLM formats output)
     must compile via pdflatex with all sections present and no stray markdown
@@ -491,6 +494,7 @@ Natural Language Processing in Python - Maven Analytics (Oct 2025)
         assert token in text, f"missing '{token}' in compiled PDF"
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_latex_to_pdf_compiles(tmp_path):
     tex = render_resume_tex(parse_markdown_resume(SAMPLE))
     pdf = latex_to_pdf(tex, tmp_path, "out.pdf")
@@ -636,6 +640,7 @@ def test_pdflatex_invoked_with_paranoid_env(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_latex_write18_is_disabled(tmp_path):
     from pypdf import PdfReader
     tex = (r"\documentclass{article}\begin{document}"
@@ -647,6 +652,7 @@ def test_latex_write18_is_disabled(tmp_path):
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_parallel_latex_renders_are_sentinel_isolated(tmp_path):
     """Four real pdflatex compiles run in parallel with unique sentinels; each
     extracted PDF contains only its own sentinel."""
@@ -669,6 +675,7 @@ def test_parallel_latex_renders_are_sentinel_isolated(tmp_path):
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_latex_to_pdf_pdf_is_parsable(tmp_path):
     from pypdf import PdfReader
     tex = render_resume_tex(parse_markdown_resume(SAMPLE))
@@ -684,6 +691,7 @@ def test_latex_to_pdf_pdf_is_parsable(tmp_path):
 # ==========================================
 
 @pytest.mark.skipif(not HAVE_PANDOC, reason="pandoc not installed")
+@pytest.mark.pdf_render
 def test_latex_to_docx_compiles(tmp_path):
     from zipfile import ZipFile
     tex = render_resume_tex(parse_markdown_resume(SAMPLE))
@@ -1019,6 +1027,27 @@ def test_project_link_row2_surplus_still_keeps_tech_rows_intact():
     assert i_demo < i_date < i_tech
 
 
+def test_long_project_title_moves_all_links_to_row2_including_single_link():
+    """80-char bold title + date leaves no room on Row 1 even for one link:
+    all links move to Row 2 so the date never overflows past the sheet edge."""
+    for link_md in (
+        "[Live Demo](https://lnkd.in/eQAfqSap) [GitHub](https://lnkd.in/eqBtncfp)",
+        "[Live Demo](https://lnkd.in/eQAfqSap)",
+    ):
+        md = (
+            "## Projects\n"
+            "**Alexandria Port Digital Twin: Live AIS-Fed Optimization System (Graduation Project)** "
+            f"{link_md} | Sep 2025 - Jun 2026\n"
+            "- Engineered a CP-SAT solver.\n"
+        )
+        tex = render_resume_tex(parse_markdown_resume(md))
+        line = next(ln for ln in tex.splitlines() if "Alexandria Port Digital Twin" in ln)
+        assert r"\resumeSubheading{" in line
+        i_date = line.index("Sep 2025 - Jun 2026")
+        i_demo = line.index(r"\underline{Live Demo}")
+        assert i_date < i_demo, f"link stayed on row 1 ahead of date: {line}"
+
+
 def test_experience_rendering_company_beside_position():
     """Experience entries must place Role and Company side-by-side using \\resumeProjectHeading."""
     md = (
@@ -1032,6 +1061,7 @@ def test_experience_rendering_company_beside_position():
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_realistic_dense_resume_ships_one_page(tmp_path):
     """A realistic dense technical resume (4 projects, 2 jobs, full education, 9 skills,
     summary, and all 4 certifications) must SHIP to exactly 1 page with no cutoff,
@@ -1347,6 +1377,7 @@ def _overflow_resume_markdown() -> str:
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_pdf_page_count_reads_compiled_pdf(tmp_path):
     base_md = ("# Jane Doe\njane@example.com | github.com/janedoe\n\n"
                "## Skills\n- Python\n- Docker\n- Kubernetes\n")
@@ -1389,6 +1420,7 @@ def _baseline_gaps(pdf):
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_compact_render_pulls_overflow_back_to_one_page(tmp_path):
     """Enforced 1-page containment (audit): the exporter must not ship an
     overflowing resume silently - the spacing-only compact pass reclaims
@@ -1472,6 +1504,7 @@ Python, Docker, Kubernetes, Kafka, Terraform
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_latex_arrow_encoding_never_renders_inverted_question_mark(tmp_path):
     """Arrows like '21 -> 0' or 'A --> B' must compile cleanly and never render as '¿'."""
     from pypdf import PdfReader
@@ -1544,6 +1577,7 @@ def test_bare_link_labels_never_glue_onto_project_titles():
 
 
 @pytest.mark.skipif(not HAVE_PDFLATEX, reason="pdflatex not installed")
+@pytest.mark.pdf_render
 def test_compact_pass_renders_one_page_without_baseline_collision(tmp_path):
     """Run 868e406d shipped a compact PDF whose header rows printed ONTO the
     bullet lines (measured baseline gap 2.5-2.9pt). After rescaling the
@@ -1695,6 +1729,7 @@ def _layout_spec_b_markdown() -> str:
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
                     reason="pdflatex/pdfplumber not installed")
+@pytest.mark.pdf_render
 def test_layout_spec_b_acceptance(tmp_path):
     """Scripted acceptance for the layout-spec B round (Nov 11 2026).
 
@@ -1837,6 +1872,7 @@ def test_layout_spec_b_acceptance(tmp_path):
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
                     reason="pdflatex/pdfplumber not installed")
+@pytest.mark.pdf_render
 def test_label_rows_hang_wrapped_tails(tmp_path):
     """Scripted acceptance for the hanging-indent spacing fix (live runs
     ca102fa5 / 71f879ae, Nov 11 2026): label-row wrap tails broke
@@ -2005,6 +2041,7 @@ def test_project_stack_after_date_never_glues_into_the_date_column():
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
                     reason="pdflatex/pdfplumber not installed")
+@pytest.mark.pdf_render
 def test_compact_tier1_airy_restores_rule_air_inside_the_page_budget(tmp_path):
     """Run 28e2e56f (Nov 12 2026): the tight tier-2 values left ~2.2pt of
     visible ink under EVERY section rule, with first content lines' glyph
@@ -2064,6 +2101,7 @@ def test_compact_probe_names_are_unique(monkeypatch, tmp_path):
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
                     reason="pdflatex/pdfplumber not installed")
+@pytest.mark.pdf_render
 def test_compact_tier_falls_back_to_balanced_when_airy_crosses_the_stop(tmp_path):
     """The airy tier costs ~+18pt/page; on a page-full resume it would push
     the last baseline past the 763.2pt bottom-margin stop (or onto a second
@@ -2132,6 +2170,7 @@ def _bullet_break_markdown() -> str:
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
                     reason="pdflatex/pdfplumber not installed")
+@pytest.mark.pdf_render
 def test_bullet_first_lines_print_full_width_after_raggedright_removal(tmp_path):
     """Run e9f5c016 (Nov 16 2026): the template's inherited global
     \\raggedright made every body line ragged, and combined with
@@ -2177,6 +2216,7 @@ def test_bullet_first_lines_print_full_width_after_raggedright_removal(tmp_path)
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
                     reason="pdflatex/pdfplumber not installed")
+@pytest.mark.pdf_render
 def test_section_rule_pullup_opens_rule_to_content_air_at_zero_page_cost(tmp_path):
     """Run e9f5c016 (Nov 16 2026): content sat 0.0-1.7pt under every
     section rule (the user's 'text glued to the header' report) while
@@ -2222,6 +2262,7 @@ def test_section_rule_pullup_opens_rule_to_content_air_at_zero_page_cost(tmp_pat
 
 @pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
                     reason="pdflatex/pdfplumber not installed")
+@pytest.mark.pdf_render
 def test_full_pages_never_print_below_the_sheet_edge(tmp_path):
     """Run 124f40cb (Nov 12 2026): the template's +1.8in textheight with the
     -0.75in topmargin put the text block bottom at 798.6pt - 6.6pt PAST the
@@ -2251,6 +2292,37 @@ def test_full_pages_never_print_below_the_sheet_edge(tmp_path):
                     f"{label}: glyphs print to {worst:.1f}pt on a "
                     f"{page.height:.0f}pt sheet - "
                     f"{worst - 786.0:.1f}pt into the clip zone")
+
+
+@pytest.mark.skipif(not (HAVE_PDFLATEX and HAVE_PDFPLUMBER),
+                    reason="pdflatex/pdfplumber not installed")
+@pytest.mark.pdf_render
+def test_long_project_heading_stays_within_page_margin(tmp_path):
+    """Live run regression: 80-char project title + Live Demo + GitHub + date
+    previously pushed 'Jun 2026' to x1=627.4 on a 612pt page."""
+    import pdfplumber
+
+    md = (
+        "# Candidate Name\n"
+        "candidate@example.com\n\n"
+        "## Projects\n"
+        "**Alexandria Port Digital Twin: Live AIS-Fed Optimization System (Graduation Project)** "
+        "[Live Demo](https://lnkd.in/eQAfqSap) [GitHub](https://lnkd.in/eqBtncfp) | Sep 2025 - Jun 2026\n"
+        "- Engineered a CP-SAT berth-allocation solver.\n\n"
+        "## Projects Extra\n"
+        "**Extremely Long Enterprise Multi-Tenant Distributed Observability and Real-Time Telemetry Platform v2** "
+        "[Live Demo](https://a.io/d) | Sep 2025 - Jun 2026\n"
+        "- Built distributed tracing pipeline.\n"
+    )
+    pdf = latex_to_pdf(render_resume_tex(parse_markdown_resume(md), compact=True, compact_tier=2),
+                       tmp_path, "overflow_check.pdf")
+    assert pdf is not None
+    with pdfplumber.open(pdf) as doc:
+        p = doc.pages[0]
+        rules = [r for r in p.lines if (r["x1"] - r["x0"]) > 300]
+        margin = max(r["x1"] for r in rules) if rules else p.width - 28.0
+        for w in p.extract_words():
+            assert w["x1"] <= margin + 1.5, f"word overflowed right margin ({margin:.1f}): {w}"
 
 
 

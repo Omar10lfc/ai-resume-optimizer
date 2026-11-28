@@ -1,6 +1,7 @@
 """NODE 0: Loader - loads PDF or web data."""
 from pathlib import Path
 from uuid import uuid4
+import zipfile
 
 from ..config import OUTPUT_ROOT, MAX_JOB_CHARS, MAX_RESUME_CHARS
 from ..state import AgentState
@@ -46,14 +47,26 @@ def loader_node(state: AgentState):
 
     resume_source = state['original_resume']
     suffix = Path(resume_source).suffix.lower()
+    input_pages = 0
     if suffix == ".pdf" and Path(resume_source).exists():
         try:
             resume_content = _load_resume_pdf(resume_source)
+            from .. import latex_render as _latex
+            input_pages = int(_latex.pdf_page_count(resume_source) or 0)
         except Exception as e:
             raise ValueError(f"Could not load resume PDF: {e}") from e
     elif suffix == ".docx" and Path(resume_source).exists():
         try:
             resume_content = _load_resume_docx(resume_source)
+            try:
+                with zipfile.ZipFile(resume_source) as zf:
+                    if "word/document.xml" in zf.namelist():
+                        xml_txt = zf.read("word/document.xml").decode("utf-8", errors="ignore")
+                        breaks = xml_txt.count("lastRenderedPageBreak") + xml_txt.count('w:type="page"')
+                        if breaks > 0:
+                            input_pages = breaks + 1
+            except Exception:
+                input_pages = 0
         except Exception as e:
             raise ValueError(f"Could not load resume DOCX: {e}") from e
     else:
@@ -68,10 +81,18 @@ def loader_node(state: AgentState):
     # earlier app-level pre-registration for pasted resumes.
     register_known_name(candidate_name_hint(resume_content))
 
+    explicit_target = state.get("target_pages")
+    if explicit_target in (1, 2):
+        target_pages = int(explicit_target)
+    else:
+        target_pages = 2 if input_pages >= 2 else 1
+
     return {
         "job_text": job_content,
         "resume_text": resume_content,
         "job_posting_findings": posting["findings"],
+        "input_pages": input_pages,
+        "target_pages": target_pages,
         "request_id": request_id,
         "output_dir": str(request_dir),
     }

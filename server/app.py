@@ -22,6 +22,7 @@ Transport notes:
   a gated allowlist, and resolve strictly inside OUTPUT_ROOT.
 """
 
+import inspect
 import json
 import os
 import secrets
@@ -405,6 +406,7 @@ def create_app() -> FastAPI:
               notes: str = Form(""),
               session: str = Form(""),
               resume_theme: str = Form(""),
+              target_pages: int = Form(0),
               include_diff: str = Query("")) -> StreamingResponse:
         # BB1 Phase B (PB3): include_diff=original asks the server to echo the
         # PARSED original resume in the result payload - DiffView then works
@@ -419,11 +421,15 @@ def create_app() -> FastAPI:
                 HTTP_413_CONTENT_TOO_LARGE,
                 f"Notes exceed the {agent_config.MAX_NOTES_CHARS} character limit.")
         session = _safeguard_session(session)
+        stream_kwargs = {}
+        if "target_pages" in inspect.signature(runners.stream_step2).parameters:
+            stream_kwargs["target_pages"] = target_pages
         gen = runners.stream_step2(job_description,
                                    runners.resolve_resume_source(resume_path, resume_text),
                                    notes, session, groq_api_key=_client_groq_key(request),
                                    include_original=include_diff == "original",
-                                   resume_theme=resume_theme)
+                                   resume_theme=resume_theme,
+                                   **stream_kwargs)
         temp = [resume_path] if resume_path else []
         return StreamingResponse(
             _wrapped_pipeline(gen, temp),
