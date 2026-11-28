@@ -2,6 +2,7 @@
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
 from ..helpers import _safe_print, _safe_truncate, _tame_unicode_bullets
+from ..tool_claims import classify_gap_triage
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Bump when the gap-scan prompt changes materially (QW1 fingerprints every
@@ -30,6 +31,12 @@ def scanner_node(state: AgentState):
     # chips, ATS text spans, and notes all assume plain ASCII separators.
     # Live-run evidence (Nov 6 2026): "Claude\u202fCode" / "Hands\u2011on".
     missing = _tame_unicode_bullets(str(response.content))
+    gap_triage = classify_gap_triage(
+        missing,
+        state.get("resume_text") or "",
+        state.get("human_notes") or "",
+        declined_requests=state.get("declined_requests") or [],
+    )
     _safe_print(f"   Identified {len(missing)} gap(s)")  # Item 10: no gap text logged
-    return {"missing_skills": missing, "iteration": 0,
+    return {"missing_skills": missing, "gap_triage": gap_triage, "iteration": 0,
             "prompt_versions": {"scanner": SCANNER_PROMPT_VERSION}}

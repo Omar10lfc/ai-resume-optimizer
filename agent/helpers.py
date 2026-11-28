@@ -72,11 +72,22 @@ def _strip_markdown_for_review(text: str) -> str:
             continue
         line = _MARKDOWN_IMAGE_RE.sub(r'\1', line)
         line = _MARKDOWN_LINK_RE.sub(r'\1', line)
-        line = _MARKDOWN_HEADING_RE.sub('', line)
+        heading_m = _MARKDOWN_HEADING_RE.match(line)
+        if heading_m:
+            is_section_h2 = heading_m.group(0).lstrip().startswith("##")
+            line = _MARKDOWN_HEADING_RE.sub('', line).strip()
+            line = line.replace('`', '')
+            line = _MARKDOWN_BOLD_RE.sub(r'\1', line)
+            line = _MARKDOWN_ITALIC_RE.sub(r'\1', line)
+            # Preserve section boundary cues (H2+ -> uppercase matches PDF small-caps)
+            # while keeping H1 candidate name natural case.
+            if line:
+                lines_out.append(line.upper() if is_section_h2 else line)
+            continue
         line = line.replace('`', '')
         line = _MARKDOWN_BOLD_RE.sub(r'\1', line)
         line = _MARKDOWN_ITALIC_RE.sub(r'\1', line)
-        line = _MARKDOWN_BULLET_RE.sub('', line)
+        line = _MARKDOWN_BULLET_RE.sub('\u2022 ', line)
         lines_out.append(line)
     flat = "\n".join(lines_out)
     flat = re.sub(r'\n{3,}', '\n\n', flat)
@@ -326,6 +337,14 @@ def _evidence_metric_values(evidence_text: str) -> list:
     return out
 
 
+def _is_bare_zero_metric(token: str) -> bool:
+    """True for '0%' / '0.0%' etc. — phrases like 'reducing dropped tasks to 0%'
+    reword naturally to 'eliminating dropped tasks' and should not trigger false
+    metric warnings."""
+    parsed = _metric_value(token)
+    return parsed is not None and parsed[0] == 0.0 and parsed[1] == "%"
+
+
 def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
                                    max_claims: int = 6) -> list[str]:
     """Returns metric-shaped tokens in the optimized resume that the evidence
@@ -365,6 +384,8 @@ def find_unevidenced_metric_claims(optimized_text: str, evidence_text: str,
     seen: set[str] = set()
     for match in _METRIC_TOKEN_RE.finditer(optimized_text):
         token = match.group(1)
+        if _is_bare_zero_metric(token):
+            continue
         key = token.lower()
         compact = re.sub(r"\s+", "", key)
         if key in seen:
@@ -410,7 +431,8 @@ def find_dropped_source_metrics(final_text: str, source_resume: str,
         line = raw.strip()
         if not _BULLET_MARKER_RE.match(line):
             continue
-        metrics = [m.group(1) for m in _METRIC_TOKEN_RE.finditer(line)]
+        metrics = [m.group(1) for m in _METRIC_TOKEN_RE.finditer(line)
+                   if not _is_bare_zero_metric(m.group(1))]
         if not metrics:
             continue
         missing = sorted({m for m in metrics
@@ -1937,6 +1959,65 @@ def accumulate_unique(existing: Optional[list], added: Optional[list]) -> list:
         if item and item not in out:
             out.append(item)
     return out
+
+
+def evaluate_polish_gate(
+    state: dict,
+    *,
+    score_threshold: Optional[int] = None,
+    max_iterations: Optional[int] = None,
+    polish_skip_ats_threshold: Optional[int] = None,
+    polish_skip_quality_threshold: Optional[int] = None,
+) -> tuple[bool, str]:
+    """Determines whether another polish pass should run and returns an auditable reason.
+
+    Skips polishing ONLY when review failed, MAX_ITERATIONS is reached, sanitized
+    feedback is empty, OR all three quality/coverage conditions hold together:
+    ``ats_percentage >= threshold`` AND ``0`` high-severity gaps AND
+    ``llm_quality_score >= quality_threshold``.
+    """
+    from . import config as _cfg
+
+    s_thresh = _cfg.SCORE_THRESHOLD if score_threshold is None else score_threshold
+    max_it = _cfg.MAX_ITERATIONS if max_iterations is None else max_iterations
+    ats_thresh = (_cfg.POLISH_SKIP_ATS_THRESHOLD
+                  if polish_skip_ats_threshold is None else polish_skip_ats_threshold)
+    q_thresh = (_cfg.POLISH_SKIP_QUALITY_THRESHOLD
+                if polish_skip_quality_threshold is None else polish_skip_quality_threshold)
+
+    if state.get("review_failed", False):
+        return False, "skipped: reviewer failed - proceeding with current draft"
+    if int(state.get("iteration") or 0) >= max_it:
+        return False, f"skipped: max iterations ({max_it}) reached"
+    feedback = (state.get("feedback") or "").strip()
+    if not feedback:
+        return False, "skipped: no actionable reviewer feedback remaining"
+
+    ats_pct = float(state.get("ats_percentage") or 0.0)
+    llm_q = int(state.get("llm_quality_score") or 0)
+    req_matches = state.get("requirement_matches")
+    if isinstance(req_matches, list):
+        high_gaps = sum(1 for r in req_matches if isinstance(r, dict) and r.get("status") == "gap")
+    else:
+        high_gaps = 1 if (state.get("missing_skills") or "").strip() else 0
+
+    if ats_pct >= ats_thresh and high_gaps == 0 and llm_q >= q_thresh:
+        return (
+            False,
+            f"skipped: ATS {ats_pct:.0f}% >= {ats_thresh}%, "
+            f"0 high-severity gaps, quality {llm_q} >= {q_thresh}",
+        )
+
+    score = int(state.get("score") or 0)
+    if score >= s_thresh:
+        return (
+            True,
+            f"polisher: feedback/gaps remain (ATS {ats_pct:.0f}%, gaps={high_gaps}, quality={llm_q})",
+        )
+    return (
+        True,
+        f"polisher: composite {score} < {s_thresh} (ATS {ats_pct:.0f}%, gaps={high_gaps}, quality={llm_q})",
+    )
 
 
 # Re-exported for backwards compatibility (implementation lives in agent/fallback_pdf.py).

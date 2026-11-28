@@ -29,6 +29,15 @@ def _merge_prompt_versions(existing: Optional[dict], new: Optional[dict]) -> dic
     return merged
 
 
+def _accumulate_list(existing: Optional[list], new: Optional[list]) -> list:
+    """Reducer appending unique dict/item entries across concurrent fan-out branches."""
+    out = list(existing or [])
+    for item in (new or []):
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
 class AgentState(TypedDict):
     job_description: str
     original_resume: str
@@ -56,6 +65,9 @@ class AgentState(TypedDict):
     # resume PDF, whether the auto-compact pass was applied, and a
     # user-facing warning when the document still exceeds one page.
     resume_pages: NotRequired[int]
+    input_pages: NotRequired[int]
+    target_pages: NotRequired[int]
+    page_target_expanded: NotRequired[bool]
     resume_compacted: NotRequired[bool]
     page_overflow_warning: NotRequired[str]
     # Posting integrity gate (loader): deterministic findings from the
@@ -163,6 +175,10 @@ class AgentState(TypedDict):
     # Reducer merge so the concurrent cover_letter / interview_prep
     # fan-out (both writing this key in one superstep) keeps BOTH entries
     # instead of nondeterministically dropping one.
+    polish_decision: NotRequired[str]
+    best_of_decision: NotRequired[str]
+    gap_triage: NotRequired[list]
+    prompt_prevention_failures: NotRequired[Annotated[list, _accumulate_list]]
     prompt_versions: NotRequired[Annotated[dict, _merge_prompt_versions]]
 
 

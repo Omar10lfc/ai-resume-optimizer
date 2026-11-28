@@ -100,6 +100,21 @@ def _salvage_review_output(exc: BaseException) -> ReviewOutput | None:
 def reviewer_node(state: AgentState):
     _safe_print(f"\n--- NODE 3: REVIEWING DRAFT ---")
 
+    evidence = "\n".join(str(state.get(k) or "") for k in
+                         ("resume_text", "human_notes", "profile",
+                          "profile_text", "candidate_profile"))
+    denied = build_denied_tools(
+        evidence,
+        declined_requests=state.get("declined_requests") or [],
+        job_text=state.get("job_text") or "",
+    )
+    denied_block = (
+        f"\n    FORBIDDEN / UNEVIDENCED TOOLS (NEVER mention, suggest, or imply "
+        f"these anywhere in your score justification or feedback): "
+        f"{', '.join(sorted(denied)[:30])}\n"
+        if denied else ""
+    )
+
     prompt = f"""
     You are a senior hiring manager judging the QUALITY of a resume's presentation.
     Do NOT judge keyword coverage - that is measured separately.
@@ -167,7 +182,7 @@ def reviewer_node(state: AgentState):
     Professional Summary, Technical Skills, Experience, Projects, Education,
     Certifications. Return nothing when the feedback is general, about
     formatting/length, or spans every section - the code then rewrites the
-    whole document, and names outside the vocabulary have the same effect.
+    whole document, and names outside the vocabulary have the same effect.{denied_block}
     """
 
     messages = [
@@ -179,22 +194,14 @@ def reviewer_node(state: AgentState):
         result, method = invoke_structured_with_repair(
             _llms.llm_strict, ReviewOutput, messages,
             salvage=_salvage_review_output, label="reviewer")
-        # Live run 4afa44cb: the reviewer ignored its own FEEDBACK SCOPE rule
-        # and told the polisher to add "n8n-like platforms". The model's
-        # advice is untrusted data here too - drop any sentence naming a tool
-        # the evidence does not show BEFORE the polisher can act on it.
-        denied = build_denied_tools(
-            "\n".join(str(state.get(k) or "") for k in
-                      ("resume_text", "human_notes", "profile",
-                       "profile_text", "candidate_profile")),
-            declined_requests=state.get("declined_requests") or [],
-            job_text=state.get("job_text") or "",
-        )
         feedback, removals = sanitize_feedback(result.feedback, denied,
                                                stage="reviewer feedback")
+        prevention_failures = []
         if removals:
-            _safe_print(f"   [Integrity] Removed {len(removals)} feedback "
-                        "sentence(s) naming unevidenced tool(s)")
+            leaked_terms = sorted({t for r in removals for t in r.terms})
+            prevention_failures.append({"stage": "reviewer", "terms": leaked_terms})
+            _safe_print(f"   [Integrity] prompt_prevention_failure (reviewer): "
+                        f"removed {len(removals)} feedback sentence(s)")
         _safe_print(f"-> LLM quality score: {result.score}/100")
         # Item 10: feedback/section text is resume-derived - omitted from logs.
         _safe_print("-> Feedback: (omitted from logs)")
@@ -209,12 +216,15 @@ def reviewer_node(state: AgentState):
         for r in removals:
             if r.warning not in removals_acc:
                 removals_acc.append(r.warning)
-        return {"llm_quality_score": result.score, "feedback": feedback,
-                "feedback_sections": [str(s) for s in result.sections],
-                "review_failed": False,
-                "guardrail_warnings": warnings,
-                "scrub_removals": removals_acc,
-                "prompt_versions": {"reviewer": REVIEWER_PROMPT_VERSION}}
+        out = {"llm_quality_score": result.score, "feedback": feedback,
+               "feedback_sections": [str(s) for s in result.sections],
+               "review_failed": False,
+               "guardrail_warnings": warnings,
+               "scrub_removals": removals_acc,
+               "prompt_versions": {"reviewer": REVIEWER_PROMPT_VERSION}}
+        if prevention_failures:
+            out["prompt_prevention_failures"] = prevention_failures
+        return out
     except Exception:
         _safe_print("   [Warning] Review failed after 2 attempts. Flagging review as failed.")
         return {"review_failed": True,

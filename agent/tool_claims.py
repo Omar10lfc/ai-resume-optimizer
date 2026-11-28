@@ -162,13 +162,103 @@ def remove_sentences_naming_tools(text: str, denied: set[str], *,
 def sanitize_feedback(feedback: str, denied: set[str], *,
                       stage: str = "reviewer") -> tuple[str, list[Removal]]:
     """Drops feedback sentences naming a denied tool. If nothing is left,
-    falls back to neutral advice that never repeats the denied term to the
-    polisher (the warning channel, not the feedback, carries the term)."""
+    keeps cleaned empty so empty sanitized feedback does not trigger a wasted
+    neutral polish pass."""
     cleaned, removals = remove_sentences_naming_tools(
         feedback, denied, stage=stage)
-    # An already-empty review must STAY empty: the polish route keys on
-    # feedback, and inventing advice for a clean pass would trigger a needless
-    # second pass. The neutral fallback is only for a sentence we removed.
-    if removals and not cleaned.strip():
-        cleaned = _NEUTRAL_FEEDBACK
-    return cleaned, removals
+    return cleaned.strip(), removals
+
+
+_GAP_FILLER_TOKENS = {
+    "experience", "experienced", "with", "using", "knowledge", "skill",
+    "skills", "tool", "tools", "strong", "hands", "building", "build",
+    "development", "develop", "design", "systems", "system", "platform",
+    "platforms", "pipelines", "pipeline", "modern", "production", "familiarity",
+    "proficiency", "working", "understanding", "ability", "years", "and",
+    "the", "for", "into", "from", "across", "based",
+}
+_GAP_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+.#/_-]{1,}")
+
+
+def classify_gap_triage(
+    missing_skills_text: str,
+    resume_text: str,
+    human_notes: str = "",
+    declined_requests: tuple[str, ...] | list[str] = (),
+) -> list[dict]:
+    """Conservatively classifies each scanner gap into ``rephrasable`` vs
+    ``needs_user_input``.
+
+    Marks a gap ``rephrasable`` ONLY when unambiguous evidence already exists
+    in ``resume_text`` or ``human_notes`` (and is not declined). Defaults to
+    ``needs_user_input`` whenever unsure so the pipeline never fabricates
+    missing tools or unverified experience.
+    """
+    evidence = "\n".join(p for p in (resume_text, human_notes) if p).strip()
+    ev_lower = evidence.lower()
+    ev_tools = matching_tools(evidence) if evidence else set()
+    declined_lower = {str(d).strip().lower() for d in (declined_requests or []) if d}
+
+    triage: list[dict] = []
+    seen: set[str] = set()
+    for raw in (missing_skills_text or "").splitlines():
+        label = re.sub(r"^\s*(?:[-•*·]|\d+[.)])\s*", "", raw).strip()
+        if not label or len(label) < 2:
+            continue
+        if re.match(r"^(?:missing|skills?)\s*:?$", label, re.IGNORECASE):
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if key in declined_lower:
+            triage.append({
+                "skill": label,
+                "status": "needs_user_input",
+                "reason": "Declined by user; requires explicit confirmation to include.",
+            })
+            continue
+
+        gap_tools = matching_tools(label)
+        if gap_tools:
+            if gap_tools <= ev_tools:
+                matched_list = ", ".join(sorted(gap_tools))
+                triage.append({
+                    "skill": label,
+                    "status": "rephrasable",
+                    "reason": f"Evidence already mentions {matched_list}; can be foregrounded by rewording.",
+                })
+            else:
+                missing_list = ", ".join(sorted(gap_tools - ev_tools))
+                triage.append({
+                    "skill": label,
+                    "status": "needs_user_input",
+                    "reason": f"Missing tool/platform evidence ({missing_list}); needs user confirmation.",
+                })
+            continue
+
+        # No canonical tool named: require ALL substantive non-filler terms to
+        # appear in evidence; default to needs_user_input when unsure.
+        tokens = [
+            t for t in _GAP_TOKEN_RE.findall(label.lower())
+            if t not in _GAP_FILLER_TOKENS and len(t) >= 3
+        ]
+        def _tok_present(tok: str) -> bool:
+            stem = tok[:-1] if len(tok) > 4 and tok.endswith("s") else tok
+            return bool(re.search(rf"(?<!\w){re.escape(stem)}s?(?!\w)", ev_lower))
+
+        if tokens and all(_tok_present(tok) for tok in tokens):
+            triage.append({
+                "skill": label,
+                "status": "rephrasable",
+                "reason": "Related evidence terms exist in your resume/notes and can be emphasized directly.",
+            })
+        else:
+            triage.append({
+                "skill": label,
+                "status": "needs_user_input",
+                "reason": "No direct evidence found in your resume or notes; confirm before claiming.",
+            })
+
+    return triage

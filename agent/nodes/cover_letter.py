@@ -2,7 +2,7 @@
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted
 from .. import llms as _llms
 from ..ats import _job_brief
-from ..helpers import (_safe_print, _strip_code_fences,
+from ..helpers import (_safe_print, _safe_truncate, _strip_code_fences,
                        find_unevidenced_metric_claims)
 from ..tool_claims import build_denied_tools, remove_sentences_naming_tools
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -16,8 +16,86 @@ from langchain_core.messages import HumanMessage, SystemMessage
 COVER_LETTER_PROMPT_VERSION = "cover-letter@2"
 
 
+def _repair_cover_paragraphs(
+    original_letter: str,
+    cleaned_letter: str,
+    denied: set[str],
+    evidence: str,
+) -> str:
+    """Smooths body paragraphs shrunk or left single-sentence by sentence removal,
+    ensuring repaired prose never reintroduces denied tools or whole-letter echoes."""
+    orig_paras = [p.strip() for p in (original_letter or "").split("\n\n") if p.strip()]
+    clean_paras = [p.strip() for p in (cleaned_letter or "").split("\n\n") if p.strip()]
+    if not clean_paras:
+        return cleaned_letter
+    denied_str = ", ".join(sorted(denied)[:30]) if denied else "(none)"
+    repaired_out: list[str] = []
+    for idx, para in enumerate(clean_paras):
+        low = para.lower()
+        # Leave greeting and sign-off untouched
+        if low.startswith(("dear ", "sincerely", "best regards", "regards,")):
+            repaired_out.append(para)
+            continue
+        orig_len = len(orig_paras[idx]) if idx < len(orig_paras) else len(para)
+        was_trimmed = len(para) + 25 < orig_len or idx >= len(orig_paras)
+        # Only repair body paragraphs significantly truncated into a short choppy fragment
+        if was_trimmed and len(para) < 120:
+            repair_prompt = f"""
+            Rewrite ONLY this single cover-letter body paragraph so it flows naturally
+            and persuasively without choppy gaps, using ONLY the factual content already
+            in the paragraph below and the factual evidence.
+
+            FORBIDDEN / UNEVIDENCED TOOLS (NEVER mention or imply these): {denied_str}
+
+            CURRENT PARAGRAPH:
+            {para}
+
+            CANDIDATE EVIDENCE (facts/numbers allowed):
+            {_safe_truncate(evidence, 3000, 'Cover repair evidence')}
+
+            Return ONLY 2-3 cohesive prose sentences for this single paragraph (no greeting,
+            no closing sign-off, no bullet points, no markdown).
+            """
+            try:
+                ans = _llms.llm_fast.invoke([
+                    SystemMessage(content=SYSTEM_GUARDRAIL),
+                    HumanMessage(content=repair_prompt),
+                ])
+                cand = _strip_code_fences(str(ans.content)).strip()
+                cand_low = cand.lower()
+                if (
+                    cand
+                    and "\n\n" not in cand
+                    and not cand_low.startswith("dear ")
+                    and "sincerely," not in cand_low
+                ):
+                    cand_clean, cand_rem = remove_sentences_naming_tools(
+                        cand, denied, stage="cover letter repair")
+                    if cand_clean.strip() and not cand_rem and not find_unevidenced_metric_claims(cand_clean, evidence):
+                        repaired_out.append(cand_clean.strip())
+                        continue
+            except Exception:
+                pass
+        repaired_out.append(para)
+    return "\n\n".join(repaired_out)
+
+
 def cover_letter_node(state: AgentState):
     _safe_print(f"\n--- NODE 5: GENERATING COVER LETTER ---")
+    evidence = "\n".join(str(state.get(k) or "") for k in
+                         ("resume_text", "human_notes", "profile",
+                          "profile_text", "candidate_profile"))
+    denied = build_denied_tools(
+        evidence,
+        declined_requests=state.get("declined_requests") or [],
+        job_text=state.get("job_text") or "",
+    )
+    denied_block = (
+        f"\n    FORBIDDEN / UNEVIDENCED TOOLS (do NOT name, claim, or allude to any "
+        f"of these tools anywhere in the cover letter): {', '.join(sorted(denied)[:30])}\n"
+        if denied else ""
+    )
+
     prompt = f"""
     Write a professional Cover Letter based on the Candidate's Resume for this role.
 
@@ -65,40 +143,22 @@ def cover_letter_node(state: AgentState):
        inventing one.
 
     Return ONLY the cover letter text as plain prose, starting with the
-    greeting line ("Dear Hiring Manager," unless a real contact name is known).
+    greeting line ("Dear Hiring Manager," unless a real contact name is known).{denied_block}
     """
     response = _llms.llm_fast.invoke([
         SystemMessage(content=SYSTEM_GUARDRAIL),
         HumanMessage(content=prompt),
     ])
-    letter = _strip_code_fences(response.content)
-
-    # Integrity tripwires (same rules as the resume path): metric-shaped
-    # tokens and, since run 4afa44cb, unevidenced TOOL names. Prompt guards
-    # alone demonstrably fold - the resume path learned the same lesson
-    # (request 14751ff9) - so both scans run on the generated letter.
-    # The shipped resume draft is deliberately NOT evidence here: a claim
-    # the user is asked to verify on the resume must not silently become
-    # legitimate because the letter repeated it.
-    evidence = "\n".join(str(state.get(k) or "") for k in
-                         ("resume_text", "human_notes", "profile",
-                          "profile_text", "candidate_profile"))
-    denied = build_denied_tools(
-        evidence,
-        declined_requests=state.get("declined_requests") or [],
-        job_text=state.get("job_text") or "",
-    )
-    # Every mention of a denied tool is a violation - including
-    # requirement-framed name-drops ("core requirements for Cursor demos")
-    # and analogies ("n8n-style automation"): only the sentence goes, never
-    # a rewrite that could reintroduce the term. Same sentence split and
-    # residue tidy as scrub_unsupported_content uses for the resume.
+    raw_letter = _strip_code_fences(response.content)
     letter, removals = remove_sentences_naming_tools(
-        letter, denied, stage="cover letter")
+        raw_letter, denied, stage="cover letter")
     removed_tools = sorted({t for r in removals for t in r.terms})
+    prevention_failures = []
     if removals:
-        _safe_print(f"   [Integrity] Removed {len(removals)} sentence(s) "
-                    "naming unevidenced tool(s) from the cover letter")
+        prevention_failures.append({"stage": "cover_letter", "terms": removed_tools})
+        _safe_print(f"   [Integrity] prompt_prevention_failure (cover_letter): "
+                    f"removed {len(removals)} sentence(s)")
+        letter = _repair_cover_paragraphs(raw_letter, letter, denied, evidence)
     letter_metrics = find_unevidenced_metric_claims(letter, evidence)
     if letter_metrics:
         _safe_print(f"   [Integrity] Unevidenced metric claims in cover "
@@ -106,8 +166,11 @@ def cover_letter_node(state: AgentState):
 
     warnings = list(state.get("guardrail_warnings") or [])
     warnings.extend(r.warning for r in removals)
-    return {"cover_letter": letter,
-            "cover_letter_metrics": letter_metrics,
-            "cover_letter_unevidenced_tools": removed_tools,
-            "guardrail_warnings": warnings,
-            "prompt_versions": {"cover-letter": COVER_LETTER_PROMPT_VERSION}}
+    out = {"cover_letter": letter,
+           "cover_letter_metrics": letter_metrics,
+           "cover_letter_unevidenced_tools": removed_tools,
+           "guardrail_warnings": warnings,
+           "prompt_versions": {"cover-letter": COVER_LETTER_PROMPT_VERSION}}
+    if prevention_failures:
+        out["prompt_prevention_failures"] = prevention_failures
+    return out

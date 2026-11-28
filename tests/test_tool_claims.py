@@ -240,3 +240,73 @@ def test_cleaned_cover_letter_stays_one_page(monkeypatch, tmp_path):
                                  tmp_path)
     assert path
     assert len(PdfReader(path).pages) == 1
+
+
+def test_gap_triage_conservative_defaults_needs_user_input():
+    """Step 5 conservative gap triage: rephrasable ONLY when concrete evidence exists."""
+    from agent.tool_claims import classify_gap_triage
+
+    gaps = "- Kubernetes\n- Python async web services\n- n8n workflow automation\n"
+    resume = "Built Python async web services and FastAPI endpoints."
+    triage = classify_gap_triage(gaps, resume, human_notes="")
+    by_skill = {g["skill"]: g for g in triage}
+    assert by_skill["Kubernetes"]["status"] == "needs_user_input"
+    assert by_skill["n8n workflow automation"]["status"] == "needs_user_input"
+    assert by_skill["Python async web services"]["status"] == "rephrasable"
+
+    # Once user adds explicit human_notes for Kubernetes, it flips to rephrasable.
+    triage_with_note = classify_gap_triage(gaps, resume, human_notes="Deployed services on Kubernetes.")
+    assert {g["skill"]: g for g in triage_with_note}["Kubernetes"]["status"] == "rephrasable"
+
+
+def test_bare_zero_percent_filtered_in_metric_checks():
+    """Bare '0%' never fires a false-positive dropped or unevidenced metric warning."""
+    from agent.helpers import find_dropped_source_metrics, find_unevidenced_metric_claims
+
+    src = "- Implemented Redis streams reducing dropped tasks to 0%."
+    rewritten = "- Implemented Redis streams eliminating dropped tasks."
+    assert find_dropped_source_metrics(rewritten, src) == []
+    assert find_unevidenced_metric_claims("Achieved 0% unplanned downtime.", "Zero unplanned downtime.") == []
+
+
+def test_cover_letter_upfront_denied_prompt_and_paragraph_repair(monkeypatch):
+    """Cover letter prompt injects denied tools upfront; leaks trigger repair & telemetry."""
+    from langchain_core.messages import AIMessage
+    from agent.nodes.cover_letter import cover_letter_node
+
+    prompts_seen = []
+
+    class CapturingFast:
+        def invoke(self, messages):
+            p = messages[-1].content
+            prompts_seen.append(p)
+            if len(prompts_seen) == 1:
+                return AIMessage(
+                    content=(
+                        "Dear Hiring Manager,\n\n"
+                        "Built internal automation tooling. "
+                        "Used Cursor workflows for internal tooling. "
+                        "Also built n8n orchestrators everywhere.\n\n"
+                        "Cut support time by 32% in Python production services.\n\n"
+                        "Sincerely,\nAlex"
+                    )
+                )
+            return AIMessage(
+                content="Engineered Python internal tooling automation that streamlines operations and improves engineering velocity."
+            )
+
+    monkeypatch.setattr(agent.llms, "llm_fast", CapturingFast())
+    out = cover_letter_node({
+        "optimized_resume": "# Alex\n## Experience\n- Python automation\n",
+        "resume_text": RESUME + "\n- Cut support time by 32%\n",
+        "human_notes": "",
+        "job_text": JD,
+        "declined_requests": ["Cursor", "n8n"],
+        "guardrail_warnings": [],
+    })
+    assert "FORBIDDEN / UNEVIDENCED TOOLS" in prompts_seen[0]
+    assert "Cursor" in prompts_seen[0]
+    assert out["prompt_prevention_failures"][0]["stage"] == "cover_letter"
+    assert "Cursor" not in out["cover_letter"]
+    assert "n8n" not in out["cover_letter"].lower()
+    assert "Engineered Python internal tooling automation" in out["cover_letter"]
