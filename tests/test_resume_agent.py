@@ -597,7 +597,7 @@ class SeqCreativeLLM(_CreativeStructuredMixin):
 
 
 def _run_with_drafts(drafts, monkeypatch, reviewer_score=60, feedback="Add metrics.",
-                     sections=()):
+                     sections=(), reviewer_scores=None):
     """Reviewer 60 keeps the composite under the 80 threshold so the loop
     actually runs a second iteration under the new default cap. Generic
     feedback keeps the rewriter grounded (improver embeds it as guidance).
@@ -611,11 +611,16 @@ def _run_with_drafts(drafts, monkeypatch, reviewer_score=60, feedback="Add metri
     from it.
     """
 
+    rev_calls = {"n": 0}
+
     class FixedReviewer(FakeStrictLLM):
         def with_structured_output(self, schema):
             class Structured:
                 def invoke(self, messages):
-                    return agent.ReviewOutput(score=reviewer_score,
+                    idx = rev_calls["n"]
+                    rev_calls["n"] += 1
+                    sc = reviewer_scores[min(idx, len(reviewer_scores) - 1)] if reviewer_scores else reviewer_score
+                    return agent.ReviewOutput(score=sc,
                                               feedback=feedback,
                                               sections=list(sections))
             return Structured()
@@ -694,13 +699,24 @@ def test_passing_review_without_feedback_skips_polish(fake_llms, monkeypatch):
 
 def test_polish_pass_cannot_regress_below_first_draft(fake_llms, monkeypatch):
     """A weaker polish draft loses through the same best-of guard that
-    protects failing-score retries."""
+    protects failing-score retries (composite >= 80, quality < 80)."""
     good = "## Skills\nPython, Docker, Kubernetes\n## Experience\nBuilt Kubernetes pipelines with Docker and Python."
     worse = "## Skills\nPython\n## Experience\nWrote some scripts."
-    result, seq = _run_with_drafts([good, worse], monkeypatch, reviewer_score=85)
+    result, seq = _run_with_drafts([good, worse], monkeypatch, reviewer_score=78)
 
     assert seq.calls == 2
     assert result["optimized_resume"] == good
+
+
+def test_polish_skipped_when_all_three_gate_conditions_hold(fake_llms, monkeypatch):
+    """Step 3 gate: high ATS% + 0 high-severity gaps + quality >= 80 skips polish
+    even when non-empty feedback is present."""
+    strong = "## Skills\nPython, Docker, Kubernetes\n## Experience\nBuilt Kubernetes pipelines with Docker and Python."
+    result, seq = _run_with_drafts([strong, "## Skills\nShould not run"], monkeypatch, reviewer_score=85)
+
+    assert seq.calls == 1
+    assert result["iteration"] == 1
+    assert "skipped:" in (result.get("polish_decision") or "")
 
 
 # ==========================================
@@ -836,8 +852,8 @@ def test_polisher_targets_reviewer_sections_and_merges_deterministically(fake_ll
                         "Machine Learning engineer shipping Python services "
                         "with Docker and Kubernetes.")
     result, seq = _run_with_drafts(
-        [draft, reworked_summary], monkeypatch, reviewer_score=85,
-        sections=["Summary"])
+        [draft, reworked_summary], monkeypatch, reviewer_score=78,
+        reviewer_scores=[78, 85], sections=["Summary"])
 
     assert seq.calls == 2                          # draft 1 + one section call
     assert result["optimized_resume"].startswith("# Sam\nCity | x@c.io\n")
@@ -856,7 +872,8 @@ def test_polisher_falls_back_to_full_rewrite_without_addressable_sections(fake_l
     polished = ("## Professional Summary\nSharper.\n## Skills\nPython, Docker, Kubernetes\n"
                 "## Experience\nRebuilt Python services on Kubernetes with Docker.")
     result, seq = _run_with_drafts(
-        [good, polished], monkeypatch, reviewer_score=85, sections=["Formatting"])
+        [good, polished], monkeypatch, reviewer_score=78,
+        reviewer_scores=[78, 85], sections=["Formatting"])
 
     assert seq.calls == 2                          # full rewrite, not a section call
     assert result["optimized_resume"] == polished
@@ -878,7 +895,7 @@ def test_polisher_refused_merge_falls_back_to_full_rewrite(fake_llms, monkeypatc
     polished = "# Sam\n## Professional Summary\nSharper.\n## Skills\nPython."
     result, seq = _run_with_drafts(
         [draft, "   ", polished], monkeypatch, reviewer_score=85,
-        sections=["Summary"])
+        reviewer_scores=[80, 86], sections=["Summary"])
 
     assert seq.calls == 3                          # draft + failed target + full rewrite
     assert result["optimized_resume"] == polished
@@ -4766,3 +4783,43 @@ def test_ats_no_keyword_credit_to_url_targets():
     r2 = compute_ats_match(job, labeled)
     docker2 = next(k for k in r2["keywords"] if k["keyword"] == "docker")
     assert docker2["found"] is True
+
+
+def test_best_of_guard_deterministic_first_rejects_keyword_loss_and_small_ties(fake_llms, monkeypatch):
+    """Step 4 Best-of Guard:
+    1. Rejects Draft #2 if ATS drops or a matched keyword is lost, even if reviewer +30pt.
+    2. On ATS + keyword tie, requires >= +5 reviewer margin to adopt Draft #2.
+    """
+    draft1 = "## Skills\nPython, Docker, Kubernetes\n## Experience\nBuilt Python services on Kubernetes with Docker."
+    # Drops Kubernetes! Even with reviewer jumping 60 -> 95 (+35pt -> higher composite), Draft #1 MUST win.
+    dropped_kw = "## Skills\nPython, Docker\n## Experience\nBuilt Python services on AWS with Docker."
+    res_drop, _ = _run_with_drafts(
+        [draft1, dropped_kw], monkeypatch, reviewer_scores=[60, 95], sections=["Formatting"],
+    )
+    assert res_drop["optimized_resume"] == draft1
+    assert "lost matched keyword" in (res_drop.get("best_of_decision") or "")
+
+    # Tie on ATS + matched keywords, noisy +3 reviewer delta (< +5 margin) -> keeps Draft #1.
+    tied_alt = "## Skills\nPython, Docker, Kubernetes\n## Experience\nEngineered Python services with Docker and Kubernetes."
+    res_noisy, _ = _run_with_drafts(
+        [draft1, tied_alt], monkeypatch, reviewer_scores=[70, 73], sections=["Formatting"],
+    )
+    assert res_noisy["optimized_resume"] == draft1
+    assert "tiebreak margin" in (res_noisy.get("best_of_decision") or "")
+
+    # Tie on ATS + matched keywords, clear +6 reviewer margin (>= +5) -> adopts Draft #2.
+    res_clear, _ = _run_with_drafts(
+        [draft1, tied_alt], monkeypatch, reviewer_scores=[70, 76], sections=["Formatting"],
+    )
+    assert res_clear["optimized_resume"] == tied_alt
+    assert "adopted Draft #2" in (res_clear.get("best_of_decision") or "")
+
+
+def test_strip_markdown_for_review_preserves_layout_cues():
+    """Headings become uppercase plaintext and bullets become '• ' with zero markdown syntax."""
+    flat = agent.helpers._strip_markdown_for_review(
+        "# Jane Doe\n\n## Experience\n- Built **fast** API\n"
+    )
+    assert "#" not in flat and "**" not in flat
+    assert "EXPERIENCE" in flat
+    assert "• Built fast API" in flat

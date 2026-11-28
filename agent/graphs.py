@@ -2,47 +2,43 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from .config import SCORE_THRESHOLD, MAX_ITERATIONS, CHECKPOINTER_DB_PATH
+from .config import (
+    SCORE_THRESHOLD,
+    MAX_ITERATIONS,
+    CHECKPOINTER_DB_PATH,
+    POLISH_SKIP_ATS_THRESHOLD,
+    POLISH_SKIP_QUALITY_THRESHOLD,
+)
 from .state import AgentState
 from .nodes import (
     loader_node, scanner_node, improver_node, polisher_node, reviewer_node,
     ats_check_node, cover_letter_node, interview_prep_node,
     pdf_exporter_node,
 )
-from .helpers import _safe_print, ensure_db_migrations
+from .helpers import _safe_print, ensure_db_migrations, evaluate_polish_gate as _evaluate_polish_gate
+
+
+def evaluate_polish_gate(state: AgentState) -> tuple[bool, str]:
+    return _evaluate_polish_gate(
+        state,
+        score_threshold=SCORE_THRESHOLD,
+        max_iterations=MAX_ITERATIONS,
+        polish_skip_ats_threshold=POLISH_SKIP_ATS_THRESHOLD,
+        polish_skip_quality_threshold=POLISH_SKIP_QUALITY_THRESHOLD,
+    )
 
 
 def should_continue(state: AgentState) -> str | list[str]:
     """Gate after ats_check. Returning a list fans out to both branches
     concurrently (LangGraph native parallelism).
 
-    Retry iterations route to 'polisher' — a second graph entry for the same
-    improver function — because 'improver' carries the human-review
-    interrupt: with interrupt_before, EVERY loop entry into that node would
-    pause for human input (found Nov 5 2026 when MAX_ITERATIONS went 1→2:
-    the second pass silently hung the run at a phantom checkpoint).
-
-    Nov 6 2026, live run 14751ff9: a PASSING reviewer (composite 86 ≥ 80)
-    still left concrete feedback ("adjust the summary to target the role")
-    which never got applied because passing scores bailed straight to the
-    fan-out. Directive: feedback gets one polish pass whenever the cap
-    allows it, passing or not — the best-of guard in ats_check keeps the
-    better draft, so the extra pass cannot regress the result.
+    Retry iterations route to 'polisher' because 'improver' carries the
+    human-review interrupt_before checkpoint.
     """
-    if state.get('review_failed', False):
-        _safe_print("Reviewer failed - proceeding with current draft (no retry).")
-        return ["cover_letter", "interview_prep"]
-    if state['iteration'] >= MAX_ITERATIONS:
-        _safe_print(f"Max iterations ({MAX_ITERATIONS}) reached. Generating Docs...")
-        return ["cover_letter", "interview_prep"]
-    feedback = (state.get('feedback') or "").strip()
-    if feedback:
-        if state['score'] >= SCORE_THRESHOLD:
-            _safe_print(f"Score {state['score']} >= {SCORE_THRESHOLD}, but the reviewer left feedback - one polish pass (best-of keeps the better draft).")
-        else:
-            _safe_print(f"Composite score {state['score']} < {SCORE_THRESHOLD}. Polishing further...")
+    should_polish, reason = evaluate_polish_gate(state)
+    _safe_print(reason)
+    if should_polish:
         return "polisher"
-    _safe_print(f"Success! Composite score {state['score']} >= {SCORE_THRESHOLD}. Generating Docs...")
     return ["cover_letter", "interview_prep"]
 
 

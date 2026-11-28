@@ -1,9 +1,9 @@
 """NODE 4: ATS Check - deterministic keyword match + semantic verification + composite score."""
 from ..state import AgentState, SYSTEM_GUARDRAIL, _untrusted, SemanticReview
 from .. import llms as _llms
-from ..config import ATS_SCORE_WEIGHT, LLM_SCORE_WEIGHT
+from ..config import ATS_SCORE_WEIGHT, BEST_OF_REVIEWER_MARGIN, LLM_SCORE_WEIGHT
 from ..ats import compute_ats_match, apply_semantic_matches
-from ..helpers import _safe_print, _safe_truncate, normalize_markdown_links
+from ..helpers import _safe_print, _safe_truncate, evaluate_polish_gate, normalize_markdown_links
 from ..match import compute_requirement_match_table
 from ..bullet_impact import compute_bullet_impact
 from ..bullet_sources import compute_bullet_sources
@@ -112,48 +112,112 @@ def ats_check_node(state: AgentState):
     _safe_print(f"-> ATS Match: {result['percentage']}% ({result['match_count']}/{result['total']})")
     _safe_print(f"-> Composite score: {composite}/100 (ATS {result['percentage']:.0f}% x 0.6 + LLM quality {llm_quality} x 0.4)")
 
-    # Best-of guard: a polish iteration (MAX_ITERATIONS > 1) must never leave
-    # the user with a worse resume than an earlier draft. Composite ties keep
-    # the newest draft — it carries one more feedback-driven revision.
+    # Deterministic-first Best-of Guard:
+    # 1. Reject Draft #2 immediately if any previously matched ATS keyword is lost
+    #    or if ats_percentage drops (regardless of subjective reviewer noise).
+    # 2. If deterministic signals strictly improve (ATS% up, 0 matched keywords lost),
+    #    adopt unless reviewer score suffered a catastrophic regression.
+    # 3. If deterministic signals tie (ATS% equal, 0 matched keywords lost),
+    #    require a minimum reviewer margin (+BEST_OF_REVIEWER_MARGIN, default 5)
+    #    to win on reviewer score alone.
+    curr_matched = sorted({
+        r["keyword"].strip().lower()
+        for r in (result.get("keywords") or [])
+        if r.get("found") and r.get("keyword")
+    })
     best = dict(state.get("best_result") or {})
     best_score = int(best.get("score", -1))
-    if composite >= best_score:
+    adopt_current = best_score < 0
+    decision_reason = f"initial Draft #1 (ATS {result['percentage']:.0f}%, quality {llm_quality}, composite {composite})"
+
+    if best_score >= 0:
+        best_ats = float(best.get("ats_percentage", 0.0))
+        curr_ats = float(result["percentage"])
+        best_llm = int(best.get("llm_quality_score", 0))
+        best_matched = set(best.get("matched_keywords") or [])
+        lost_keywords = sorted(best_matched - set(curr_matched))
+        ats_delta = curr_ats - best_ats
+        llm_delta = llm_quality - best_llm
+
+        if lost_keywords:
+            adopt_current = False
+            decision_reason = (
+                f"rejected Draft #{state.get('iteration', 2)}: lost matched keyword(s) "
+                + ", ".join(lost_keywords[:5])
+            )
+        elif ats_delta < -1e-6:
+            adopt_current = False
+            decision_reason = (
+                f"rejected Draft #{state.get('iteration', 2)}: ATS dropped "
+                f"{best_ats:.1f}% -> {curr_ats:.1f}%"
+            )
+        elif ats_delta > 1e-6:
+            if llm_delta < -15 and composite < best_score:
+                adopt_current = False
+                decision_reason = (
+                    f"rejected Draft #{state.get('iteration', 2)}: severe quality drop "
+                    f"({best_llm} -> {llm_quality}) outweighed ATS gain"
+                )
+            else:
+                adopt_current = True
+                decision_reason = (
+                    f"adopted Draft #{state.get('iteration', 2)}: ATS improved "
+                    f"{best_ats:.1f}% -> {curr_ats:.1f}% (0 lost keywords)"
+                )
+        else:
+            if llm_delta >= BEST_OF_REVIEWER_MARGIN:
+                adopt_current = True
+                decision_reason = (
+                    f"adopted Draft #{state.get('iteration', 2)}: ATS tied ({curr_ats:.1f}%), "
+                    f"reviewer improved {best_llm} -> {llm_quality} (+{llm_delta} >= +{BEST_OF_REVIEWER_MARGIN})"
+                )
+            else:
+                adopt_current = False
+                decision_reason = (
+                    f"kept Draft #1: ATS tied ({curr_ats:.1f}%), reviewer delta {llm_delta:+d} "
+                    f"< +{BEST_OF_REVIEWER_MARGIN} tiebreak margin"
+                )
+
+    if adopt_current:
         best = {
             "score": composite,
             "optimized_resume": state["optimized_resume"],
             "ats_result": result["formatted"],
             "ats_percentage": result["percentage"],
             "llm_quality_score": llm_quality,
-            # MR2: the table travels with the winning draft, so later,
-            # worse passes keep a table that matches the shipped resume.
+            "matched_keywords": curr_matched,
             "requirement_matches": requirement_table,
-            # Round 13: the bullet audit travels with it for the same reason.
             "bullet_impact": bullet_table,
-            # Round 16: the per-bullet provenance travels with it too.
             "bullet_sources": source_table,
         }
-    if composite < best_score:
-        _safe_print(f"-> Draft {state.get('iteration', 0)} regressed ({composite} < {best_score}); keeping the best draft.")
-        return {
-            "ats_result": best["ats_result"],
-            "ats_percentage": best["ats_percentage"],
-            "score": best["score"],
-            "optimized_resume": best["optimized_resume"],
-            "llm_quality_score": best["llm_quality_score"],
+        _safe_print(f"-> Best-of Guard: {decision_reason}")
+        out = {
+            "ats_result": result["formatted"],
+            "ats_percentage": result["percentage"],
+            "score": composite,
             "best_result": best,
-            "requirement_matches": list(best.get("requirement_matches") or []),
-            "bullet_impact": list(best.get("bullet_impact") or []),
-            "bullet_sources": list(best.get("bullet_sources") or []),
+            "best_of_decision": decision_reason,
+            "requirement_matches": requirement_table,
+            "bullet_impact": bullet_table,
+            "bullet_sources": source_table,
             "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
         }
+        _, out["polish_decision"] = evaluate_polish_gate({**state, **out})
+        return out
 
-    return {
-        "ats_result": result["formatted"],
-        "ats_percentage": result["percentage"],
-        "score": composite,
+    _safe_print(f"-> Best-of Guard: {decision_reason}")
+    out = {
+        "ats_result": best["ats_result"],
+        "ats_percentage": best["ats_percentage"],
+        "score": best["score"],
+        "optimized_resume": best["optimized_resume"],
+        "llm_quality_score": best["llm_quality_score"],
         "best_result": best,
-        "requirement_matches": requirement_table,
-        "bullet_impact": bullet_table,
-        "bullet_sources": source_table,
+        "best_of_decision": decision_reason,
+        "requirement_matches": list(best.get("requirement_matches") or []),
+        "bullet_impact": list(best.get("bullet_impact") or []),
+        "bullet_sources": list(best.get("bullet_sources") or []),
         "prompt_versions": {"ats-semantic": ATS_SEMANTIC_PROMPT_VERSION},
     }
+    _, out["polish_decision"] = evaluate_polish_gate({**state, **out})
+    return out
